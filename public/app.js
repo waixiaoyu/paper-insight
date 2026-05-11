@@ -159,6 +159,66 @@ function paperScore(paper) {
   return clamp(paper?.analysis?.score ?? 0);
 }
 
+const scoreTierClasses = [
+  "score-tier-priority",
+  "score-tier-focus",
+  "score-tier-scan",
+  "score-tier-borderline",
+  "score-tier-low"
+];
+
+function scoreTier(score) {
+  const value = clamp(score);
+
+  if (value >= 90) {
+    return {
+      label: "优先阅读",
+      className: "score-tier-priority",
+      description: "主题高度匹配，适合直接读正文。"
+    };
+  }
+
+  if (value >= 80) {
+    return {
+      label: "重点关注",
+      className: "score-tier-focus",
+      description: "相关性较强，适合加入本周阅读。"
+    };
+  }
+
+  if (value >= 70) {
+    return {
+      label: "快速扫读",
+      className: "score-tier-scan",
+      description: "有价值信号，先看摘要、结论和实验。"
+    };
+  }
+
+  if (value >= 60) {
+    return {
+      label: "边缘相关",
+      className: "score-tier-borderline",
+      description: "有少量相关信号，按需复核。"
+    };
+  }
+
+  return {
+    label: "暂不纳入",
+    className: "score-tier-low",
+    description: "匹配度不足，暂时隐藏。"
+  };
+}
+
+function setScorePill(pill, paper) {
+  const score = paperScore(paper);
+  const tier = scoreTier(score);
+  pill.textContent = `${score} 分 · ${tier.label}`;
+  pill.title = tier.description;
+  pill.setAttribute("aria-label", `${score} 分，${tier.label}。${tier.description}`);
+  pill.classList.remove(...scoreTierClasses);
+  pill.classList.add(tier.className);
+}
+
 function isRecommendedPaper(paper, report = state.currentReport) {
   return paperScore(paper) >= thresholdFor(report);
 }
@@ -954,7 +1014,7 @@ function renderPaperCards() {
     const recommended = isRecommendedPaper(paper);
 
     card.classList.toggle("hidden-paper", !recommended);
-    fragment.querySelector(".score-pill").textContent = `${paperScore(paper)} 分 · ${recommended ? "推荐" : "隐藏"}`;
+    setScorePill(fragment.querySelector(".score-pill"), paper);
     fragment.querySelector(".date-pill").textContent = formatDate(paper.published);
     fragment.querySelector(".category-pill").textContent = paper.primaryCategory || "arXiv";
     fragment.querySelector("h3").textContent = paper.title || "未命名论文";
@@ -1084,7 +1144,7 @@ function renderPaperDetail(paper) {
 
   const score = document.createElement("span");
   score.className = "score-pill";
-  score.textContent = `${paperScore(paper)} 分 · ${isRecommendedPaper(paper) ? "推荐" : "隐藏"}`;
+  setScorePill(score, paper);
 
   const date = document.createElement("span");
   date.className = "date-pill";

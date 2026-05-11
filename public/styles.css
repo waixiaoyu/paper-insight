@@ -984,6 +984,31 @@ button:disabled {
   background: var(--accent-soft);
 }
 
+.score-pill.score-tier-priority {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.score-pill.score-tier-focus {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.score-pill.score-tier-scan {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.score-pill.score-tier-borderline {
+  color: var(--rose);
+  background: var(--rose-soft);
+}
+
+.score-pill.score-tier-low {
+  color: var(--muted);
+  background: var(--panel-strong);
+}
+
 .date-pill {
   color: var(--green);
   background: var(--green-soft);
