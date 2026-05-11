@@ -283,10 +283,10 @@ function setTaskLocked(locked) {
 
 function setTaskStep(step) {
   const labels = {
-    fetch: ["获取候选论文", "正在从 arXiv 拉取最新候选论文。"],
-    confirm: ["确认候选论文", "先确认哪些论文进入候选，确认后才会调用 DeepSeek。"],
-    analyze: ["AI 分析进行中", "DeepSeek 会逐篇分析论文并生成推荐分数。"],
-    done: ["推荐列表已生成", "生成完成后，推荐列表会自动展示在右侧。"]
+    fetch: ["获取候选论文", "正在连接论文数据源。"],
+    confirm: ["确认候选论文", "保留值得分析的候选。"],
+    analyze: ["AI 分析进行中", "逐篇生成摘要、分数和判断理由。"],
+    done: ["推荐列表已生成", "最新列表已保存。"]
   };
   const order = ["fetch", "confirm", "analyze", "done"];
   const currentIndex = order.indexOf(step);
@@ -363,7 +363,7 @@ function resetTaskModal() {
   elements.progressTitle.textContent = "等待开始";
   elements.progressCurrent.textContent = "尚未开始分析。";
   elements.progressElapsed.textContent = "总耗时 0 秒，本篇耗时 0 秒。";
-  elements.taskDoneSummary.textContent = "列表已经在右侧打开。";
+  elements.taskDoneSummary.textContent = "最新列表已打开。";
 }
 
 function sourceLabel(source) {
@@ -430,7 +430,7 @@ function showHome(message = "") {
   setHeader({
     eyebrow: "Paper Insight",
     title: "推荐列表",
-    description: "从左侧生成一次推荐后，结果会保存到这里。点击任意列表查看推荐论文、隐藏论文和全部分析。",
+    description: "生成后的列表会保存在这里。",
     showBack: false
   });
   renderBreadcrumb([]);
@@ -470,7 +470,7 @@ function renderReportHome() {
     const title = document.createElement("h3");
     title.textContent = "还没有推荐列表";
     const description = document.createElement("p");
-    description.textContent = "在左侧确认搜索条件后点击“生成推荐列表”，系统会弹出流程窗口并在完成后把结果显示在这里。";
+    description.textContent = "设置搜索条件后，点击左侧“生成推荐列表”。";
     empty.append(title, description);
     elements.reportHomeList.append(empty);
     return;
@@ -804,8 +804,8 @@ async function analyzeConfirmedPapers(papers) {
   setTaskStep("done");
   showTaskPanel("done");
   const counts = splitReport(report);
-  elements.taskDoneSummary.textContent = `已生成 ${counts.recommended.length} 篇推荐论文、${counts.hidden.length} 篇隐藏论文。列表已经在右侧打开。`;
-  setTaskStatus("推荐列表已生成，右侧已打开最新列表。", "success");
+  elements.taskDoneSummary.textContent = `推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`;
+  setTaskStatus("最新列表已生成。", "success");
   state.taskCloseTimer = window.setTimeout(() => {
     closeTaskDialog();
   }, 1200);
@@ -1013,7 +1013,7 @@ function openReport(report, options = {}) {
   setHeader({
     eyebrow: "推荐报告",
     title: report.title || "未命名推荐列表",
-    description: `这是一份独立推荐列表。推荐阈值为 ${thresholdFor(report)}，可以在这里切换推荐论文、隐藏论文和全部分析。`,
+    description: `阈值 ${thresholdFor(report)}。先看推荐论文，必要时切到隐藏论文复核。`,
     showBack: true
   });
   renderBreadcrumb([
@@ -1053,8 +1053,8 @@ function openPaper(paper) {
   setActiveView("paper");
   setHeader({
     eyebrow: "论文分析",
-    title: "单篇论文详情",
-    description: "这里展示 DeepSeek 对这篇论文的完整分析、维度分数和阅读路径。",
+    title: "分析详情",
+    description: "先看结论，再看方法、证据和局限。",
     showBack: true
   });
   renderBreadcrumb([
@@ -1141,8 +1141,8 @@ function renderPaperDetail(paper) {
       { label: "潜在价值", body: analysisText(paper, "networkUseCase") },
       { label: "局限风险", body: analysisText(paper, "limitations") }
     ]),
-    createDetailSection("阅读路径与推荐理由", [
-      { label: "阅读路径", body: analysisText(paper, "recommendedReadingPath") },
+    createDetailSection("阅读建议与推荐理由", [
+      { label: "阅读建议", body: analysisText(paper, "recommendedReadingPath") },
       { label: "推荐理由", body: analysisText(paper, "whyRecommend") }
     ])
   );
