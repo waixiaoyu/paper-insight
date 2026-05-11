@@ -127,6 +127,7 @@ const elements = {
   queryClose: $("#queryClose"),
   queryApply: $("#queryApply"),
   querySummary: $("#querySummary"),
+  querySummaryDetails: $("#querySummaryDetails"),
   queryText: $("#queryText"),
   queryBuilder: $("#queryBuilder"),
   limitInput: $("#limit"),
@@ -321,15 +322,39 @@ function updateQuerySummary() {
     return;
   }
 
+  elements.querySummaryDetails.textContent = "";
+
   if (state.queryMode === "manual") {
-    const length = (elements.queryText.value.trim() || defaultQuery).length;
-    elements.querySummary.textContent = `手工输入 · ${length} 字符`;
+    const query = elements.queryText.value.trim() || defaultQuery;
+    elements.querySummary.textContent = "手工输入";
+
+    const preview = document.createElement("p");
+    preview.className = "query-manual-preview";
+    preview.textContent = query.length > 220 ? `${query.slice(0, 220)}...` : query;
+    elements.querySummaryDetails.append(preview);
     return;
   }
 
-  elements.querySummary.textContent = querySelectionCounts()
+  const selection = selectedKeywordTerms();
+  const counts = querySelectionCounts(selection);
+  elements.querySummary.textContent = counts
     .map((item) => `${item.title} ${item.selected}/${item.total}`)
     .join(" · ");
+
+  counts.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "query-summary-row";
+
+    const label = document.createElement("span");
+    label.textContent = item.title;
+
+    const terms = document.createElement("p");
+    const selected = Array.isArray(selection[item.id]) ? selection[item.id] : [];
+    terms.textContent = selected.length ? selected.join("、") : "未选择";
+
+    row.append(label, terms);
+    elements.querySummaryDetails.append(row);
+  });
 }
 
 function buildQueryFromSelection(selection) {

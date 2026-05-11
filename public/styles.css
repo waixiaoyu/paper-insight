@@ -437,6 +437,33 @@ textarea {
   line-height: 1.45;
 }
 
+.query-summary-details {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.query-summary-row {
+  display: grid;
+  gap: 3px;
+}
+
+.query-summary-row span {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 12px;
+}
+
+.query-summary-row p,
+.query-manual-preview {
+  margin: 0;
+  color: #344052;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .query-heading {
   display: flex;
   align-items: center;
