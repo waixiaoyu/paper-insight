@@ -1010,10 +1010,14 @@ function openReport(report, options = {}) {
   }
 
   setActiveView("report");
+  const counts = splitReport(report);
+  const created = report.createdAt ? `${formatDate(report.createdAt)} 生成，` : "";
+  const candidateTotal = report.candidateCount ?? counts.all.length;
+
   setHeader({
     eyebrow: "推荐报告",
     title: report.title || "未命名推荐列表",
-    description: `阈值 ${thresholdFor(report)}。先看推荐论文，必要时切到隐藏论文复核。`,
+    description: `${created}${candidateTotal} 篇候选，推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`,
     showBack: true
   });
   renderBreadcrumb([
