@@ -13,9 +13,42 @@ const dimensionLabels = {
   evidence: "证据强度"
 };
 
+const queryKeywordGroups = [
+  {
+    id: "domain",
+    title: "网络与通信",
+    terms: ["network", "telecom", "5G", "6G"]
+  },
+  {
+    id: "ai",
+    title: "AI 方法",
+    terms: ["AI", "machine learning", "deep learning", "LLM", "large language model", "foundation model"]
+  },
+  {
+    id: "task",
+    title: "任务场景",
+    terms: [
+      "anomaly detection",
+      "traffic prediction",
+      "network optimization",
+      "root cause analysis",
+      "digital twin network",
+      "intent-based networking",
+      "network automation",
+      "orchestration",
+      "multi-agent",
+      "AI agent",
+      "autonomous agent",
+      "agent-based system"
+    ]
+  }
+];
+
 const storageKeys = {
   reports: "paper-insight:weekly",
   query: "paper-insight:query",
+  queryMode: "paper-insight:query-mode",
+  querySelection: "paper-insight:query-selection",
   apiKey: "paper-insight:deepseek-key",
   model: "paper-insight:deepseek-model"
 };
@@ -33,6 +66,7 @@ const elements = {
   clearApiKey: $("#clearApiKey"),
   filters: $("#filters"),
   queryText: $("#queryText"),
+  queryBuilder: $("#queryBuilder"),
   limitInput: $("#limit"),
   thresholdInput: $("#threshold"),
   thresholdValue: $("#thresholdValue"),
@@ -79,6 +113,7 @@ const elements = {
 
 const paperViewButtons = $$("[data-paper-view]");
 const sortButtons = $$("[data-sort]");
+const queryModeButtons = $$("[data-query-mode]");
 
 const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
@@ -91,6 +126,9 @@ const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit"
 });
 
+const savedQuery = localStorage.getItem(storageKeys.query);
+const savedQueryMode = localStorage.getItem(storageKeys.queryMode);
+
 const state = {
   reports: loadReports(),
   runtimeApiKey: sessionStorage.getItem(storageKeys.apiKey) || "",
@@ -100,6 +138,7 @@ const state = {
   currentPaper: null,
   currentPaperView: "recommended",
   currentSort: "score",
+  queryMode: savedQueryMode || (savedQuery ? "manual" : "builder"),
   currentThreshold: 70,
   candidatePapers: [],
   selectedCandidateIds: new Set(),
@@ -111,7 +150,9 @@ const state = {
   taskCloseTimer: 0
 };
 
-elements.queryText.value = localStorage.getItem(storageKeys.query) || defaultQuery;
+renderKeywordBuilder();
+elements.queryText.value = savedQuery || buildQueryFromSelectedKeywords() || defaultQuery;
+setQueryMode(state.queryMode === "manual" ? "manual" : "builder", { sync: !savedQuery });
 elements.apiModel.value = state.runtimeModel;
 state.currentThreshold = Number(elements.thresholdInput.value || 70);
 
@@ -126,6 +167,143 @@ function loadReports() {
 
 function persistReports() {
   localStorage.setItem(storageKeys.reports, JSON.stringify(state.reports));
+}
+
+function quoteQueryTerm(term) {
+  return `"${String(term).replace(/"/g, "").trim()}"`;
+}
+
+function defaultQuerySelection() {
+  return Object.fromEntries(queryKeywordGroups.map((group) => [group.id, [...group.terms]]));
+}
+
+function loadQuerySelection() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKeys.querySelection) || "{}");
+    const fallback = defaultQuerySelection();
+
+    queryKeywordGroups.forEach((group) => {
+      const selected = Array.isArray(parsed[group.id])
+        ? parsed[group.id].filter((term) => group.terms.includes(term))
+        : fallback[group.id];
+
+      parsed[group.id] = selected.length ? selected : fallback[group.id];
+    });
+
+    return parsed;
+  } catch {
+    return defaultQuerySelection();
+  }
+}
+
+function selectedKeywordTerms() {
+  const selection = {};
+
+  queryKeywordGroups.forEach((group) => {
+    selection[group.id] = [...elements.queryBuilder.querySelectorAll(`input[data-query-group="${group.id}"]:checked`)]
+      .map((input) => input.value);
+  });
+
+  return selection;
+}
+
+function persistQuerySelection(selection = selectedKeywordTerms()) {
+  localStorage.setItem(storageKeys.querySelection, JSON.stringify(selection));
+}
+
+function buildQueryFromSelection(selection) {
+  const groups = queryKeywordGroups
+    .map((group) => {
+      const terms = Array.isArray(selection[group.id]) ? selection[group.id] : [];
+      return terms.length ? `(${terms.map(quoteQueryTerm).join(" OR ")})` : "";
+    })
+    .filter(Boolean);
+
+  return groups.join(" AND ");
+}
+
+function buildQueryFromSelectedKeywords() {
+  const query = buildQueryFromSelection(selectedKeywordTerms());
+  return query || defaultQuery;
+}
+
+function syncQueryFromBuilder() {
+  const query = buildQueryFromSelectedKeywords();
+  elements.queryText.value = query;
+  localStorage.setItem(storageKeys.query, query);
+  persistQuerySelection();
+  return query;
+}
+
+function setQueryMode(mode, options = {}) {
+  const nextMode = mode === "manual" ? "manual" : "builder";
+  state.queryMode = nextMode;
+  localStorage.setItem(storageKeys.queryMode, nextMode);
+  elements.queryBuilder.hidden = nextMode === "manual";
+  elements.queryText.rows = nextMode === "manual" ? 9 : 5;
+  queryModeButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.queryMode === nextMode);
+  });
+
+  if (nextMode === "builder" && options.sync !== false) {
+    syncQueryFromBuilder();
+  }
+}
+
+function setAllKeywordSelection(checked) {
+  elements.queryBuilder.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    input.checked = checked;
+  });
+  persistQuerySelection();
+}
+
+function renderKeywordBuilder() {
+  elements.queryBuilder.textContent = "";
+  const selection = loadQuerySelection();
+
+  queryKeywordGroups.forEach((group) => {
+    const section = document.createElement("section");
+    section.className = "query-group";
+
+    const title = document.createElement("h3");
+    title.textContent = group.title;
+
+    const choices = document.createElement("div");
+    choices.className = "query-chip-list";
+
+    group.terms.forEach((term) => {
+      const label = document.createElement("label");
+      label.className = "query-chip";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = term;
+      checkbox.dataset.queryGroup = group.id;
+      checkbox.checked = selection[group.id]?.includes(term) ?? true;
+      checkbox.addEventListener("change", () => {
+        setQueryMode("builder", { sync: true });
+      });
+
+      const text = document.createElement("span");
+      text.textContent = term;
+
+      label.append(checkbox, text);
+      choices.append(label);
+    });
+
+    section.append(title, choices);
+    elements.queryBuilder.append(section);
+  });
+}
+
+function currentSearchQuery() {
+  if (state.queryMode === "builder") {
+    return syncQueryFromBuilder();
+  }
+
+  const query = elements.queryText.value.trim() || defaultQuery;
+  localStorage.setItem(storageKeys.query, query);
+  return query;
 }
 
 function clamp(value, min = 0, max = 100) {
@@ -438,6 +616,41 @@ function sourceLabel(source) {
   return labels[source] || source || "候选数据源";
 }
 
+function sourceReturnSummary(value) {
+  if (!value) {
+    return "";
+  }
+
+  const status = [value.status, value.statusText].filter(Boolean).join(" ");
+  const parts = [
+    `${sourceLabel(value.source)} ${status || "未知状态"}`,
+    value.retryAfter ? `Retry-After=${value.retryAfter}` : "",
+    value.contentType ? `Content-Type=${value.contentType}` : "",
+    value.body ? `Body=${value.body}` : ""
+  ].filter(Boolean);
+
+  return parts.join("，");
+}
+
+function sourceReturnsSummary(values) {
+  return (Array.isArray(values) ? values : [])
+    .map(sourceReturnSummary)
+    .filter(Boolean)
+    .join("；");
+}
+
+function decodeHeaderValue(value) {
+  if (!value) {
+    return "";
+  }
+
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function startSourceStatusPolling(requestId) {
   resetSourceStatusTimer();
   state.sourceStatusTimer = window.setInterval(async () => {
@@ -454,7 +667,9 @@ function startSourceStatusPolling(requestId) {
         return;
       }
 
-      setTaskStatus(`${sourceLabel(data.source)}：${data.message}`, data.state === "error" ? "error" : "loading");
+      const returnText = sourceReturnsSummary(data.sourceReturns);
+      const detail = returnText && !data.message.includes("Body=") ? ` 返回值：${returnText}` : "";
+      setTaskStatus(`${sourceLabel(data.source)}：${data.message}${detail}`, data.state === "error" ? "error" : "loading");
 
       if (data.state === "done" || data.state === "error") {
         resetSourceStatusTimer();
@@ -668,7 +883,7 @@ async function fetchCandidates() {
   setTaskLocked(true);
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   setTaskStatus("arXiv：正在获取候选论文。");
-  const query = elements.queryText.value.trim() || defaultQuery;
+  const query = currentSearchQuery();
   const candidateLimit = Math.max(5, Math.min(30, Number(elements.limitInput.value) || 10));
   const params = new URLSearchParams({
     query,
@@ -677,7 +892,6 @@ async function fetchCandidates() {
     requestId
   });
 
-  localStorage.setItem(storageKeys.query, query);
   startSourceStatusPolling(requestId);
 
   try {
@@ -690,13 +904,18 @@ async function fetchCandidates() {
       const retryHint = payload.retryAfterSeconds
         ? ` 建议等待约 ${Math.ceil(payload.retryAfterSeconds / 60)} 分钟后再试。`
         : "";
-      throw new Error(`${payload.detail || payload.message || "arXiv 请求失败。"}${retryHint}`);
+      const returnText = sourceReturnsSummary(payload.sourceReturns);
+      const baseMessage = payload.detail || payload.message || "论文数据源请求失败。";
+      const returnHint = returnText && !baseMessage.includes("Body=") ? ` 返回值：${returnText}` : "";
+      throw new Error(`${baseMessage}${returnHint}${retryHint}`);
     }
 
     const cacheStatus = response.headers.get("x-paper-insight-arxiv-cache") || "";
     const source = response.headers.get("x-paper-insight-source") || "arxiv";
     const cacheAge = Number(response.headers.get("x-paper-insight-cache-age-seconds") || 0);
     const warning = response.headers.get("x-paper-insight-arxiv-warning");
+    const sourceReturn = decodeHeaderValue(response.headers.get("x-paper-insight-source-return"));
+    const returnHint = sourceReturn ? ` 返回值：${sourceReturn}` : "";
     const papers = parsePapers(await response.text()).slice(0, candidateLimit);
 
     if (!papers.length) {
@@ -709,12 +928,12 @@ async function fetchCandidates() {
     if (cacheStatus === "stale") {
       const minutes = Math.max(1, Math.round(cacheAge / 60));
       const text = warning ? decodeURIComponent(warning) : "arXiv 暂时不可用，已使用本地缓存。";
-      setTaskStatus(`${sourceLabel(source)}：${text} 缓存约 ${minutes} 分钟前更新，请确认候选论文。`, "warning");
+      setTaskStatus(`${sourceLabel(source)}：${text}${returnHint} 缓存约 ${minutes} 分钟前更新，请确认候选论文。`, "warning");
     } else if (cacheStatus === "hit") {
       setTaskStatus(`${sourceLabel(source)}：已从本地缓存读取 ${papers.length} 篇候选论文，请确认要进入 AI 分析的论文。`, "warning");
     } else if (cacheStatus === "fallback") {
       const text = warning ? decodeURIComponent(warning) : "已使用备用数据源。";
-      setTaskStatus(`${sourceLabel(source)}：${text} 已获取 ${papers.length} 篇候选论文，请确认。`, "warning");
+      setTaskStatus(`${sourceLabel(source)}：${text}${returnHint} 已获取 ${papers.length} 篇候选论文，请确认。`, "warning");
     } else {
       setTaskStatus(`${sourceLabel(source)}：已获取 ${papers.length} 篇候选论文，请确认要进入 AI 分析的论文。`, "warning");
     }
@@ -770,7 +989,7 @@ async function analyzeOnePaper(paper) {
       "content-type": "application/json"
     },
     body: JSON.stringify({
-      query: elements.queryText.value.trim() || defaultQuery,
+      query: currentSearchQuery(),
       threshold: state.currentThreshold,
       maxRecommendations: 1,
       maxAnalyze: 1,
@@ -1241,9 +1460,20 @@ elements.thresholdInput.addEventListener("input", () => {
   state.currentThreshold = Number(elements.thresholdInput.value);
 });
 
+queryModeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setQueryMode(button.dataset.queryMode, { sync: button.dataset.queryMode === "builder" });
+  });
+});
+
+elements.queryText.addEventListener("input", () => {
+  setQueryMode("manual", { sync: false });
+  localStorage.setItem(storageKeys.query, elements.queryText.value.trim());
+});
+
 elements.restoreQuery.addEventListener("click", () => {
-  elements.queryText.value = defaultQuery;
-  localStorage.setItem(storageKeys.query, defaultQuery);
+  setAllKeywordSelection(true);
+  setQueryMode("builder", { sync: true });
 });
 
 elements.backToReports.addEventListener("click", () => {

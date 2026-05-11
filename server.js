@@ -77,6 +77,56 @@ const redactSensitive = (value) => String(value || "")
   .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted-api-key]")
   .replace(/Your api key:\s*[^",}]+/gi, "Your api key: [redacted]");
 
+const readResponseReturnValue = async (source, fetchResponse, bodyLength = 900) => {
+  let body = "";
+
+  try {
+    body = await fetchResponse.text();
+  } catch (error) {
+    body = `无法读取返回体：${error.message}`;
+  }
+
+  return {
+    source,
+    url: fetchResponse.url,
+    status: fetchResponse.status,
+    statusText: fetchResponse.statusText || "",
+    retryAfter: fetchResponse.headers.get("retry-after") || "",
+    contentType: fetchResponse.headers.get("content-type") || "",
+    body: truncate(redactSensitive(body), bodyLength)
+  };
+};
+
+const describeResponseReturnValue = (value) => {
+  if (!value) {
+    return "";
+  }
+
+  const status = [value.status, value.statusText].filter(Boolean).join(" ");
+  const parts = [
+    `${value.source || "数据源"} 返回 ${status || "未知状态"}`,
+    value.retryAfter ? `Retry-After=${value.retryAfter}` : "",
+    value.contentType ? `Content-Type=${value.contentType}` : "",
+    value.body ? `Body=${value.body}` : ""
+  ].filter(Boolean);
+
+  return parts.join("，");
+};
+
+const responseReturnHeader = (value) => {
+  const text = truncate(describeResponseReturnValue(value), 900);
+  return text ? encodeURIComponent(text) : "";
+};
+
+const responseSourceError = (source, returnValue) => {
+  const error = new Error(describeResponseReturnValue(returnValue) || `${source} 暂时不可用`);
+  error.status = returnValue?.status && returnValue.status < 500 ? returnValue.status : 502;
+  error.returnValue = returnValue;
+  error.sourceReturns = [returnValue];
+  error.detail = error.message;
+  return error;
+};
+
 const formatArxivDate = (date) => {
   const pad = (value) => String(value).padStart(2, "0");
   return [
@@ -126,7 +176,7 @@ const writeArxivCache = async (key, entry) => {
 
 const arxivCacheAgeSeconds = (entry) => Math.max(0, Math.round((Date.now() - Number(entry.fetchedAt)) / 1000));
 
-const setPaperRequestStatus = (requestId, source, message, state = "running") => {
+const setPaperRequestStatus = (requestId, source, message, state = "running", extra = {}) => {
   if (!requestId) {
     return;
   }
@@ -135,7 +185,8 @@ const setPaperRequestStatus = (requestId, source, message, state = "running") =>
     source,
     message,
     state,
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
+    ...extra
   });
 };
 
@@ -329,7 +380,8 @@ const fetchOpenAlexPapers = async ({ rawQuery, days, maxResults, signal }) => {
       });
 
       if (!response.ok) {
-        lastError = new Error(`OpenAlex responded with ${response.status}`);
+        const returnValue = await readResponseReturnValue("OpenAlex", response);
+        lastError = responseSourceError("OpenAlex", returnValue);
         continue;
       }
 
@@ -420,7 +472,8 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
       const response = await fetch(endpoint, { signal, headers });
 
       if (!response.ok) {
-        lastError = new Error(`Semantic Scholar responded with ${response.status}`);
+        const returnValue = await readResponseReturnValue("Semantic Scholar", response);
+        lastError = responseSourceError("Semantic Scholar", returnValue);
         continue;
       }
 
@@ -467,6 +520,7 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
 
 const fetchFallbackPapers = async ({ rawQuery, days, maxResults, signal, requestId }) => {
   const errors = [];
+  const sourceReturns = [];
 
   setPaperRequestStatus(requestId, "openalex", "arXiv 暂时不可用，正在切换 OpenAlex 获取候选论文。");
 
@@ -483,7 +537,9 @@ const fetchFallbackPapers = async ({ rawQuery, days, maxResults, signal, request
 
     errors.push("OpenAlex 没有返回可用候选论文");
   } catch (error) {
-    errors.push(error.message);
+    errors.push(error.detail || error.message);
+    sourceReturns.push(...(Array.isArray(error.sourceReturns) ? error.sourceReturns : []));
+    setPaperRequestStatus(requestId, "openalex", error.detail || error.message, "running", { sourceReturns });
   }
 
   setPaperRequestStatus(requestId, "semantic-scholar", "OpenAlex 没有可用结果，正在切换 Semantic Scholar。");
@@ -501,11 +557,13 @@ const fetchFallbackPapers = async ({ rawQuery, days, maxResults, signal, request
 
     errors.push("Semantic Scholar 没有返回可用候选论文");
   } catch (error) {
-    errors.push(error.message);
+    errors.push(error.detail || error.message);
+    sourceReturns.push(...(Array.isArray(error.sourceReturns) ? error.sourceReturns : []));
   }
 
   const error = new Error("arXiv、OpenAlex 和 Semantic Scholar 都没有返回可用候选论文。");
   error.detail = errors.join("；");
+  error.sourceReturns = sourceReturns;
   throw error;
 };
 
@@ -883,6 +941,7 @@ const handlePapersRequest = async (request, response) => {
         error: error.code || "ARXIV_UNAVAILABLE",
         message: error.message || "Could not fetch the latest papers from arXiv.",
         detail: error.detail || error.message,
+        sourceReturns: error.sourceReturns || [],
         retryAfterSeconds: error.retryAfterSeconds || 0
       }, error.retryAfterSeconds ? { "retry-after": String(error.retryAfterSeconds) } : {});
     }
@@ -932,23 +991,34 @@ const handlePapersRequest = async (request, response) => {
       const arxivResponse = await fetchArxivQueued(arxivUrl, controller.signal);
 
       if (arxivResponse.status === 429) {
-        const retryMs = parseRetryAfter(arxivResponse.headers.get("retry-after")) || arxivCooldownMs;
+        const arxivReturn = await readResponseReturnValue("arXiv", arxivResponse);
+        const retryMs = parseRetryAfter(arxivReturn.retryAfter) || arxivCooldownMs;
         arxivBlockedUntil = Date.now() + retryMs;
 
         if (cached && cachedAge < arxivStaleCacheMs) {
-          setPaperRequestStatus(requestId, cached.source || "cache", "arXiv 返回 429，已使用本地缓存。", "done");
+          setPaperRequestStatus(requestId, cached.source || "cache", "arXiv 返回 429，已使用本地缓存。", "done", { sourceReturns: [arxivReturn] });
           return {
             xml: cached.xml,
             cacheStatus: "stale",
             source: cached.source || "arxiv",
             headers: {
               "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 返回 429，已使用本地缓存。"),
+              "x-paper-insight-source-return": responseReturnHeader(arxivReturn),
               "retry-after": String(Math.ceil(retryMs / 1000))
             }
           };
         }
 
-        const fallback = await fetchFallbackPapers({ rawQuery, days, maxResults, signal: controller.signal, requestId });
+        let fallback;
+
+        try {
+          fallback = await fetchFallbackPapers({ rawQuery, days, maxResults, signal: controller.signal, requestId });
+        } catch (error) {
+          error.detail = [describeResponseReturnValue(arxivReturn), error.detail || error.message].filter(Boolean).join("；");
+          error.sourceReturns = [arxivReturn, ...(Array.isArray(error.sourceReturns) ? error.sourceReturns : [])];
+          throw error;
+        }
+
         await writeArxivCache(cacheKey, {
           fetchedAt: Date.now(),
           searchQuery,
@@ -962,13 +1032,15 @@ const handlePapersRequest = async (request, response) => {
           source: fallback.source,
           headers: {
             "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 返回 429，已使用备用数据源。"),
+            "x-paper-insight-source-return": responseReturnHeader(arxivReturn),
             "retry-after": String(Math.ceil(retryMs / 1000))
           }
         };
       }
 
       if (!arxivResponse.ok) {
-        throw new Error(`arXiv responded with ${arxivResponse.status}`);
+        const returnValue = await readResponseReturnValue("arXiv", arxivResponse);
+        throw responseSourceError("arXiv", returnValue);
       }
 
       const xml = await arxivResponse.text();
@@ -981,14 +1053,18 @@ const handlePapersRequest = async (request, response) => {
       setPaperRequestStatus(requestId, "arxiv", "已通过 arXiv 获取候选论文。", "done");
       return { xml, cacheStatus: "miss", source: "arxiv", headers: {} };
     } catch (error) {
+      const sourceReturns = Array.isArray(error.sourceReturns) ? [...error.sourceReturns] : [];
+      const sourceReturn = sourceReturns[0];
+
       if (cached && cachedAge < arxivStaleCacheMs) {
-        setPaperRequestStatus(requestId, cached.source || "cache", "arXiv 暂时不可用，已使用本地缓存。", "done");
+        setPaperRequestStatus(requestId, cached.source || "cache", "arXiv 暂时不可用，已使用本地缓存。", "done", { sourceReturns });
         return {
           xml: cached.xml,
           cacheStatus: "stale",
           source: cached.source || "arxiv",
           headers: {
-            "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 暂时不可用，已使用本地缓存。")
+            "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 暂时不可用，已使用本地缓存。"),
+            ...(sourceReturn ? { "x-paper-insight-source-return": responseReturnHeader(sourceReturn) } : {})
           }
         };
       }
@@ -1007,11 +1083,13 @@ const handlePapersRequest = async (request, response) => {
           cacheStatus: "fallback",
           source: fallback.source,
           headers: {
-            "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 暂时不可用，已使用备用数据源。")
+            "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 暂时不可用，已使用备用数据源。"),
+            ...(sourceReturn ? { "x-paper-insight-source-return": responseReturnHeader(sourceReturn) } : {})
           }
         };
       } catch (fallbackError) {
         error.fallbackDetail = fallbackError.detail || fallbackError.message;
+        sourceReturns.push(...(Array.isArray(fallbackError.sourceReturns) ? fallbackError.sourceReturns : []));
       }
 
       const wrapped = new Error(error.name === "AbortError" ? "arXiv request timed out." : error.message);
@@ -1019,7 +1097,8 @@ const handlePapersRequest = async (request, response) => {
       wrapped.code = typeof error.code === "string" ? error.code : "ARXIV_UNAVAILABLE";
       wrapped.detail = [error.detail || wrapped.message, error.fallbackDetail].filter(Boolean).join("；");
       wrapped.retryAfterSeconds = error.retryAfterSeconds || 0;
-      setPaperRequestStatus(requestId, "none", wrapped.detail, "error");
+      wrapped.sourceReturns = sourceReturns;
+      setPaperRequestStatus(requestId, "none", wrapped.detail, "error", { sourceReturns });
       throw wrapped;
     } finally {
       clearTimeout(timeout);
@@ -1036,6 +1115,7 @@ const handlePapersRequest = async (request, response) => {
       error: error.code || "ARXIV_UNAVAILABLE",
       message: error.message || "Could not fetch the latest papers from arXiv.",
       detail: error.detail || error.message,
+      sourceReturns: error.sourceReturns || [],
       retryAfterSeconds: error.retryAfterSeconds || 0
     }, error.retryAfterSeconds ? { "retry-after": String(error.retryAfterSeconds) } : {});
   } finally {

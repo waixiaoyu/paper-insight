@@ -122,10 +122,20 @@
         </section>
 
         <form id="filters" class="filter-panel">
-          <label class="field">
-            <span>arXiv 搜索条件</span>
-            <textarea id="queryText" name="query" rows="10" spellcheck="false"></textarea>
-          </label>
+          <section class="query-control" aria-label="论文搜索条件">
+            <div class="query-heading">
+              <span>搜索条件</span>
+              <div class="query-mode-toggle" aria-label="搜索条件编辑方式">
+                <button class="active" data-query-mode="builder" type="button">点选</button>
+                <button data-query-mode="manual" type="button">手工输入</button>
+              </div>
+            </div>
+            <div id="queryBuilder" class="query-builder"></div>
+            <label class="field query-text-field">
+              <span>手工输入 / 最终查询</span>
+              <textarea id="queryText" name="query" rows="5" spellcheck="false"></textarea>
+            </label>
+          </section>
 
           <div class="form-row">
             <label class="field">

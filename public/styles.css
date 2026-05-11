@@ -188,6 +188,7 @@ button {
   color: var(--ink);
   font-weight: 800;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .task-status.error {
@@ -355,6 +356,109 @@ textarea {
   min-height: 230px;
   resize: vertical;
   line-height: 1.5;
+}
+
+.query-control {
+  display: grid;
+  gap: 14px;
+}
+
+.query-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.query-mode-toggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.query-mode-toggle button {
+  min-height: 30px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.query-mode-toggle button.active {
+  color: var(--ink);
+  background: #fff;
+  box-shadow: 0 4px 12px rgba(33, 45, 62, 0.08);
+}
+
+.query-builder {
+  display: grid;
+  gap: 12px;
+}
+
+.query-group {
+  display: grid;
+  gap: 8px;
+}
+
+.query-group h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.query-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.query-chip {
+  position: relative;
+}
+
+.query-chip input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+}
+
+.query-chip span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 9px;
+  color: var(--muted);
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.query-chip input:checked + span {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: #a8dfe8;
+}
+
+.query-chip:focus-within span {
+  outline: 2px solid rgba(23, 107, 135, 0.24);
+  outline-offset: 2px;
+}
+
+.query-text-field textarea {
+  min-height: 132px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
 }
 
 input[type="number"] {
@@ -752,6 +856,7 @@ button:disabled {
   margin: 0;
   color: inherit;
   font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .status-action {
