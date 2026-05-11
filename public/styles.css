@@ -1117,6 +1117,14 @@ button:disabled {
   border-color: rgba(23, 107, 135, 0.35);
 }
 
+.candidate-item.candidate-reused {
+  border-color: rgba(47, 125, 87, 0.35);
+}
+
+.candidate-item.candidate-reused:has(input:checked) {
+  background: var(--green-soft);
+}
+
 .candidate-item input {
   margin-top: 3px;
   accent-color: var(--accent);

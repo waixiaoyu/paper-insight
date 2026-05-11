@@ -517,6 +517,78 @@ function reportPapers(report = state.currentReport) {
   ];
 }
 
+function normalizePaperKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/^https?:\/\/(dx\.)?doi\.org\//, "doi:")
+    .replace(/^https?:\/\/arxiv\.org\/(abs|pdf)\//, "arxiv:")
+    .replace(/\.pdf$/, "")
+    .replace(/[?#].*$/, "")
+    .trim();
+}
+
+function normalizedTitleKey(title) {
+  return normalizePaperKey(title)
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function paperDuplicateKeys(paper) {
+  return [
+    normalizePaperKey(paper?.id),
+    normalizePaperKey(paper?.absLink),
+    normalizePaperKey(paper?.link),
+    normalizedTitleKey(paper?.title)
+  ].filter(Boolean);
+}
+
+function findHistoricalAnalysis(paper) {
+  const keys = new Set(paperDuplicateKeys(paper));
+
+  if (!keys.size) {
+    return null;
+  }
+
+  for (const report of state.reports) {
+    for (const item of reportPapers(report)) {
+      if (!item?.analysis) {
+        continue;
+      }
+
+      const matched = paperDuplicateKeys(item).some((key) => keys.has(key));
+
+      if (matched) {
+        return { report, paper: item };
+      }
+    }
+  }
+
+  return null;
+}
+
+function mergeHistoricalAnalysis(candidate, historical) {
+  return {
+    ...historical.paper,
+    ...candidate,
+    analysis: historical.paper.analysis,
+    reusedAnalysis: {
+      reportTitle: historical.report?.title || "历史推荐列表",
+      createdAt: historical.report?.createdAt || ""
+    }
+  };
+}
+
+function annotateHistoricalAnalysis(paper) {
+  const historical = findHistoricalAnalysis(paper);
+
+  if (!historical) {
+    return paper;
+  }
+
+  return mergeHistoricalAnalysis(paper, historical);
+}
+
 function thresholdFor(report = state.currentReport) {
   return Number(report?.threshold ?? state.currentThreshold ?? 70);
 }
@@ -1008,8 +1080,10 @@ function updateCandidateActionState() {
 
 function showCandidateConfirmation(papers) {
   resetProgressTimer();
-  state.candidatePapers = papers;
-  state.selectedCandidateIds = new Set(papers.map((paper) => paper.id));
+  const annotatedPapers = papers.map(annotateHistoricalAnalysis);
+  const reusedCount = annotatedPapers.filter((paper) => paper.reusedAnalysis).length;
+  state.candidatePapers = annotatedPapers;
+  state.selectedCandidateIds = new Set(annotatedPapers.map((paper) => paper.id));
   state.currentReport = null;
   state.currentPaper = null;
   state.currentThreshold = Number(elements.thresholdInput.value || 70);
@@ -1017,11 +1091,15 @@ function showCandidateConfirmation(papers) {
   setTaskLocked(false);
   setTaskStep("confirm");
   showTaskPanel("candidate");
-  setTaskStatus(`已获取 ${papers.length} 篇候选论文。请确认要进入 AI 分析的论文。`, "warning");
+  setTaskStatus(`已获取 ${annotatedPapers.length} 篇候选论文${reusedCount ? `，其中 ${reusedCount} 篇已有历史分析` : ""}。请确认要进入列表的论文。`, "warning");
 
-  papers.forEach((paper, index) => {
+  annotatedPapers.forEach((paper, index) => {
     const label = document.createElement("label");
     label.className = "candidate-item";
+
+    if (paper.reusedAnalysis) {
+      label.classList.add("candidate-reused");
+    }
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
@@ -1043,7 +1121,10 @@ function showCandidateConfirmation(papers) {
 
     const meta = document.createElement("div");
     meta.className = "candidate-meta";
-    meta.textContent = `${formatDate(paper.published)} · ${paper.primaryCategory} · ${paper.authors.slice(0, 4).join(", ") || "Unknown authors"}`;
+    const reused = paper.reusedAnalysis
+      ? ` · 已有分析：${paper.reusedAnalysis.reportTitle}${paper.reusedAnalysis.createdAt ? `（${formatDate(paper.reusedAnalysis.createdAt)}）` : ""}`
+      : "";
+    meta.textContent = `${formatDate(paper.published)} · ${paper.primaryCategory} · ${paper.authors.slice(0, 4).join(", ") || "Unknown authors"}${reused}`;
 
     const summary = document.createElement("div");
     summary.className = "candidate-summary";
@@ -1145,7 +1226,7 @@ function updateProgress(progress) {
   elements.progressElapsed.textContent = `总耗时 ${secondsSince(startedAt)} 秒，本篇耗时 ${secondsSince(paperStartedAt || startedAt)} 秒。`;
 }
 
-function showProgressView(total) {
+function showProgressView(total, reusedCount = 0, analyzeCount = total) {
   showTaskDialog();
   setTaskLocked(true);
   setTaskStep("analyze");
@@ -1153,9 +1234,13 @@ function showProgressView(total) {
   elements.progressFill.style.width = "0%";
   elements.progressPercent.textContent = "0%";
   elements.progressTitle.textContent = "准备分析";
-  elements.progressCurrent.textContent = `已确认 ${total} 篇论文，准备调用 DeepSeek。`;
+  elements.progressCurrent.textContent = reusedCount
+    ? `已复用 ${reusedCount} 篇历史分析，准备分析 ${analyzeCount} 篇新论文。`
+    : `已确认 ${total} 篇论文，准备调用 DeepSeek。`;
   elements.progressElapsed.textContent = "总耗时 0 秒，本篇耗时 0 秒。";
-  setTaskStatus(`已确认 ${total} 篇候选论文，正在逐篇分析...`);
+  setTaskStatus(reusedCount
+    ? `已确认 ${total} 篇候选论文，${reusedCount} 篇复用历史分析，${analyzeCount} 篇需要调用 DeepSeek。`
+    : `已确认 ${total} 篇候选论文，正在逐篇分析...`);
 }
 
 function analysisErrorFromPayload(data) {
@@ -1211,27 +1296,40 @@ async function analyzeConfirmedPapers(papers) {
     return;
   }
 
-  state.lastAnalyzePapers = papers;
+  const reused = [];
+  const pending = [];
+
+  papers.forEach((paper) => {
+    const withHistory = paper.analysis ? paper : annotateHistoricalAnalysis(paper);
+
+    if (withHistory.analysis && withHistory.reusedAnalysis) {
+      reused.push(withHistory);
+    } else {
+      pending.push(paper);
+    }
+  });
+
+  state.lastAnalyzePapers = pending;
   state.currentThreshold = Number(elements.thresholdInput.value || 70);
   state.currentPaperView = "recommended";
   state.currentSort = "score";
-  const analyzed = [];
-  let mode = "DeepSeek";
+  const analyzed = [...reused];
+  let mode = pending.length ? "DeepSeek" : "历史复用";
   const startedAt = performance.now();
 
-  showProgressView(papers.length);
+  showProgressView(papers.length, reused.length, pending.length);
 
   try {
-    for (let index = 0; index < papers.length; index += 1) {
-      const paper = papers[index];
+    for (let index = 0; index < pending.length; index += 1) {
+      const paper = pending[index];
       const paperStartedAt = performance.now();
-      state.progressState = { done: index, total: papers.length, paper, phase: "running", startedAt, paperStartedAt };
+      state.progressState = { done: index, total: pending.length, paper, phase: "running", startedAt, paperStartedAt };
       updateProgress(state.progressState);
       resetProgressTimer();
       state.progressTimer = window.setInterval(() => updateProgress(state.progressState), 500);
 
       const result = await analyzeOnePaper(paper);
-      mode = result.mode;
+      mode = reused.length ? `${result.mode} + 历史复用` : result.mode;
       analyzed.push(result.paper);
 
       const tempReport = {
@@ -1248,11 +1346,26 @@ async function analyzeConfirmedPapers(papers) {
         mode
       });
 
-      state.progressState = { done: index + 1, total: papers.length, paper, phase: "done", startedAt, paperStartedAt };
+      state.progressState = { done: index + 1, total: pending.length, paper, phase: "done", startedAt, paperStartedAt };
       updateProgress(state.progressState);
     }
   } finally {
     resetProgressTimer();
+  }
+
+  if (!pending.length) {
+    const counts = splitReport({
+      threshold: state.currentThreshold,
+      candidateCount: papers.length,
+      mode,
+      items: analyzed
+    });
+    setMetrics({
+      candidates: papers.length,
+      recommended: counts.recommended.length,
+      hidden: counts.hidden.length,
+      mode
+    });
   }
 
   const report = {
@@ -1271,8 +1384,8 @@ async function analyzeConfirmedPapers(papers) {
   setTaskStep("done");
   showTaskPanel("done");
   const counts = splitReport(report);
-  elements.taskDoneSummary.textContent = `推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`;
-  setTaskStatus("最新列表已生成。", "success");
+  elements.taskDoneSummary.textContent = `推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。${reused.length ? `复用 ${reused.length} 篇历史分析。` : ""}`;
+  setTaskStatus(reused.length ? `最新列表已生成，${reused.length} 篇论文未重复调用 DeepSeek。` : "最新列表已生成。", "success");
   state.taskCloseTimer = window.setTimeout(() => {
     closeTaskDialog();
   }, 1200);

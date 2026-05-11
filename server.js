@@ -142,6 +142,41 @@ const arxivCacheKey = (url) => createHash("sha256").update(url.toString()).diges
 
 const arxivCachePath = (key) => join(arxivCacheDir, `${key}.json`);
 
+const normalizePaperKey = (value) => String(value || "")
+  .toLowerCase()
+  .replace(/^https?:\/\/(dx\.)?doi\.org\//, "doi:")
+  .replace(/^https?:\/\/arxiv\.org\/(abs|pdf)\//, "arxiv:")
+  .replace(/\.pdf$/, "")
+  .replace(/[?#].*$/, "")
+  .trim();
+
+const paperDuplicateKeys = (paper) => [
+  normalizePaperKey(paper.id),
+  normalizePaperKey(paper.absLink),
+  normalizePaperKey(paper.link),
+  normalizePaperKey(paper.title)
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+].filter(Boolean);
+
+const appendUniquePapers = (target, seen, papers, maxResults) => {
+  for (const paper of papers) {
+    const keys = paperDuplicateKeys(paper);
+
+    if (!keys.length || keys.some((key) => seen.has(key))) {
+      continue;
+    }
+
+    keys.forEach((key) => seen.add(key));
+    target.push(paper);
+
+    if (target.length >= maxResults) {
+      break;
+    }
+  }
+};
+
 const readArxivCache = async (key) => {
   const memoryEntry = arxivMemoryCache.get(key);
 
@@ -338,6 +373,8 @@ const fetchOpenAlexPapers = async ({ rawQuery, days, maxResults, signal }) => {
   const queries = fallbackSearchQueries(rawQuery);
   const dateWindows = days > 0 ? [...new Set([days, Math.max(days, 30), 0])] : [0];
   let lastError = null;
+  const collected = [];
+  const seen = new Set();
 
   for (const query of queries) {
     for (const windowDays of dateWindows) {
@@ -419,10 +456,16 @@ const fetchOpenAlexPapers = async ({ rawQuery, days, maxResults, signal }) => {
     .filter((paper) => paper.id && paper.title && paper.summary)
     .slice(0, maxResults);
 
-      if (papers.length) {
-        return papers;
+      appendUniquePapers(collected, seen, papers, maxResults);
+
+      if (collected.length >= maxResults) {
+        return collected;
       }
     }
+  }
+
+  if (collected.length) {
+    return collected;
   }
 
   if (lastError) {
@@ -436,6 +479,8 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
   const queries = fallbackSearchQueries(rawQuery);
   const dateWindows = days > 0 ? [...new Set([days, Math.max(days, 30), 0])] : [0];
   let lastError = null;
+  const collected = [];
+  const seen = new Set();
 
   for (const query of queries) {
     for (const windowDays of dateWindows) {
@@ -505,10 +550,16 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
     .filter((paper) => paper.id && paper.title && paper.summary)
     .slice(0, maxResults);
 
-      if (papers.length) {
-        return papers;
+      appendUniquePapers(collected, seen, papers, maxResults);
+
+      if (collected.length >= maxResults) {
+        return collected;
       }
     }
+  }
+
+  if (collected.length) {
+    return collected;
   }
 
   if (lastError) {
