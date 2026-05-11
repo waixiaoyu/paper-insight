@@ -363,6 +363,80 @@ textarea {
   gap: 14px;
 }
 
+.query-dialog {
+  width: min(980px, calc(100vw - 32px));
+  max-height: min(860px, calc(100vh - 40px));
+  padding: 0;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.query-dialog::backdrop {
+  background: rgba(23, 32, 43, 0.28);
+}
+
+.query-dialog-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: inherit;
+}
+
+.query-dialog-header,
+.query-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+}
+
+.query-dialog-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.query-dialog-header h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.query-dialog-body {
+  display: grid;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+.query-dialog-footer {
+  border-top: 1px solid var(--line);
+}
+
+.query-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.query-card span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.query-card strong {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .query-heading {
   display: flex;
   align-items: center;
@@ -407,12 +481,49 @@ textarea {
 .query-group {
   display: grid;
   gap: 8px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.query-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .query-group h3 {
   margin: 0;
   color: var(--ink);
   font-size: 13px;
+}
+
+.query-group-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.query-group-select {
+  min-height: 28px;
+  padding: 0 9px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.query-group-select:disabled {
+  color: var(--muted);
+  background: var(--panel-strong);
+  border-color: var(--line);
 }
 
 .query-chip-list {

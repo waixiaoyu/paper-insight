@@ -16,17 +16,58 @@ const dimensionLabels = {
 const queryKeywordGroups = [
   {
     id: "domain",
-    title: "网络与通信",
-    terms: ["network", "telecom", "5G", "6G"]
+    title: "技术方向",
+    terms: [
+      "network",
+      "telecom",
+      "5G",
+      "6G",
+      { value: "wireless network", selected: false },
+      { value: "mobile network", selected: false },
+      { value: "cellular network", selected: false },
+      { value: "radio access network", selected: false },
+      { value: "RAN", selected: false },
+      { value: "O-RAN", selected: false },
+      { value: "core network", selected: false },
+      { value: "edge network", selected: false },
+      { value: "cloud network", selected: false },
+      { value: "multi-access edge computing", selected: false },
+      { value: "network slicing", selected: false },
+      { value: "SDN", selected: false },
+      { value: "NFV", selected: false },
+      { value: "private network", selected: false },
+      { value: "IoT network", selected: false },
+      { value: "satellite network", selected: false },
+      { value: "optical network", selected: false }
+    ]
   },
   {
     id: "ai",
-    title: "AI 方法",
-    terms: ["AI", "machine learning", "deep learning", "LLM", "large language model", "foundation model"]
+    title: "技术方法",
+    terms: [
+      "AI",
+      "machine learning",
+      "deep learning",
+      "LLM",
+      "large language model",
+      "foundation model",
+      { value: "reinforcement learning", selected: false },
+      { value: "graph neural network", selected: false },
+      { value: "time series forecasting", selected: false },
+      { value: "federated learning", selected: false },
+      { value: "transfer learning", selected: false },
+      { value: "self-supervised learning", selected: false },
+      { value: "retrieval augmented generation", selected: false },
+      { value: "knowledge graph", selected: false },
+      { value: "transformer", selected: false },
+      { value: "generative AI", selected: false },
+      { value: "Bayesian optimization", selected: false },
+      { value: "causal inference", selected: false }
+    ]
   },
   {
     id: "task",
-    title: "任务场景",
+    title: "目标应用场景",
     terms: [
       "anomaly detection",
       "traffic prediction",
@@ -39,7 +80,23 @@ const queryKeywordGroups = [
       "multi-agent",
       "AI agent",
       "autonomous agent",
-      "agent-based system"
+      "agent-based system",
+      { value: "fault diagnosis", selected: false },
+      { value: "alarm correlation", selected: false },
+      { value: "performance prediction", selected: false },
+      { value: "QoS prediction", selected: false },
+      { value: "resource allocation", selected: false },
+      { value: "spectrum management", selected: false },
+      { value: "routing optimization", selected: false },
+      { value: "energy efficiency", selected: false },
+      { value: "load balancing", selected: false },
+      { value: "handover optimization", selected: false },
+      { value: "capacity planning", selected: false },
+      { value: "service assurance", selected: false },
+      { value: "security monitoring", selected: false },
+      { value: "intrusion detection", selected: false },
+      { value: "closed-loop automation", selected: false },
+      { value: "policy optimization", selected: false }
     ]
   }
 ];
@@ -65,6 +122,11 @@ const elements = {
   openApiDialog: $("#openApiDialog"),
   clearApiKey: $("#clearApiKey"),
   filters: $("#filters"),
+  queryDialog: $("#queryDialog"),
+  openQueryDialog: $("#openQueryDialog"),
+  queryClose: $("#queryClose"),
+  queryApply: $("#queryApply"),
+  querySummary: $("#querySummary"),
   queryText: $("#queryText"),
   queryBuilder: $("#queryBuilder"),
   limitInput: $("#limit"),
@@ -173,8 +235,23 @@ function quoteQueryTerm(term) {
   return `"${String(term).replace(/"/g, "").trim()}"`;
 }
 
+function queryTermValue(term) {
+  return typeof term === "string" ? term : term.value;
+}
+
+function queryTermDefaultSelected(term) {
+  return typeof term === "string" || term.selected !== false;
+}
+
+function queryGroupValues(group) {
+  return group.terms.map(queryTermValue).filter(Boolean);
+}
+
 function defaultQuerySelection() {
-  return Object.fromEntries(queryKeywordGroups.map((group) => [group.id, [...group.terms]]));
+  return Object.fromEntries(queryKeywordGroups.map((group) => [
+    group.id,
+    group.terms.filter(queryTermDefaultSelected).map(queryTermValue)
+  ]));
 }
 
 function loadQuerySelection() {
@@ -183,11 +260,12 @@ function loadQuerySelection() {
     const fallback = defaultQuerySelection();
 
     queryKeywordGroups.forEach((group) => {
+      const validTerms = queryGroupValues(group);
       const selected = Array.isArray(parsed[group.id])
-        ? parsed[group.id].filter((term) => group.terms.includes(term))
+        ? parsed[group.id].filter((term) => validTerms.includes(term))
         : fallback[group.id];
 
-      parsed[group.id] = selected.length ? selected : fallback[group.id];
+      parsed[group.id] = selected;
     });
 
     return parsed;
@@ -211,6 +289,49 @@ function persistQuerySelection(selection = selectedKeywordTerms()) {
   localStorage.setItem(storageKeys.querySelection, JSON.stringify(selection));
 }
 
+function querySelectionCounts(selection = selectedKeywordTerms()) {
+  return queryKeywordGroups.map((group) => ({
+    id: group.id,
+    title: group.title,
+    selected: Array.isArray(selection[group.id]) ? selection[group.id].length : 0,
+    total: queryGroupValues(group).length
+  }));
+}
+
+function updateQueryGroupControls() {
+  const counts = querySelectionCounts();
+
+  counts.forEach((item) => {
+    const count = elements.queryBuilder.querySelector(`[data-query-group-count="${item.id}"]`);
+    const selectAll = elements.queryBuilder.querySelector(`[data-query-group-select="${item.id}"]`);
+
+    if (count) {
+      count.textContent = `${item.selected}/${item.total}`;
+    }
+
+    if (selectAll) {
+      selectAll.disabled = item.selected === item.total;
+      selectAll.textContent = item.selected === item.total ? "已全选" : "全选";
+    }
+  });
+}
+
+function updateQuerySummary() {
+  if (!elements.querySummary) {
+    return;
+  }
+
+  if (state.queryMode === "manual") {
+    const length = (elements.queryText.value.trim() || defaultQuery).length;
+    elements.querySummary.textContent = `手工输入 · ${length} 字符`;
+    return;
+  }
+
+  elements.querySummary.textContent = querySelectionCounts()
+    .map((item) => `${item.title} ${item.selected}/${item.total}`)
+    .join(" · ");
+}
+
 function buildQueryFromSelection(selection) {
   const groups = queryKeywordGroups
     .map((group) => {
@@ -232,6 +353,8 @@ function syncQueryFromBuilder() {
   elements.queryText.value = query;
   localStorage.setItem(storageKeys.query, query);
   persistQuerySelection();
+  updateQueryGroupControls();
+  updateQuerySummary();
   return query;
 }
 
@@ -248,13 +371,27 @@ function setQueryMode(mode, options = {}) {
   if (nextMode === "builder" && options.sync !== false) {
     syncQueryFromBuilder();
   }
+
+  updateQuerySummary();
 }
 
-function setAllKeywordSelection(checked) {
+function setKeywordSelection(selection) {
   elements.queryBuilder.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+    const groupSelection = Array.isArray(selection[input.dataset.queryGroup])
+      ? selection[input.dataset.queryGroup]
+      : [];
+    input.checked = groupSelection.includes(input.value);
+  });
+  persistQuerySelection();
+  updateQueryGroupControls();
+}
+
+function setGroupKeywordSelection(groupId, checked) {
+  elements.queryBuilder.querySelectorAll(`input[data-query-group="${groupId}"]`).forEach((input) => {
     input.checked = checked;
   });
   persistQuerySelection();
+  updateQueryGroupControls();
 }
 
 function renderKeywordBuilder() {
@@ -265,35 +402,61 @@ function renderKeywordBuilder() {
     const section = document.createElement("section");
     section.className = "query-group";
 
+    const heading = document.createElement("div");
+    heading.className = "query-group-heading";
+
     const title = document.createElement("h3");
     title.textContent = group.title;
+
+    const tools = document.createElement("div");
+    tools.className = "query-group-tools";
+
+    const count = document.createElement("span");
+    count.dataset.queryGroupCount = group.id;
+
+    const selectAll = document.createElement("button");
+    selectAll.type = "button";
+    selectAll.className = "query-group-select";
+    selectAll.dataset.queryGroupSelect = group.id;
+    selectAll.textContent = "全选";
+    selectAll.addEventListener("click", () => {
+      setGroupKeywordSelection(group.id, true);
+      setQueryMode("builder", { sync: true });
+    });
+
+    tools.append(count, selectAll);
+    heading.append(title, tools);
 
     const choices = document.createElement("div");
     choices.className = "query-chip-list";
 
     group.terms.forEach((term) => {
+      const value = queryTermValue(term);
       const label = document.createElement("label");
       label.className = "query-chip";
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
-      checkbox.value = term;
+      checkbox.value = value;
       checkbox.dataset.queryGroup = group.id;
-      checkbox.checked = selection[group.id]?.includes(term) ?? true;
+      checkbox.checked = selection[group.id]?.includes(value) ?? queryTermDefaultSelected(term);
       checkbox.addEventListener("change", () => {
         setQueryMode("builder", { sync: true });
       });
 
       const text = document.createElement("span");
-      text.textContent = term;
+      text.textContent = value;
 
       label.append(checkbox, text);
       choices.append(label);
     });
 
-    section.append(title, choices);
+    section.append(heading, choices);
     elements.queryBuilder.append(section);
   });
+
+  updateQueryGroupControls();
+  updateQuerySummary();
 }
 
 function currentSearchQuery() {
@@ -1460,6 +1623,34 @@ elements.thresholdInput.addEventListener("input", () => {
   state.currentThreshold = Number(elements.thresholdInput.value);
 });
 
+elements.openQueryDialog.addEventListener("click", () => {
+  updateQuerySummary();
+
+  if (typeof elements.queryDialog.showModal === "function") {
+    elements.queryDialog.showModal();
+  } else {
+    elements.queryDialog.setAttribute("open", "");
+  }
+});
+
+elements.queryClose.addEventListener("click", () => {
+  if (typeof elements.queryDialog.close === "function") {
+    elements.queryDialog.close();
+  } else {
+    elements.queryDialog.removeAttribute("open");
+  }
+});
+
+elements.queryApply.addEventListener("click", () => {
+  currentSearchQuery();
+
+  if (typeof elements.queryDialog.close === "function") {
+    elements.queryDialog.close();
+  } else {
+    elements.queryDialog.removeAttribute("open");
+  }
+});
+
 queryModeButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setQueryMode(button.dataset.queryMode, { sync: button.dataset.queryMode === "builder" });
@@ -1469,10 +1660,11 @@ queryModeButtons.forEach((button) => {
 elements.queryText.addEventListener("input", () => {
   setQueryMode("manual", { sync: false });
   localStorage.setItem(storageKeys.query, elements.queryText.value.trim());
+  updateQuerySummary();
 });
 
 elements.restoreQuery.addEventListener("click", () => {
-  setAllKeywordSelection(true);
+  setKeywordSelection(defaultQuerySelection());
   setQueryMode("builder", { sync: true });
 });
 
