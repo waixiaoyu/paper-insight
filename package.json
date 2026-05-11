@@ -1,0 +1,13 @@
+{
+  "name": "paper-insight",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A dependency-free web app for discovering and recommending the latest research papers from arXiv.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

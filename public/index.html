@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Paper Insight</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <dialog id="apiDialog" class="api-dialog">
+      <form id="apiForm" method="dialog">
+        <h2>DeepSeek API Key</h2>
+        <label class="field">
+          <span>API Key</span>
+          <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-...">
+        </label>
+        <label class="field">
+          <span>模型</span>
+          <select id="apiModel">
+            <option value="deepseek-v4-flash" selected>deepseek-v4-flash</option>
+            <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+          </select>
+        </label>
+        <button class="primary-action" value="save" type="submit">使用 DeepSeek</button>
+      </form>
+    </dialog>
+
+    <dialog id="taskDialog" class="task-dialog">
+      <div class="task-dialog-shell">
+        <header class="task-dialog-header">
+          <div>
+            <p class="eyebrow">生成推荐列表</p>
+            <h2 id="taskTitle">准备开始</h2>
+            <p id="taskDescription">系统会先获取候选论文，确认后再逐篇调用 DeepSeek 分析。</p>
+          </div>
+          <button id="taskClose" class="ghost-button" type="button">关闭</button>
+        </header>
+
+        <ol id="taskSteps" class="task-steps" aria-label="生成流程">
+          <li data-step="fetch">
+            <span>1</span>
+            <strong>获取候选</strong>
+          </li>
+          <li data-step="confirm">
+            <span>2</span>
+            <strong>确认论文</strong>
+          </li>
+          <li data-step="analyze">
+            <span>3</span>
+            <strong>AI 分析</strong>
+          </li>
+          <li data-step="done">
+            <span>4</span>
+            <strong>生成列表</strong>
+          </li>
+        </ol>
+
+        <section id="taskStatus" class="task-status">
+          <div class="spinner" aria-hidden="true"></div>
+          <p>等待开始。</p>
+          <button id="taskRetry" class="ghost-button" type="button" hidden>重试分析</button>
+        </section>
+
+        <section id="taskCandidatePanel" class="task-panel">
+          <div class="candidate-heading">
+            <div>
+              <p class="eyebrow">候选确认</p>
+              <h3>确认要交给 AI 分析的论文</h3>
+              <p>取消勾选不想分析的论文，确认后才会逐篇调用 DeepSeek。</p>
+            </div>
+            <div class="candidate-actions">
+              <button id="selectAllCandidates" class="ghost-button" type="button">全选</button>
+              <button id="confirmCandidates" class="primary-action" type="button">确认并分析</button>
+            </div>
+          </div>
+          <div id="candidateList" class="candidate-list"></div>
+        </section>
+
+        <section id="taskProgressPanel" class="task-panel">
+          <div class="progress-heading">
+            <div>
+              <p class="eyebrow">AI 分析进度</p>
+              <h3 id="progressTitle">等待开始</h3>
+            </div>
+            <span id="progressPercent" class="progress-percent">0%</span>
+          </div>
+          <div class="progress-bar" aria-hidden="true">
+            <span id="progressFill"></span>
+          </div>
+          <div class="progress-detail">
+            <p id="progressCurrent">尚未开始分析。</p>
+            <p id="progressElapsed">总耗时 0 秒，本篇耗时 0 秒。</p>
+          </div>
+        </section>
+
+        <section id="taskDonePanel" class="task-panel task-done-panel">
+          <h3>推荐列表已生成</h3>
+          <p id="taskDoneSummary">列表已经在右侧打开。</p>
+        </section>
+      </div>
+    </dialog>
+
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="推荐设置">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">PI</span>
+          <div>
+            <p class="eyebrow">Paper Insight</p>
+            <h1>每周论文推荐</h1>
+          </div>
+        </div>
+
+        <section class="api-control" aria-label="DeepSeek 设置">
+          <div>
+            <p class="eyebrow">DeepSeek</p>
+            <h2 id="apiStatus">未设置 API Key</h2>
+          </div>
+          <div class="api-actions">
+            <button id="openApiDialog" class="secondary-action" type="button">设置 / 更新 API Key</button>
+            <button id="clearApiKey" class="ghost-button" type="button">清除</button>
+          </div>
+        </section>
+
+        <form id="filters" class="filter-panel">
+          <label class="field">
+            <span>arXiv 搜索条件</span>
+            <textarea id="queryText" name="query" rows="10" spellcheck="false"></textarea>
+          </label>
+
+          <div class="form-row">
+            <label class="field">
+              <span>候选论文数</span>
+              <input id="limit" name="limit" type="number" min="5" max="30" value="10" step="5">
+            </label>
+            <label class="field">
+              <span>推荐阈值</span>
+              <input id="threshold" name="threshold" type="range" min="40" max="95" value="70" step="5">
+              <output id="thresholdValue" for="threshold">70</output>
+            </label>
+          </div>
+
+          <label class="field">
+            <span>时间范围</span>
+            <select id="dateWindow" name="days">
+              <option value="7" selected>最近 7 天</option>
+              <option value="14">最近 14 天</option>
+              <option value="30">最近 30 天</option>
+              <option value="0">不限时间</option>
+            </select>
+          </label>
+
+          <div class="button-row">
+            <button class="primary-action" type="submit">生成推荐列表</button>
+            <button id="restoreQuery" class="secondary-action" type="button">恢复预设</button>
+          </div>
+        </form>
+      </aside>
+
+      <main class="content">
+        <nav id="breadcrumb" class="breadcrumb" aria-label="当前位置"></nav>
+
+        <header class="page-header">
+          <div>
+            <p id="pageEyebrow" class="eyebrow">Paper Insight</p>
+            <h2 id="pageTitle">推荐列表</h2>
+            <p id="pageDescription">从左侧生成一次推荐后，结果会保存到这里。点击任意列表查看推荐论文、隐藏论文和全部分析。</p>
+          </div>
+          <div class="page-actions">
+            <button id="backToReports" class="secondary-action" type="button">返回列表</button>
+          </div>
+        </header>
+
+        <section class="status-panel visible warning" id="statusPanel">
+          <div class="spinner" aria-hidden="true"></div>
+          <p>请输入 DeepSeek API Key，然后点击左侧“生成推荐列表”。</p>
+          <button id="retryButton" class="ghost-button status-action" type="button" hidden>重试分析</button>
+        </section>
+
+        <section id="homeView" class="content-view active">
+          <div id="reportHomeList" class="report-home-list"></div>
+        </section>
+
+        <section id="reportView" class="content-view">
+          <section class="insight-strip" aria-label="推荐概览">
+            <article>
+              <span id="candidateCount">0</span>
+              <p>候选论文</p>
+            </article>
+            <article>
+              <span id="recommendedCount">0</span>
+              <p>推荐论文</p>
+            </article>
+            <article>
+              <span id="hiddenCount">0</span>
+              <p>隐藏论文</p>
+            </article>
+            <article>
+              <span id="analysisMode">-</span>
+              <p>分析模式</p>
+            </article>
+          </section>
+
+          <div class="report-toolbar">
+            <div class="paper-view-tabs" aria-label="论文视图">
+              <button class="paper-view-tab active" data-paper-view="recommended" type="button">推荐论文</button>
+              <button class="paper-view-tab" data-paper-view="hidden" type="button">隐藏论文</button>
+              <button class="paper-view-tab" data-paper-view="all" type="button">全部分析</button>
+            </div>
+            <div class="view-tools" role="group" aria-label="排序方式">
+              <button class="tool-button active" data-sort="score" type="button">按分数</button>
+              <button class="tool-button" data-sort="latest" type="button">按时间</button>
+            </div>
+          </div>
+
+          <section id="paperList" class="paper-list" aria-live="polite"></section>
+        </section>
+
+        <section id="paperView" class="content-view">
+          <article id="analysisDetail" class="analysis-detail"></article>
+        </section>
+      </main>
+    </div>
+
+    <template id="paperTemplate">
+      <article class="paper-card">
+        <div class="paper-card-header">
+          <div class="paper-meta">
+            <span class="score-pill"></span>
+            <span class="date-pill"></span>
+            <span class="category-pill"></span>
+          </div>
+        </div>
+
+        <h3></h3>
+        <p class="authors"></p>
+        <p class="tldr"></p>
+
+        <div class="score-grid"></div>
+        <div class="keyword-line"></div>
+
+        <details class="details-panel">
+          <summary>阅读建议和摘要</summary>
+          <section class="reading-section">
+            <h4>阅读建议</h4>
+            <ul class="reading-guide"></ul>
+          </section>
+          <section class="abstract-section">
+            <div class="abstract-heading">
+              <h4>摘要</h4>
+              <button class="translate-button" type="button">翻译摘要</button>
+            </div>
+            <p class="abstract"></p>
+            <p class="translation" hidden></p>
+          </section>
+        </details>
+
+        <div class="paper-actions">
+          <button class="detail-button" type="button">查看论文分析</button>
+          <a class="paper-link abs-link" target="_blank" rel="noreferrer">打开论文页面</a>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
