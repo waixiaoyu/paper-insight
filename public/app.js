@@ -1470,6 +1470,21 @@ function formatDateTime(value) {
   return Number.isNaN(date.getTime()) ? "未知时间" : dateTimeFormatter.format(date);
 }
 
+function paperDateRange(papers) {
+  const dates = (Array.isArray(papers) ? papers : [])
+    .map((paper) => new Date(paper?.published || paper?.updated))
+    .filter((date) => !Number.isNaN(date.getTime()))
+    .sort((a, b) => a - b);
+
+  if (!dates.length) {
+    return "未知";
+  }
+
+  const start = formatDate(dates[0]);
+  const end = formatDate(dates[dates.length - 1]);
+  return start === end ? start : `${start} 至 ${end}`;
+}
+
 function analysisText(paper, field, fallback = "DeepSeek 未返回该部分内容。") {
   const value = paper?.analysis?.[field];
 
@@ -1607,13 +1622,14 @@ function openReport(report, options = {}) {
 
   setActiveView("report");
   const counts = splitReport(report);
-  const created = report.createdAt ? `${formatDateTime(report.createdAt)} 生成，` : "";
   const candidateTotal = report.candidateCount ?? counts.all.length;
+  const rangePapers = counts.recommended.length ? counts.recommended : counts.all;
+  const rangeLabel = counts.recommended.length ? "推荐论文时间范围" : "候选论文时间范围";
 
   setHeader({
     eyebrow: "推荐报告",
     title: reportDisplayTitle(report),
-    description: `${created}${candidateTotal} 篇候选，推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`,
+    description: `${rangeLabel}：${paperDateRange(rangePapers)}。候选 ${candidateTotal} 篇，推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`,
     showBack: true
   });
   renderBreadcrumb([
