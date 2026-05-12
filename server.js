@@ -785,7 +785,8 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
           role: "system",
           content: [
             "你是网络通信和 AI 论文推荐助手。",
-            "只根据给定的 arXiv 题目、摘要、作者、类别和日期分析，不要编造全文中不存在的信息。",
+            "请优先使用给定的论文标题、作者、arXiv/DOI/论文链接在网上搜索论文页面、PDF、出版页、代码页或项目页，并基于可核对到的论文原文和公开页面做详细分析。",
+            "如果当前 API 环境无法联网检索、无法打开链接或无法读取论文原文，必须在 limitations 和 whyRecommend 中明确说明检索限制，只能基于输入的摘要和元数据分析，不要假装读过全文。",
             "请用中文输出，给每篇论文计算 0 到 100 的推荐分，并按指定维度给出分项分。",
             "只返回 JSON，不要输出 Markdown。"
           ].join("\n")
@@ -794,6 +795,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
           role: "user",
           content: JSON.stringify({
             query,
+            onlineSearchInstruction: "对每篇论文先用 title、authors、absLink、link 检索并核对公开论文信息。优先阅读 arXiv PDF/HTML、DOI 出版页、Semantic Scholar/OpenAlex 页面、作者项目页或代码仓库；无法访问时必须如实说明。",
             dimensions,
             outputSchema: {
               recommendations: [
@@ -829,7 +831,11 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
               title: paper.title,
               authors: paper.authors,
               categories: paper.categories,
+              primaryCategory: paper.primaryCategory,
               published: paper.published,
+              updated: paper.updated,
+              absLink: paper.absLink,
+              link: paper.link,
               summary: paper.summary
             }))
           })

@@ -9,7 +9,14 @@
   <body>
     <dialog id="apiDialog" class="api-dialog">
       <form id="apiForm" method="dialog">
-        <h2>DeepSeek API Key</h2>
+        <div class="api-dialog-header">
+          <div>
+            <p class="eyebrow">DeepSeek</p>
+            <h2>API 设置</h2>
+          </div>
+          <button id="apiClose" class="ghost-button" type="button">关闭</button>
+        </div>
+        <p id="apiStatus" class="api-status">未设置 API Key</p>
         <label class="field">
           <span>API Key</span>
           <input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-...">
@@ -21,7 +28,10 @@
             <option value="deepseek-v4-pro">deepseek-v4-pro</option>
           </select>
         </label>
-        <button class="primary-action" value="save" type="submit">使用 DeepSeek</button>
+        <div class="api-dialog-actions">
+          <button id="clearApiKey" class="ghost-button" type="button">清除 Key</button>
+          <button class="primary-action" value="save" type="submit">保存设置</button>
+        </div>
       </form>
     </dialog>
 
@@ -133,24 +143,16 @@
 
     <div class="app-shell">
       <aside class="sidebar" aria-label="推荐设置">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">PI</span>
-          <div>
-            <p class="eyebrow">Paper Insight</p>
-            <h1>每周论文推荐</h1>
+        <div class="brand-row">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">PI</span>
+            <div>
+              <p class="eyebrow">Paper Insight</p>
+              <h1>每周论文推荐</h1>
+            </div>
           </div>
+          <button id="openApiDialog" class="icon-button settings-button" type="button" aria-label="DeepSeek 设置" title="DeepSeek 设置">⚙</button>
         </div>
-
-        <section class="api-control" aria-label="DeepSeek 设置">
-          <div>
-            <p class="eyebrow">DeepSeek</p>
-            <h2 id="apiStatus">未设置 API Key</h2>
-          </div>
-          <div class="api-actions">
-            <button id="openApiDialog" class="secondary-action" type="button">设置 / 更新 API Key</button>
-            <button id="clearApiKey" class="ghost-button" type="button">清除</button>
-          </div>
-        </section>
 
         <form id="filters" class="filter-panel">
           <section class="query-control" aria-label="论文搜索条件">

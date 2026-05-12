@@ -119,6 +119,7 @@ const elements = {
   apiKeyInput: $("#apiKeyInput"),
   apiModel: $("#apiModel"),
   apiStatus: $("#apiStatus"),
+  apiClose: $("#apiClose"),
   openApiDialog: $("#openApiDialog"),
   clearApiKey: $("#clearApiKey"),
   filters: $("#filters"),
@@ -1921,6 +1922,10 @@ elements.openApiDialog.addEventListener("click", () => {
   if (typeof elements.apiDialog.showModal === "function") {
     elements.apiDialog.showModal();
   }
+});
+
+elements.apiClose.addEventListener("click", () => {
+  elements.apiDialog.close();
 });
 
 elements.clearApiKey.addEventListener("click", () => {
