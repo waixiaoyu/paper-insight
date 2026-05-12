@@ -184,7 +184,10 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   day: "numeric"
 });
 
-const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
+const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
   hour: "2-digit",
   minute: "2-digit"
 });
@@ -517,6 +520,14 @@ function reportPapers(report = state.currentReport) {
   ];
 }
 
+function reportDisplayTitle(report) {
+  if (report?.createdAt) {
+    return `${formatDateTime(report.createdAt)} 推荐列表`;
+  }
+
+  return report?.title || "未命名推荐列表";
+}
+
 function normalizePaperKey(value) {
   return String(value || "")
     .toLowerCase()
@@ -573,7 +584,7 @@ function mergeHistoricalAnalysis(candidate, historical) {
     ...candidate,
     analysis: historical.paper.analysis,
     reusedAnalysis: {
-      reportTitle: historical.report?.title || "历史推荐列表",
+      reportTitle: reportDisplayTitle(historical.report),
       createdAt: historical.report?.createdAt || ""
     }
   };
@@ -689,7 +700,7 @@ function weekStart(date = new Date()) {
 }
 
 function reportTitle() {
-  return `${dateFormatter.format(weekStart())} 周推荐 · ${timeFormatter.format(new Date())}`;
+  return `${dateTimeFormatter.format(new Date())} 推荐列表`;
 }
 
 function setActiveView(name) {
@@ -1018,10 +1029,10 @@ function renderReportHome() {
     item.type = "button";
 
     const title = document.createElement("strong");
-    title.textContent = report.title || "未命名推荐列表";
+    title.textContent = reportDisplayTitle(report);
 
     const meta = document.createElement("span");
-    const created = report.createdAt ? `${dateFormatter.format(new Date(report.createdAt))} · ` : "";
+    const created = report.createdAt ? `${formatDateTime(report.createdAt)} 生成 · ` : "";
     meta.textContent = `${created}${counts.recommended.length} 篇推荐 · ${counts.hidden.length} 篇隐藏 · 阈值 ${thresholdFor(report)} · ${modeLabel(report.mode)}`;
 
     item.append(title, meta);
@@ -1122,7 +1133,7 @@ function showCandidateConfirmation(papers) {
     const meta = document.createElement("div");
     meta.className = "candidate-meta";
     const reused = paper.reusedAnalysis
-      ? ` · 已有分析：${paper.reusedAnalysis.reportTitle}${paper.reusedAnalysis.createdAt ? `（${formatDate(paper.reusedAnalysis.createdAt)}）` : ""}`
+      ? ` · 已有分析：${paper.reusedAnalysis.reportTitle}${paper.reusedAnalysis.createdAt ? `（${formatDateTime(paper.reusedAnalysis.createdAt)}）` : ""}`
       : "";
     meta.textContent = `${formatDate(paper.published)} · ${paper.primaryCategory} · ${paper.authors.slice(0, 4).join(", ") || "Unknown authors"}${reused}`;
 
@@ -1454,6 +1465,11 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? "未知日期" : dateFormatter.format(date);
 }
 
+function formatDateTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "未知时间" : dateTimeFormatter.format(date);
+}
+
 function analysisText(paper, field, fallback = "DeepSeek 未返回该部分内容。") {
   const value = paper?.analysis?.[field];
 
@@ -1591,18 +1607,18 @@ function openReport(report, options = {}) {
 
   setActiveView("report");
   const counts = splitReport(report);
-  const created = report.createdAt ? `${formatDate(report.createdAt)} 生成，` : "";
+  const created = report.createdAt ? `${formatDateTime(report.createdAt)} 生成，` : "";
   const candidateTotal = report.candidateCount ?? counts.all.length;
 
   setHeader({
     eyebrow: "推荐报告",
-    title: report.title || "未命名推荐列表",
+    title: reportDisplayTitle(report),
     description: `${created}${candidateTotal} 篇候选，推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`,
     showBack: true
   });
   renderBreadcrumb([
     { label: "推荐列表", onClick: () => showHome() },
-    { label: report.title || "推荐报告" }
+    { label: reportDisplayTitle(report) }
   ]);
   setMetricsForReport(report);
   renderPaperCards();
@@ -1643,7 +1659,7 @@ function openPaper(paper) {
   });
   renderBreadcrumb([
     { label: "推荐列表", onClick: () => showHome() },
-    { label: state.currentReport?.title || "推荐报告", onClick: () => openReport(state.currentReport, { keepPaperView: true }) },
+    { label: state.currentReport ? reportDisplayTitle(state.currentReport) : "推荐报告", onClick: () => openReport(state.currentReport, { keepPaperView: true }) },
     { label: paper.title || "论文详情" }
   ]);
   hideStatus();

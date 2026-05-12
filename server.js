@@ -573,27 +573,7 @@ const fetchFallbackPapers = async ({ rawQuery, days, maxResults, signal, request
   const errors = [];
   const sourceReturns = [];
 
-  setPaperRequestStatus(requestId, "openalex", "arXiv 暂时不可用，正在切换 OpenAlex 获取候选论文。");
-
-  try {
-    const papers = await fetchOpenAlexPapers({ rawQuery, days, maxResults, signal });
-
-    if (papers.length) {
-      return {
-        source: "openalex",
-        xml: atomFeedFromPapers({ papers, query: rawQuery, source: "OpenAlex" }),
-        count: papers.length
-      };
-    }
-
-    errors.push("OpenAlex 没有返回可用候选论文");
-  } catch (error) {
-    errors.push(error.detail || error.message);
-    sourceReturns.push(...(Array.isArray(error.sourceReturns) ? error.sourceReturns : []));
-    setPaperRequestStatus(requestId, "openalex", error.detail || error.message, "running", { sourceReturns });
-  }
-
-  setPaperRequestStatus(requestId, "semantic-scholar", "OpenAlex 没有可用结果，正在切换 Semantic Scholar。");
+  setPaperRequestStatus(requestId, "semantic-scholar", "arXiv 暂时不可用，正在切换 Semantic Scholar 获取候选论文。");
 
   try {
     const papers = await fetchSemanticScholarPapers({ rawQuery, days, maxResults, signal });
@@ -610,12 +590,44 @@ const fetchFallbackPapers = async ({ rawQuery, days, maxResults, signal, request
   } catch (error) {
     errors.push(error.detail || error.message);
     sourceReturns.push(...(Array.isArray(error.sourceReturns) ? error.sourceReturns : []));
+    setPaperRequestStatus(requestId, "semantic-scholar", error.detail || error.message, "running", { sourceReturns });
   }
 
-  const error = new Error("arXiv、OpenAlex 和 Semantic Scholar 都没有返回可用候选论文。");
+  setPaperRequestStatus(requestId, "openalex", "Semantic Scholar 没有可用结果，正在切换 OpenAlex。");
+
+  try {
+    const papers = await fetchOpenAlexPapers({ rawQuery, days, maxResults, signal });
+
+    if (papers.length) {
+      return {
+        source: "openalex",
+        xml: atomFeedFromPapers({ papers, query: rawQuery, source: "OpenAlex" }),
+        count: papers.length
+      };
+    }
+
+    errors.push("OpenAlex 没有返回可用候选论文");
+  } catch (error) {
+    errors.push(error.detail || error.message);
+    sourceReturns.push(...(Array.isArray(error.sourceReturns) ? error.sourceReturns : []));
+  }
+
+  const error = new Error("arXiv、Semantic Scholar 和 OpenAlex 都没有返回可用候选论文。");
   error.detail = errors.join("；");
   error.sourceReturns = sourceReturns;
   throw error;
+};
+
+const fallbackSourceName = (source) => {
+  if (source === "semantic-scholar") {
+    return "Semantic Scholar";
+  }
+
+  if (source === "openalex") {
+    return "OpenAlex";
+  }
+
+  return source || "备用数据源";
 };
 
 const tokenizeQuery = (query) => query.match(/"[^"]+"|\(|\)|\bANDNOT\b|\bAND\b|\bOR\b|[^\s()]+/gi) || [];
@@ -964,6 +976,8 @@ const handlePapersRequest = async (request, response) => {
   const cacheKey = arxivCacheKey(arxivUrl);
   const cached = await readArxivCache(cacheKey);
   const cachedAge = cached ? Date.now() - Number(cached.fetchedAt) : Infinity;
+  const cachedSource = cached?.source || "arxiv";
+  const canUseCached = cached && cachedSource !== "openalex";
 
   const sendPapersXml = (xml, cacheStatus, source = "arxiv", extraHeaders = {}) => {
     send(response, 200, xml, {
@@ -977,9 +991,9 @@ const handlePapersRequest = async (request, response) => {
     });
   };
 
-  if (cached && cachedAge < arxivFreshCacheMs) {
-    setPaperRequestStatus(requestId, cached.source || "cache", "已命中本地缓存。", "done");
-    sendPapersXml(cached.xml, "hit", cached.source || "arxiv");
+  if (canUseCached && cachedAge < arxivFreshCacheMs) {
+    setPaperRequestStatus(requestId, cachedSource || "cache", "已命中本地缓存。", "done");
+    sendPapersXml(cached.xml, "hit", cachedSource);
     return;
   }
 
@@ -1003,12 +1017,12 @@ const handlePapersRequest = async (request, response) => {
     const now = Date.now();
 
     if (arxivBlockedUntil > now) {
-      if (cached && cachedAge < arxivStaleCacheMs) {
-        setPaperRequestStatus(requestId, cached.source || "cache", "arXiv 正在限流，已使用本地缓存。", "done");
+      if (canUseCached && cachedAge < arxivStaleCacheMs) {
+        setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv 正在限流，已使用本地缓存。", "done");
         return {
           xml: cached.xml,
           cacheStatus: "stale",
-          source: cached.source || "arxiv",
+          source: cachedSource,
           headers: {
             "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 正在限流，已使用本地缓存。"),
             "retry-after": String(Math.ceil((arxivBlockedUntil - now) / 1000))
@@ -1023,13 +1037,14 @@ const handlePapersRequest = async (request, response) => {
         source: fallback.source,
         xml: fallback.xml
       });
-      setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallback.source === "openalex" ? "OpenAlex" : "Semantic Scholar"} 获取 ${fallback.count} 篇候选论文。`, "done");
+      setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallbackSourceName(fallback.source)} 获取 ${fallback.count} 篇候选论文。`, "done");
       return {
         xml: fallback.xml,
         cacheStatus: "fallback",
         source: fallback.source,
         headers: {
-          "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 正在限流，已使用备用数据源。")
+          "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 正在限流，已使用备用数据源。"),
+          "x-paper-insight-cache-age-seconds": "0"
         }
       };
     }
@@ -1046,12 +1061,12 @@ const handlePapersRequest = async (request, response) => {
         const retryMs = parseRetryAfter(arxivReturn.retryAfter) || arxivCooldownMs;
         arxivBlockedUntil = Date.now() + retryMs;
 
-        if (cached && cachedAge < arxivStaleCacheMs) {
-          setPaperRequestStatus(requestId, cached.source || "cache", "arXiv 返回 429，已使用本地缓存。", "done", { sourceReturns: [arxivReturn] });
+        if (canUseCached && cachedAge < arxivStaleCacheMs) {
+          setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv 返回 429，已使用本地缓存。", "done", { sourceReturns: [arxivReturn] });
           return {
             xml: cached.xml,
             cacheStatus: "stale",
-            source: cached.source || "arxiv",
+            source: cachedSource,
             headers: {
               "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 返回 429，已使用本地缓存。"),
               "x-paper-insight-source-return": responseReturnHeader(arxivReturn),
@@ -1076,7 +1091,7 @@ const handlePapersRequest = async (request, response) => {
           source: fallback.source,
           xml: fallback.xml
         });
-        setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallback.source === "openalex" ? "OpenAlex" : "Semantic Scholar"} 获取 ${fallback.count} 篇候选论文。`, "done");
+        setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallbackSourceName(fallback.source)} 获取 ${fallback.count} 篇候选论文。`, "done");
         return {
           xml: fallback.xml,
           cacheStatus: "fallback",
@@ -1084,6 +1099,7 @@ const handlePapersRequest = async (request, response) => {
           headers: {
             "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 返回 429，已使用备用数据源。"),
             "x-paper-insight-source-return": responseReturnHeader(arxivReturn),
+            "x-paper-insight-cache-age-seconds": "0",
             "retry-after": String(Math.ceil(retryMs / 1000))
           }
         };
@@ -1107,12 +1123,12 @@ const handlePapersRequest = async (request, response) => {
       const sourceReturns = Array.isArray(error.sourceReturns) ? [...error.sourceReturns] : [];
       const sourceReturn = sourceReturns[0];
 
-      if (cached && cachedAge < arxivStaleCacheMs) {
-        setPaperRequestStatus(requestId, cached.source || "cache", "arXiv 暂时不可用，已使用本地缓存。", "done", { sourceReturns });
+      if (canUseCached && cachedAge < arxivStaleCacheMs) {
+        setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv 暂时不可用，已使用本地缓存。", "done", { sourceReturns });
         return {
           xml: cached.xml,
           cacheStatus: "stale",
-          source: cached.source || "arxiv",
+          source: cachedSource,
           headers: {
             "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 暂时不可用，已使用本地缓存。"),
             ...(sourceReturn ? { "x-paper-insight-source-return": responseReturnHeader(sourceReturn) } : {})
@@ -1128,13 +1144,14 @@ const handlePapersRequest = async (request, response) => {
           source: fallback.source,
           xml: fallback.xml
         });
-        setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallback.source === "openalex" ? "OpenAlex" : "Semantic Scholar"} 获取 ${fallback.count} 篇候选论文。`, "done");
+        setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallbackSourceName(fallback.source)} 获取 ${fallback.count} 篇候选论文。`, "done");
         return {
           xml: fallback.xml,
           cacheStatus: "fallback",
           source: fallback.source,
           headers: {
             "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 暂时不可用，已使用备用数据源。"),
+            "x-paper-insight-cache-age-seconds": "0",
             ...(sourceReturn ? { "x-paper-insight-source-return": responseReturnHeader(sourceReturn) } : {})
           }
         };
