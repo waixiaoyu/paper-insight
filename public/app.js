@@ -888,6 +888,15 @@ function sourceLabel(source) {
   return labels[source] || source || "候选数据源";
 }
 
+function paperCategoryLabel(paper) {
+  const sourceNames = new Set(["OpenAlex", "Semantic Scholar"]);
+  const categories = Array.isArray(paper?.categories) ? paper.categories : [];
+  const candidate = [paper?.primaryCategory, ...categories]
+    .find((value) => value && !sourceNames.has(value));
+
+  return candidate || "Paper";
+}
+
 function sourceReturnSummary(value) {
   if (!value) {
     return "";
@@ -1136,7 +1145,7 @@ function showCandidateConfirmation(papers) {
     const reused = paper.reusedAnalysis
       ? ` · 已有分析：${paper.reusedAnalysis.reportTitle}${paper.reusedAnalysis.createdAt ? `（${formatDateTime(paper.reusedAnalysis.createdAt)}）` : ""}`
       : "";
-    meta.textContent = `${formatDate(paper.published)} · ${paper.primaryCategory} · ${paper.authors.slice(0, 4).join(", ") || "Unknown authors"}${reused}`;
+    meta.textContent = `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · ${paper.authors.slice(0, 4).join(", ") || "Unknown authors"}${reused}`;
 
     const summary = document.createElement("div");
     summary.className = "candidate-summary";
@@ -1568,7 +1577,7 @@ function renderPaperCards() {
     card.classList.toggle("hidden-paper", !recommended);
     setScorePill(fragment.querySelector(".score-pill"), paper);
     fragment.querySelector(".date-pill").textContent = formatDate(paper.published);
-    fragment.querySelector(".category-pill").textContent = paper.primaryCategory || "arXiv";
+    fragment.querySelector(".category-pill").textContent = paperCategoryLabel(paper);
     fragment.querySelector("h3").textContent = paper.title || "未命名论文";
     fragment.querySelector(".authors").textContent = paper.authors?.slice(0, 8).join(", ") || "Unknown authors";
     fragment.querySelector(".tldr").textContent = analysis.tldr || "DeepSeek 未返回一句话概要。";
@@ -1705,7 +1714,7 @@ function renderPaperDetail(paper) {
 
   const category = document.createElement("span");
   category.className = "category-pill";
-  category.textContent = paper.primaryCategory || "arXiv";
+  category.textContent = paperCategoryLabel(paper);
 
   meta.append(score, date, category);
 

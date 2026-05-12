@@ -449,8 +449,8 @@ const fetchOpenAlexPapers = async ({ rawQuery, days, maxResults, signal }) => {
         updated: work.updated_date || work.publication_date || new Date().toISOString(),
         link: pdfUrl,
         absLink,
-        primaryCategory: "OpenAlex",
-        categories: [...new Set(["OpenAlex", ...topics])].slice(0, 12)
+        primaryCategory: topics[0] || "Paper",
+        categories: [...new Set(topics.length ? topics : ["Paper"])].slice(0, 12)
       };
     })
     .filter((paper) => paper.id && paper.title && paper.summary)
@@ -479,6 +479,8 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
   const queries = fallbackSearchQueries(rawQuery);
   const dateWindows = days > 0 ? [...new Set([days, Math.max(days, 30), 0])] : [0];
   let lastError = null;
+  let rawResultCount = 0;
+  let usableResultCount = 0;
   const collected = [];
   const seen = new Set();
 
@@ -519,17 +521,20 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
       if (!response.ok) {
         const returnValue = await readResponseReturnValue("Semantic Scholar", response);
         lastError = responseSourceError("Semantic Scholar", returnValue);
+        if (response.status === 429) {
+          throw lastError;
+        }
         continue;
       }
 
       const data = await response.json();
       const results = Array.isArray(data.data) ? data.data : [];
+      rawResultCount += results.length;
       const papers = results.map((paper) => {
       const categories = [
-        "Semantic Scholar",
         ...(Array.isArray(paper.fieldsOfStudy) ? paper.fieldsOfStudy : []),
         ...(Array.isArray(paper.s2FieldsOfStudy) ? paper.s2FieldsOfStudy.map((field) => field.category).filter(Boolean) : [])
-      ];
+      ].filter(Boolean);
       const doi = paper.externalIds?.DOI;
       const arxivId = paper.externalIds?.ArXiv;
       const absLink = arxivId ? `https://arxiv.org/abs/${arxivId}` : doi ? `https://doi.org/${doi}` : paper.url;
@@ -543,12 +548,13 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
         updated: paper.publicationDate || (paper.year ? `${paper.year}-01-01` : new Date().toISOString()),
         link: paper.openAccessPdf?.url || absLink,
         absLink,
-        primaryCategory: "Semantic Scholar",
-        categories: [...new Set(categories)].slice(0, 12)
+        primaryCategory: categories[0] || "Paper",
+        categories: [...new Set(categories.length ? categories : ["Paper"])].slice(0, 12)
       };
     })
     .filter((paper) => paper.id && paper.title && paper.summary)
     .slice(0, maxResults);
+      usableResultCount += papers.length;
 
       appendUniquePapers(collected, seen, papers, maxResults);
 
@@ -564,6 +570,12 @@ const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }
 
   if (lastError) {
     throw lastError;
+  }
+
+  if (rawResultCount && !usableResultCount) {
+    const error = new Error(`Semantic Scholar 返回了 ${rawResultCount} 条结果，但没有可用摘要，已过滤为不可用候选。`);
+    error.detail = error.message;
+    throw error;
   }
 
   return [];
@@ -593,7 +605,8 @@ const fetchFallbackPapers = async ({ rawQuery, days, maxResults, signal, request
     setPaperRequestStatus(requestId, "semantic-scholar", error.detail || error.message, "running", { sourceReturns });
   }
 
-  setPaperRequestStatus(requestId, "openalex", "Semantic Scholar 没有可用结果，正在切换 OpenAlex。");
+  const semanticReason = errors.length ? errors.join("；") : "Semantic Scholar 没有可用结果";
+  setPaperRequestStatus(requestId, "openalex", `${semanticReason}，正在切换 OpenAlex。`, "running", { sourceReturns });
 
   try {
     const papers = await fetchOpenAlexPapers({ rawQuery, days, maxResults, signal });
@@ -785,7 +798,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
           role: "system",
           content: [
             "你是网络通信和 AI 论文推荐助手。",
-            "请优先使用给定的论文标题、作者、arXiv/DOI/论文链接在网上搜索论文页面、PDF、出版页、代码页或项目页，并基于可核对到的论文原文和公开页面做详细分析。",
+            "请优先使用给定的论文标题、作者、arXiv/DOI/论文链接在网上搜索论文原文页面、PDF、HTML、出版页、代码页或项目页，并基于可核对到的论文原文和公开页面做详细分析。",
             "如果当前 API 环境无法联网检索、无法打开链接或无法读取论文原文，必须在 limitations 和 whyRecommend 中明确说明检索限制，只能基于输入的摘要和元数据分析，不要假装读过全文。",
             "请用中文输出，给每篇论文计算 0 到 100 的推荐分，并按指定维度给出分项分。",
             "只返回 JSON，不要输出 Markdown。"
@@ -795,7 +808,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
           role: "user",
           content: JSON.stringify({
             query,
-            onlineSearchInstruction: "对每篇论文先用 title、authors、absLink、link 检索并核对公开论文信息。优先阅读 arXiv PDF/HTML、DOI 出版页、Semantic Scholar/OpenAlex 页面、作者项目页或代码仓库；无法访问时必须如实说明。",
+            onlineSearchInstruction: "对每篇论文先用 title、authors、absLink、link 检索并核对公开论文信息。优先阅读论文原始页面、arXiv PDF/HTML、DOI 出版页、作者项目页或代码仓库；Semantic Scholar、OpenAlex 这类元数据页只能作为辅助线索，不能替代论文原文；无法访问时必须如实说明。",
             dimensions,
             outputSchema: {
               recommendations: [
