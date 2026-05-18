@@ -99,6 +99,7 @@
         <section id="taskStatus" class="task-status">
           <div class="spinner" aria-hidden="true"></div>
           <p>等待开始。</p>
+          <button id="taskRefreshCandidates" class="ghost-button" type="button" hidden>重新获取候选</button>
           <button id="taskRetry" class="ghost-button" type="button" hidden>重试分析</button>
         </section>
 
@@ -154,6 +155,11 @@
           <button id="openApiDialog" class="icon-button settings-button" type="button" aria-label="DeepSeek 设置" title="DeepSeek 设置">⚙</button>
         </div>
 
+        <nav class="mode-switch" aria-label="工作模式">
+          <button id="openRecommendations" class="mode-button active" type="button">推荐模式</button>
+          <button id="openExplore" class="mode-button" type="button">探索模式</button>
+        </nav>
+
         <form id="filters" class="filter-panel">
           <section class="query-control" aria-label="论文搜索条件">
             <div class="query-card">
@@ -189,7 +195,7 @@
           </label>
 
           <div class="button-row">
-            <button class="primary-action" type="submit">生成推荐列表</button>
+            <button id="generateReport" class="primary-action" type="submit">生成推荐列表</button>
           </div>
         </form>
       </aside>
@@ -216,6 +222,20 @@
 
         <section id="homeView" class="content-view active">
           <div id="reportHomeList" class="report-home-list"></div>
+        </section>
+
+        <section id="exploreView" class="content-view">
+          <div class="explore-toolbar">
+            <label class="field explore-search">
+              <span>搜索论文</span>
+              <input id="exploreSearch" type="search" placeholder="标题、作者、关键词">
+            </label>
+            <div class="view-tools" role="group" aria-label="论文探索排序">
+              <button class="tool-button active" data-explore-sort="score" type="button">按分数</button>
+              <button class="tool-button" data-explore-sort="latest" type="button">按时间</button>
+            </div>
+          </div>
+          <section id="explorePaperList" class="explore-paper-list" aria-live="polite"></section>
         </section>
 
         <section id="reportView" class="content-view">

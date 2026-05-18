@@ -9,6 +9,7 @@ const publicDir = join(__dirname, "public");
 const publicRoot = publicDir.endsWith(sep) ? publicDir : `${publicDir}${sep}`;
 const port = Number(process.env.PORT || 3000);
 const arxivCacheDir = join(__dirname, ".cache", "arxiv");
+const arxivCooldownPath = join(__dirname, ".cache", "arxiv-cooldown.json");
 const arxivMinIntervalMs = Number(process.env.ARXIV_MIN_INTERVAL_MS || 3500);
 const arxivFreshCacheMs = Number(process.env.ARXIV_CACHE_TTL_MS || 30 * 60 * 1000);
 const arxivStaleCacheMs = Number(process.env.ARXIV_STALE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
@@ -19,6 +20,7 @@ const paperRequestStatuses = new Map();
 let arxivQueue = Promise.resolve();
 let arxivLastRequestAt = 0;
 let arxivBlockedUntil = 0;
+let arxivCooldownLoaded = false;
 
 const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
@@ -27,12 +29,30 @@ const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 "multi-agent" OR "AI agent" OR "autonomous agent" OR "agent-based system")`;
 
 const dimensions = [
-  { key: "domainFit", label: "网络相关", weight: 0.22 },
-  { key: "aiFit", label: "AI相关", weight: 0.2 },
-  { key: "taskFit", label: "场景相关", weight: 0.23 },
-  { key: "novelty", label: "新颖性信号", weight: 0.12 },
-  { key: "practicalValue", label: "工程价值", weight: 0.15 },
-  { key: "evidence", label: "证据强度", weight: 0.08 }
+  {
+    key: "scenarioProblemValue",
+    label: "场景问题价值",
+    weight: 0.35,
+    description: "是否命中关键应用场景，问题是否真实、重要、有业务价值。"
+  },
+  {
+    key: "methodNovelty",
+    label: "方法新意",
+    weight: 0.25,
+    description: "方法、架构或建模方式是否有新东西，而不是简单套模型。"
+  },
+  {
+    key: "practicalValue",
+    label: "工程落地价值",
+    weight: 0.25,
+    description: "是否可能用于网络运营、优化、自动化、RCA、Agent 等实际系统。"
+  },
+  {
+    key: "evidence",
+    label: "证据强度",
+    weight: 0.15,
+    description: "实验、数据、基线、指标、消融和可复现线索是否扎实。"
+  }
 ];
 
 const mimeTypes = {
@@ -138,6 +158,20 @@ const formatArxivDate = (date) => {
   ].join("");
 };
 
+const arxivSubmittedDateWindow = (days) => {
+  const end = new Date();
+  end.setUTCHours(23, 59, 0, 0);
+
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - days);
+  start.setUTCHours(0, 0, 0, 0);
+
+  return {
+    start,
+    end
+  };
+};
+
 const arxivCacheKey = (url) => createHash("sha256").update(url.toString()).digest("hex");
 
 const arxivCachePath = (key) => join(arxivCacheDir, `${key}.json`);
@@ -210,6 +244,42 @@ const writeArxivCache = async (key, entry) => {
 };
 
 const arxivCacheAgeSeconds = (entry) => Math.max(0, Math.round((Date.now() - Number(entry.fetchedAt)) / 1000));
+
+const readArxivCooldown = async () => {
+  if (arxivCooldownLoaded) {
+    return arxivBlockedUntil;
+  }
+
+  arxivCooldownLoaded = true;
+
+  try {
+    const entry = JSON.parse(await readFile(arxivCooldownPath, "utf8"));
+    const blockedUntil = Number(entry.blockedUntil);
+
+    if (Number.isFinite(blockedUntil) && blockedUntil > Date.now()) {
+      arxivBlockedUntil = Math.max(arxivBlockedUntil, blockedUntil);
+    }
+  } catch {
+    // Missing cooldown file just means arXiv has not rate-limited this app recently.
+  }
+
+  return arxivBlockedUntil;
+};
+
+const writeArxivCooldown = async (blockedUntil, returnValue) => {
+  arxivBlockedUntil = Math.max(arxivBlockedUntil, blockedUntil);
+
+  try {
+    await mkdir(join(__dirname, ".cache"), { recursive: true });
+    await writeFile(arxivCooldownPath, JSON.stringify({
+      blockedUntil: arxivBlockedUntil,
+      updatedAt: Date.now(),
+      returnValue
+    }), "utf8");
+  } catch (error) {
+    console.warn(`Could not write arXiv cooldown: ${error.message}`);
+  }
+};
 
 const setPaperRequestStatus = (requestId, source, message, state = "running", extra = {}) => {
   if (!requestId) {
@@ -816,10 +886,8 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
                   id: "paper id",
                   score: "0-100 integer",
                   scores: {
-                    domainFit: "0-100",
-                    aiFit: "0-100",
-                    taskFit: "0-100",
-                    novelty: "0-100",
+                    scenarioProblemValue: "0-100",
+                    methodNovelty: "0-100",
                     practicalValue: "0-100",
                     evidence: "0-100"
                   },
@@ -978,11 +1046,11 @@ const handlePapersRequest = async (request, response) => {
   const rawQuery = (url.searchParams.get("query") || defaultQuery).trim();
   const days = Math.min(Math.max(Number(url.searchParams.get("days") || 0), 0), 365);
   const requestId = String(url.searchParams.get("requestId") || "");
+  const forceRefresh = /^(1|true|yes)$/i.test(String(url.searchParams.get("refresh") || ""));
   let searchQuery = normalizeQueryForArxiv(rawQuery);
 
   if (days > 0 && !/submittedDate:/i.test(searchQuery)) {
-    const end = new Date();
-    const startDate = new Date(end.getTime() - days * 86400000);
+    const { start: startDate, end } = arxivSubmittedDateWindow(days);
     searchQuery = `(${searchQuery}) AND submittedDate:[${formatArxivDate(startDate)} TO ${formatArxivDate(end)}]`;
   }
 
@@ -996,7 +1064,8 @@ const handlePapersRequest = async (request, response) => {
   const cached = await readArxivCache(cacheKey);
   const cachedAge = cached ? Date.now() - Number(cached.fetchedAt) : Infinity;
   const cachedSource = cached?.source || "arxiv";
-  const canUseCached = cached && cachedSource !== "openalex";
+  const canUseFreshCache = Boolean(cached) && !forceRefresh;
+  const canUseStaleCache = cached && cachedSource !== "openalex" && !forceRefresh;
 
   const sendPapersXml = (xml, cacheStatus, source = "arxiv", extraHeaders = {}) => {
     send(response, 200, xml, {
@@ -1006,11 +1075,12 @@ const handlePapersRequest = async (request, response) => {
       "x-paper-insight-arxiv-cache": cacheStatus,
       "x-paper-insight-source": source,
       "x-paper-insight-cache-age-seconds": cached ? String(arxivCacheAgeSeconds(cached)) : "0",
+      ...(forceRefresh ? { "x-paper-insight-cache-bypass": "1" } : {}),
       ...extraHeaders
     });
   };
 
-  if (canUseCached && cachedAge < arxivFreshCacheMs) {
+  if (canUseFreshCache && cachedAge < arxivFreshCacheMs) {
     setPaperRequestStatus(requestId, cachedSource || "cache", "已命中本地缓存。", "done");
     sendPapersXml(cached.xml, "hit", cachedSource);
     return;
@@ -1033,10 +1103,11 @@ const handlePapersRequest = async (request, response) => {
   }
 
   const fetchAndCache = (async () => {
+    const blockedUntil = await readArxivCooldown();
     const now = Date.now();
 
-    if (arxivBlockedUntil > now) {
-      if (canUseCached && cachedAge < arxivStaleCacheMs) {
+    if (blockedUntil > now) {
+      if (canUseStaleCache && cachedAge < arxivStaleCacheMs) {
         setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv 正在限流，已使用本地缓存。", "done");
         return {
           xml: cached.xml,
@@ -1044,7 +1115,7 @@ const handlePapersRequest = async (request, response) => {
           source: cachedSource,
           headers: {
             "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 正在限流，已使用本地缓存。"),
-            "retry-after": String(Math.ceil((arxivBlockedUntil - now) / 1000))
+            "retry-after": String(Math.ceil((blockedUntil - now) / 1000))
           }
         };
       }
@@ -1078,9 +1149,9 @@ const handlePapersRequest = async (request, response) => {
       if (arxivResponse.status === 429) {
         const arxivReturn = await readResponseReturnValue("arXiv", arxivResponse);
         const retryMs = parseRetryAfter(arxivReturn.retryAfter) || arxivCooldownMs;
-        arxivBlockedUntil = Date.now() + retryMs;
+        await writeArxivCooldown(Date.now() + retryMs, arxivReturn);
 
-        if (canUseCached && cachedAge < arxivStaleCacheMs) {
+        if (canUseStaleCache && cachedAge < arxivStaleCacheMs) {
           setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv 返回 429，已使用本地缓存。", "done", { sourceReturns: [arxivReturn] });
           return {
             xml: cached.xml,
@@ -1142,7 +1213,7 @@ const handlePapersRequest = async (request, response) => {
       const sourceReturns = Array.isArray(error.sourceReturns) ? [...error.sourceReturns] : [];
       const sourceReturn = sourceReturns[0];
 
-      if (canUseCached && cachedAge < arxivStaleCacheMs) {
+      if (canUseStaleCache && cachedAge < arxivStaleCacheMs) {
         setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv 暂时不可用，已使用本地缓存。", "done", { sourceReturns });
         return {
           xml: cached.xml,
