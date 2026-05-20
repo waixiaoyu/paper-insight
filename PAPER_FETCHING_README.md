@@ -1,0 +1,261 @@
+# 论文获取逻辑说明
+
+这份文档只说明 Paper Insight 当前版本的论文获取、同步、候选筛选和分析输入逻辑。它用于以后排查“为什么只返回几篇”“为什么重复”“为什么 arXiv 429”“DeepSeek 到底分析了什么”等问题。
+
+## 当前结论
+
+- 当前只使用 arXiv 作为论文来源。
+- 默认不直接调用 arXiv API，而是先同步 arXiv RSS 到本地论文库，再从本地库里筛选候选论文。
+- 生成推荐列表时，默认候选数量是 10，但这是上限，不保证一定有 10 篇。
+- 如果本地库在当前时间范围和查询条件下不足 10 篇，界面会提示用户是否手动用 arXiv API 扩展。
+- DeepSeek 当前收到的是论文元数据和摘要，不是 PDF 全文。
+- 后续如果要做“基于全文”的分析，需要服务端先抓取 arXiv HTML、PDF 或 TeX 源文件，抽取正文后再发给 DeepSeek。
+
+## 数据流
+
+```text
+arXiv RSS
+  -> 每日同步
+  -> .cache/arxiv-papers.json 本地论文库
+  -> 按时间范围和搜索条件筛选候选
+  -> 用户确认候选论文
+  -> DeepSeek 分析
+  -> 推荐列表 / 隐藏列表 / 探索页
+```
+
+当用户明确点击“用 arXiv API 扩展”时，才走下面的路径：
+
+```text
+arXiv API
+  -> 按当前查询条件直接搜索
+  -> 成功后合并进本地论文库
+  -> 用户确认候选论文
+  -> DeepSeek 分析
+```
+
+## 每日 RSS 同步
+
+同步接口是：
+
+```text
+GET  /api/arxiv-sync
+POST /api/arxiv-sync
+```
+
+默认 RSS 分类来自环境变量 `ARXIV_RSS_CATEGORIES`，如果没有配置，使用：
+
+```text
+cs.NI, cs.AI, cs.LG, cs.MA, cs.DC, cs.IT, eess.SP, eess.SY
+```
+
+这些分类覆盖网络、AI、机器学习、多智能体、分布式系统、信息论、信号处理和系统控制等方向。因为分类比较宽，一次 RSS 同步可能拿到几百篇到上千篇论文。这个数量不是推荐结果数量，只是本地候选库的原始池子。
+
+默认同步周期是 20 小时：
+
+```text
+ARXIV_DAILY_SYNC_MS = 20 * 60 * 60 * 1000
+```
+
+如果本地库在 20 小时内已经同步过，普通推荐任务不会重复同步。手动点击“同步 arXiv”会强制同步。
+
+## 本地论文库保存什么
+
+本地库文件：
+
+```text
+.cache/arxiv-papers.json
+```
+
+保存内容包括：
+
+- `version`
+- `lastSyncedAt`
+- `lastSyncCount`
+- `lastSyncAdded`
+- `categories`
+- `papers`
+
+每篇论文保存：
+
+- arXiv ID
+- 标题
+- 作者
+- 摘要
+- 发布时间和更新时间
+- arXiv abs 链接
+- 主分类和分类列表
+- 本地入库时间
+
+当前不保存：
+
+- PDF 文件
+- HTML 全文
+- TeX 源文件
+- 论文正文抽取结果
+- DeepSeek API Key
+
+当前一次观测中，本地库约 862 篇论文，`.cache/arxiv-papers.json` 约 1.7 MB，平均每篇约 2 KB。因为不保存 PDF 和全文，空间占用主要来自摘要文本。按每天几百到上千篇估算，长期运行一年通常是数百 MB 级别，而不是 GB 级 PDF 存储。
+
+## 候选论文如何筛选
+
+生成推荐列表时，前端请求：
+
+```text
+GET /api/papers
+```
+
+默认流程：
+
+1. 检查本地 arXiv 库是否需要同步。
+2. 从 `.cache/arxiv-papers.json` 读取论文。
+3. 按用户选择的时间范围过滤，例如最近 7 天。
+4. 按当前搜索条件过滤。
+5. 去重。
+6. 按发布时间倒序排序。
+7. 最多返回用户设置的候选数量，默认 10 篇。
+
+所以“只返回 5 篇”不一定是错误。它可能表示：在当前本地库、当前时间范围、当前查询条件下，确实只有 5 篇匹配论文。
+
+## 搜索条件
+
+默认查询逻辑是三段式：
+
+```text
+技术方向 AND 技术方法 AND 目标应用场景
+```
+
+默认查询条件是：
+
+```text
+("network" OR "telecom" OR "5G" OR "6G") AND
+("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
+("anomaly detection" OR "traffic prediction" OR "network optimization" OR "root cause analysis" OR
+"digital twin network" OR "intent-based networking" OR "network automation" OR "orchestration" OR
+"multi-agent" OR "AI agent" OR "autonomous agent" OR "agent-based system")
+```
+
+如果某一段选择“全选”，可以理解为这段不再强约束，筛选会更宽。首页会展示当前条件，方便确认本次推荐到底用了什么查询逻辑。
+
+## 去重和历史复用
+
+本地论文库会按 arXiv ID 去重。如果拿不到可靠的 arXiv ID，会退化为标题归一化后的 key。
+
+重复论文不会作为新论文反复入库。已有论文再次同步时，会更新标题、作者、摘要、分类、日期等元数据，但保留原始入库时间。
+
+推荐任务进入 DeepSeek 分析前，也会和前端历史报告里的已分析论文对比。已经分析过的论文会复用历史分析结果，避免重复调用 DeepSeek。
+
+## 什么时候直接调用 arXiv API
+
+默认推荐任务不直接调用 `export.arxiv.org/api/query`。
+
+只有用户在流程弹窗里确认“用 arXiv API 扩展”时，才会直接访问 arXiv API。此时请求会带上：
+
+```text
+forceArxiv=1
+ignoreCooldown=1
+refresh=1
+```
+
+直接 API 查询会使用当前搜索条件、时间范围、候选数量，并按 `submittedDate` 倒序排序。成功后，返回的论文会合并进本地库，但不会把这次 API 扩展当成每日 RSS 同步。
+
+## arXiv 429 处理
+
+为了降低 429 风险，服务端做了这些限制：
+
+- arXiv 请求走队列。
+- 默认最小请求间隔是 3500 ms。
+- 同一个 API 查询会复用进行中的请求。
+- 收到 429 后会写入 `.cache/arxiv-cooldown.json`。
+- 默认 429 冷却 30 分钟，最大冷却 2 小时。
+
+用户强制扩展时可以绕过本地冷却，但这不代表 arXiv 一定接受请求。如果 arXiv 仍然返回 429，应用会把返回状态和响应信息展示给用户，不自动切换 OpenAlex 或 Semantic Scholar。
+
+## 为什么不用 OpenAlex 和 Semantic Scholar
+
+当前版本已经把 OpenAlex 和 Semantic Scholar 从主流程中移除。
+
+原因是这个应用的目标是生成“最新论文推荐列表”，而当前最稳定的来源是 arXiv。OpenAlex 和 Semantic Scholar 对最新论文的覆盖、重复、更新时间和返回稳定性都可能和 arXiv 不一致，容易让用户误以为是同一批最新候选。
+
+后续如果重新引入备用源，需要在界面上明确标注来源，并且不能混淆“arXiv 最新论文”和“外部元数据检索结果”。
+
+## DeepSeek 分析输入
+
+当前发送给 DeepSeek 的每篇论文内容包括：
+
+- `id`
+- `title`
+- `authors`
+- `categories`
+- `primaryCategory`
+- `published`
+- `updated`
+- `absLink`
+- `link`
+- `summary`
+
+也就是说，DeepSeek 当前主要基于标题、作者、分类、日期、链接和摘要做判断。提示词会要求模型在可以联网时检索原文，但当前 API 调用没有提供浏览器或搜索工具，所以不能保证 DeepSeek 真的打开了论文全文。
+
+因此当前分析结果应该理解为：
+
+```text
+基于摘要和元数据的论文推荐分析
+```
+
+而不是：
+
+```text
+基于 PDF 全文阅读的论文深度评审
+```
+
+## 摘要翻译
+
+摘要翻译也使用 DeepSeek API。输入是论文标题和原始摘要，不读取 PDF 全文。
+
+如果某篇论文没有摘要，界面不应该显示翻译摘要按钮。
+
+## 推荐列表生成过程
+
+用户点击“生成推荐列表”后，流程应该是：
+
+1. 显示流程弹窗。
+2. 同步或读取本地 arXiv 库。
+3. 展示哪些论文进入候选。
+4. 用户确认候选论文。
+5. 开始 DeepSeek 分析。
+6. 显示分析进度，包括当前论文、耗时和百分比。
+7. 分析完成后生成一个新的推荐列表。
+8. 右侧展示该推荐列表，并保留历史推荐列表入口。
+
+推荐列表只展示高于推荐阈值的论文。低于阈值的论文进入隐藏列表，但仍然可以打开查看。
+
+## 常见现象解释
+
+### 本地库为什么有 800 多篇
+
+这是 RSS 同步回来的原始论文池，不是推荐结果。默认分类比较宽，尤其包含 `cs.AI`、`cs.LG`、`eess.SP` 等大类，所以一次同步几百篇到上千篇是正常的。
+
+### 为什么默认要每天同步
+
+推荐“最新论文”时，最稳定的方式是每天把 arXiv RSS 的最新公告同步到本地。这样用户生成推荐列表时主要查本地库，不需要每次都打 arXiv API，也能减少 429。
+
+### 为什么候选少于 10 篇
+
+10 是候选上限，不是最低数量。如果当前时间窗口和搜索条件很窄，本地库里可能只有几篇匹配。此时可以放宽时间范围、放宽搜索条件，或手动用 arXiv API 扩展。
+
+### 为什么刚生成就出现重复论文
+
+如果本地库里最新匹配论文和历史报告中的论文相同，说明真实搜索结果重复。系统会复用历史分析，避免再次调用 DeepSeek。这是正常行为，不代表直接读取了上次的列表。
+
+### 为什么 arXiv API 仍然会 429
+
+RSS 同步和本地库筛选能减少直接 API 调用，但用户强制扩展时仍然会访问 arXiv API。arXiv 是否限流由对方服务决定，本地只能控制请求间隔、缓存、冷却和提示。
+
+## 后续待办
+
+- 增加 arXiv HTML 全文抓取。
+- HTML 不可用时，下载 PDF 并抽取正文。
+- 必要时下载 TeX 源文件作为补充。
+- 把全文抽取结果缓存到本地。
+- 给 DeepSeek 输入可控长度的正文片段。
+- 在分析结果中标记“摘要分析”或“全文分析”。
+- 给全文缓存增加大小上限和清理策略。

@@ -143,6 +143,9 @@ const elements = {
   thresholdInput: $("#threshold"),
   thresholdValue: $("#thresholdValue"),
   dateWindow: $("#dateWindow"),
+  syncStatus: $("#syncStatus"),
+  syncDetails: $("#syncDetails"),
+  syncArxiv: $("#syncArxiv"),
   restoreQuery: $("#restoreQuery"),
   taskDialog: $("#taskDialog"),
   taskTitle: $("#taskTitle"),
@@ -151,6 +154,7 @@ const elements = {
   taskSteps: $("#taskSteps"),
   taskStatus: $("#taskStatus"),
   taskRefreshCandidates: $("#taskRefreshCandidates"),
+  taskForceArxiv: $("#taskForceArxiv"),
   taskRetry: $("#taskRetry"),
   taskCandidatePanel: $("#taskCandidatePanel"),
   taskProgressPanel: $("#taskProgressPanel"),
@@ -897,6 +901,8 @@ function setTaskLocked(locked) {
   elements.openRecommendations.disabled = locked;
   elements.openExplore.disabled = locked;
   elements.taskRefreshCandidates.disabled = locked;
+  elements.taskForceArxiv.disabled = locked;
+  elements.syncArxiv.disabled = locked;
 }
 
 function setTaskStep(step) {
@@ -922,6 +928,7 @@ function setTaskStatus(message, type = "loading", action = "") {
   elements.taskStatus.className = `task-status visible${type === "error" ? " error" : ""}${type === "warning" ? " warning" : ""}${type === "success" ? " success" : ""}`;
   elements.taskStatus.querySelector("p").textContent = message;
   elements.taskRefreshCandidates.hidden = action !== "refresh";
+  elements.taskForceArxiv.hidden = action !== "refresh" && action !== "force-arxiv";
   elements.taskRetry.hidden = action !== "retry";
 }
 
@@ -976,6 +983,7 @@ function resetTaskModal() {
   setTaskStep("fetch");
   showTaskPanel("");
   elements.taskRefreshCandidates.hidden = true;
+  elements.taskForceArxiv.hidden = true;
   elements.taskRetry.hidden = true;
   elements.candidateList.textContent = "";
   elements.progressFill.style.width = "0%";
@@ -989,8 +997,8 @@ function resetTaskModal() {
 function sourceLabel(source) {
   const labels = {
     arxiv: "arXiv",
-    openalex: "OpenAlex",
-    "semantic-scholar": "Semantic Scholar",
+    "arxiv-rss": "arXiv RSS",
+    "arxiv-library": "本地 arXiv 库",
     cache: "本地缓存",
     none: "无可用数据源"
   };
@@ -998,8 +1006,79 @@ function sourceLabel(source) {
   return labels[source] || source || "候选数据源";
 }
 
+function selectedDateWindowLabel() {
+  return elements.dateWindow.selectedOptions?.[0]?.textContent?.trim() || "当前时间范围";
+}
+
+function renderArxivSyncStatus(data = {}) {
+  const count = Number(data.count || 0);
+  const lastSync = data.lastSyncedAt ? formatDateTime(data.lastSyncedAt) : "尚未同步";
+  elements.syncStatus.textContent = count
+    ? `${count} 篇论文，最近同步 ${lastSync}`
+    : "本地库暂无论文";
+  elements.syncDetails.textContent = Array.isArray(data.categories) && data.categories.length
+    ? `分类：${data.categories.join(", ")}`
+    : "";
+}
+
+async function refreshArxivSyncStatus({ autoSync = false } = {}) {
+  try {
+    const response = await fetch("/api/arxiv-sync");
+    const data = await response.json();
+    renderArxivSyncStatus(data);
+
+    if (autoSync && data.stale) {
+      await syncArxivLibrary({ force: false, silent: true });
+    }
+  } catch {
+    elements.syncStatus.textContent = "同步状态暂时不可用";
+    elements.syncDetails.textContent = "";
+  }
+}
+
+async function syncArxivLibrary({ force = true, silent = false } = {}) {
+  elements.syncArxiv.disabled = true;
+
+  if (!silent) {
+    elements.syncStatus.textContent = "正在同步 arXiv RSS";
+    elements.syncDetails.textContent = "";
+  }
+
+  try {
+    const params = new URLSearchParams();
+
+    if (force) {
+      params.set("force", "1");
+    }
+
+    const response = await fetch(`/api/arxiv-sync?${params.toString()}`, { method: "POST" });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || data.message || "同步失败。");
+    }
+
+    renderArxivSyncStatus(data);
+
+    if (!silent) {
+      showStatus(`arXiv 同步完成：获取 ${data.fetched || 0} 篇，新增 ${data.added || 0} 篇。`, "warning");
+    }
+
+    return data;
+  } catch (error) {
+    elements.syncStatus.textContent = "同步失败";
+    elements.syncDetails.textContent = error.message;
+    if (!silent) {
+      showStatus(`arXiv 同步失败：${error.message}`, "error");
+    }
+    return null;
+  } finally {
+    elements.syncArxiv.disabled = state.taskLocked;
+  }
+}
+
 function paperCategoryLabel(paper) {
-  const sourceNames = new Set(["OpenAlex", "Semantic Scholar"]);
+  const sourceNames = new Set(["arXiv RSS", "arXiv Library"]);
   const categories = Array.isArray(paper?.categories) ? paper.categories : [];
   const candidate = [paper?.primaryCategory, ...categories]
     .find((value) => value && !sourceNames.has(value));
@@ -1319,7 +1398,7 @@ function showCandidateConfirmation(papers) {
   updateCandidateActionState();
 }
 
-async function fetchCandidates({ forceRefresh = false } = {}) {
+async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}) {
   if (state.taskLocked) {
     return;
   }
@@ -1336,7 +1415,9 @@ async function fetchCandidates({ forceRefresh = false } = {}) {
   showTaskDialog();
   setTaskLocked(true);
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  setTaskStatus("arXiv：正在获取候选论文。");
+  const dateWindowLabel = selectedDateWindowLabel();
+  elements.taskForceArxiv.textContent = `用 arXiv API 扩展到${dateWindowLabel}`;
+  setTaskStatus(forceArxiv ? `arXiv API：正在查询${dateWindowLabel}。` : "本地 arXiv 库：正在同步最新 RSS 并筛选候选论文。");
   const query = currentSearchQuery();
   const candidateLimit = Math.max(5, Math.min(30, Number(elements.limitInput.value) || 10));
   const params = new URLSearchParams({
@@ -1347,6 +1428,12 @@ async function fetchCandidates({ forceRefresh = false } = {}) {
   });
 
   if (forceRefresh) {
+    params.set("refresh", "1");
+  }
+
+  if (forceArxiv) {
+    params.set("forceArxiv", "1");
+    params.set("ignoreCooldown", "1");
     params.set("refresh", "1");
   }
 
@@ -1370,6 +1457,7 @@ async function fetchCandidates({ forceRefresh = false } = {}) {
 
     const cacheStatus = response.headers.get("x-paper-insight-arxiv-cache") || "";
     const source = response.headers.get("x-paper-insight-source") || "arxiv";
+    const method = response.headers.get("x-paper-insight-arxiv-method") || "";
     const cacheAge = Number(response.headers.get("x-paper-insight-cache-age-seconds") || 0);
     const warning = response.headers.get("x-paper-insight-arxiv-warning");
     const sourceReturn = decodeHeaderValue(response.headers.get("x-paper-insight-source-return"));
@@ -1378,7 +1466,8 @@ async function fetchCandidates({ forceRefresh = false } = {}) {
 
     if (!papers.length) {
       setTaskLocked(false);
-      setTaskStatus("arXiv 没有返回匹配论文。可以放宽查询条件或扩大时间范围。", "warning");
+      const text = warning ? decodeURIComponent(warning) : "arXiv 没有返回匹配论文。可以放宽查询条件或扩大时间范围。";
+      setTaskStatus(text, "warning", "force-arxiv");
       return;
     }
 
@@ -1388,17 +1477,17 @@ async function fetchCandidates({ forceRefresh = false } = {}) {
       const text = warning ? decodeURIComponent(warning) : "arXiv 暂时不可用，已使用本地缓存。";
       setTaskStatus(`${sourceLabel(source)}：${text}${returnHint} 缓存约 ${minutes} 分钟前更新，请确认候选论文。`, "warning", "refresh");
     } else if (cacheStatus === "hit") {
-      setTaskStatus(`${sourceLabel(source)}：已从本地缓存读取 ${papers.length} 篇候选论文。需要新候选时可以重新获取。`, "warning", "refresh");
-    } else if (cacheStatus === "fallback") {
-      const text = warning ? decodeURIComponent(warning) : "已使用备用数据源。";
-      setTaskStatus(`${sourceLabel(source)}：${text}${returnHint} 已获取 ${papers.length} 篇候选论文，请确认。`, "warning");
+      const text = warning ? decodeURIComponent(warning) : `已从本地缓存读取 ${papers.length} 篇候选论文。需要新候选时可以重新获取。`;
+      setTaskStatus(`${sourceLabel(source)}：${text}`, "warning", "refresh");
     } else {
-      setTaskStatus(`${sourceLabel(source)}：已获取 ${papers.length} 篇候选论文，请确认要进入 AI 分析的论文。`, "warning");
+      const text = warning ? decodeURIComponent(warning) : `已获取 ${papers.length} 篇候选论文，请确认要进入 AI 分析的论文。`;
+      const action = source === "arxiv-library" && papers.length < candidateLimit ? "force-arxiv" : "";
+      setTaskStatus(`${sourceLabel(source)}：${text}`, "warning", action);
     }
   } catch (error) {
     resetSourceStatusTimer();
     setTaskLocked(false);
-    setTaskStatus(`暂时无法获取候选论文：${error.message}`, "error");
+    setTaskStatus(`暂时无法获取候选论文：${error.message}`, "error", "force-arxiv");
   }
 }
 
@@ -2186,6 +2275,18 @@ elements.taskRefreshCandidates.addEventListener("click", () => {
   fetchCandidates({ forceRefresh: true });
 });
 
+elements.syncArxiv.addEventListener("click", () => {
+  syncArxivLibrary({ force: true });
+});
+
+elements.taskForceArxiv.addEventListener("click", () => {
+  const confirmed = window.confirm(`这会直接连接 export.arxiv.org API 查询${selectedDateWindowLabel()}，可能再次返回 429。确认要继续吗？`);
+
+  if (confirmed) {
+    fetchCandidates({ forceRefresh: true, forceArxiv: true });
+  }
+});
+
 elements.taskClose.addEventListener("click", () => {
   closeTaskDialog();
 });
@@ -2288,6 +2389,7 @@ state.reports = state.reports.slice(0, 20);
 persistReports();
 updateApiStatus();
 showHome();
+refreshArxivSyncStatus({ autoSync: true });
 
 if (!state.runtimeApiKey && typeof elements.apiDialog.showModal === "function") {
   elements.apiDialog.showModal();

@@ -100,6 +100,7 @@
           <div class="spinner" aria-hidden="true"></div>
           <p>等待开始。</p>
           <button id="taskRefreshCandidates" class="ghost-button" type="button" hidden>重新获取候选</button>
+          <button id="taskForceArxiv" class="ghost-button" type="button" hidden>用 arXiv API 扩展</button>
           <button id="taskRetry" class="ghost-button" type="button" hidden>重试分析</button>
         </section>
 
@@ -193,6 +194,17 @@
               <option value="0">不限时间</option>
             </select>
           </label>
+
+          <section class="query-control" aria-label="arXiv 本地库">
+            <div class="query-card">
+              <div>
+                <span>arXiv 本地库</span>
+                <strong id="syncStatus">检查同步状态</strong>
+                <div id="syncDetails" class="query-summary-details"></div>
+              </div>
+              <button id="syncArxiv" class="secondary-action" type="button">同步 arXiv</button>
+            </div>
+          </section>
 
           <div class="button-row">
             <button id="generateReport" class="primary-action" type="submit">生成推荐列表</button>

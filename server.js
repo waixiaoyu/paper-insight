@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -10,17 +10,27 @@ const publicRoot = publicDir.endsWith(sep) ? publicDir : `${publicDir}${sep}`;
 const port = Number(process.env.PORT || 3000);
 const arxivCacheDir = join(__dirname, ".cache", "arxiv");
 const arxivCooldownPath = join(__dirname, ".cache", "arxiv-cooldown.json");
+const arxivPaperLibraryPath = join(__dirname, ".cache", "arxiv-papers.json");
 const arxivMinIntervalMs = Number(process.env.ARXIV_MIN_INTERVAL_MS || 3500);
 const arxivFreshCacheMs = Number(process.env.ARXIV_CACHE_TTL_MS || 30 * 60 * 1000);
 const arxivStaleCacheMs = Number(process.env.ARXIV_STALE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
-const arxivCooldownMs = Number(process.env.ARXIV_429_COOLDOWN_MS || 10 * 60 * 1000);
+const arxivDailySyncMs = Number(process.env.ARXIV_DAILY_SYNC_MS || 20 * 60 * 60 * 1000);
+const arxivCooldownMs = Number(process.env.ARXIV_429_COOLDOWN_MS || 30 * 60 * 1000);
+const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 60 * 60 * 1000);
+const arxivRssCategories = String(process.env.ARXIV_RSS_CATEGORIES || "cs.NI,cs.AI,cs.LG,cs.MA,cs.DC,cs.IT,eess.SP,eess.SY")
+  .split(/[,\s]+/)
+  .map((item) => item.trim())
+  .filter(Boolean);
 const arxivMemoryCache = new Map();
 const arxivInflight = new Map();
 const paperRequestStatuses = new Map();
+let arxivPaperLibraryMemory = null;
+let arxivSyncInflight = null;
 let arxivQueue = Promise.resolve();
 let arxivLastRequestAt = 0;
 let arxivBlockedUntil = 0;
 let arxivCooldownLoaded = false;
+let arxivCooldownFailures = 0;
 
 const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
@@ -172,7 +182,7 @@ const arxivSubmittedDateWindow = (days) => {
   };
 };
 
-const arxivCacheKey = (url) => createHash("sha256").update(url.toString()).digest("hex");
+const arxivCacheKey = (value) => createHash("sha256").update(String(value)).digest("hex");
 
 const arxivCachePath = (key) => join(arxivCacheDir, `${key}.json`);
 
@@ -211,6 +221,137 @@ const appendUniquePapers = (target, seen, papers, maxResults) => {
   }
 };
 
+const arxivPaperId = (paper) => {
+  const value = [
+    paper?.absLink,
+    paper?.id,
+    paper?.link
+  ].map((item) => String(item || "")).find(Boolean) || "";
+  const match = value.match(/(?:arxiv\.org\/abs\/|arxiv:|oai:arXiv\.org:)?([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)/i);
+  return match ? match[1].replace(/v\d+$/i, "") : normalizePaperKey(value);
+};
+
+const normalizeStoredArxivPaper = (paper) => {
+  const id = arxivPaperId(paper);
+  const absLink = String(paper.absLink || paper.id || (id ? `https://arxiv.org/abs/${id}` : "")).replace(/^oai:arXiv\.org:/i, "https://arxiv.org/abs/");
+  const categories = Array.isArray(paper.categories) ? paper.categories.filter(Boolean).map(String) : [];
+
+  return {
+    id: absLink || String(paper.id || ""),
+    arxivId: id,
+    title: truncate(paper.title, 500),
+    authors: Array.isArray(paper.authors) ? paper.authors.slice(0, 30).map((author) => String(author)) : [],
+    summary: truncate(paper.summary, 5000),
+    published: String(paper.published || paper.updated || ""),
+    updated: String(paper.updated || paper.published || ""),
+    link: absLink,
+    absLink,
+    primaryCategory: String(paper.primaryCategory || categories[0] || "arXiv"),
+    categories: [...new Set(categories.length ? categories : ["arXiv"])].slice(0, 20),
+    storedAt: String(paper.storedAt || new Date().toISOString())
+  };
+};
+
+const emptyArxivPaperLibrary = () => ({
+  version: 1,
+  lastSyncedAt: "",
+  lastSyncCount: 0,
+  lastSyncAdded: 0,
+  categories: arxivRssCategories,
+  papers: []
+});
+
+const readArxivPaperLibrary = async () => {
+  if (arxivPaperLibraryMemory) {
+    return arxivPaperLibraryMemory;
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(arxivPaperLibraryPath, "utf8"));
+    arxivPaperLibraryMemory = {
+      ...emptyArxivPaperLibrary(),
+      ...parsed,
+      papers: Array.isArray(parsed.papers)
+        ? parsed.papers.map(normalizeStoredArxivPaper).filter((paper) => paper.id && paper.title)
+        : []
+    };
+  } catch {
+    arxivPaperLibraryMemory = emptyArxivPaperLibrary();
+  }
+
+  return arxivPaperLibraryMemory;
+};
+
+const writeArxivPaperLibrary = async (library) => {
+  const nextLibrary = {
+    ...emptyArxivPaperLibrary(),
+    ...library,
+    categories: arxivRssCategories,
+    papers: Array.isArray(library.papers)
+      ? library.papers.map(normalizeStoredArxivPaper).filter((paper) => paper.id && paper.title)
+      : []
+  };
+
+  arxivPaperLibraryMemory = nextLibrary;
+  await mkdir(join(__dirname, ".cache"), { recursive: true });
+  await writeFile(arxivPaperLibraryPath, JSON.stringify(nextLibrary, null, 2), "utf8");
+  return nextLibrary;
+};
+
+const mergeArxivPapersIntoLibrary = async (papers, meta = {}) => {
+  const library = await readArxivPaperLibrary();
+  const byKey = new Map();
+
+  for (const paper of library.papers) {
+    const normalized = normalizeStoredArxivPaper(paper);
+    byKey.set(arxivPaperId(normalized) || normalizePaperKey(normalized.title), normalized);
+  }
+
+  let added = 0;
+  let updated = 0;
+
+  for (const paper of papers) {
+    const normalized = normalizeStoredArxivPaper(paper);
+    const key = arxivPaperId(normalized) || normalizePaperKey(normalized.title);
+
+    if (!key) {
+      continue;
+    }
+
+    if (byKey.has(key)) {
+      const existing = byKey.get(key);
+      byKey.set(key, {
+        ...existing,
+        ...normalized,
+        storedAt: existing.storedAt || normalized.storedAt
+      });
+      updated += 1;
+    } else {
+      byKey.set(key, normalized);
+      added += 1;
+    }
+  }
+
+  const merged = [...byKey.values()]
+    .sort((a, b) => new Date(b.published || b.updated).getTime() - new Date(a.published || a.updated).getTime());
+
+  const nextLibrary = await writeArxivPaperLibrary({
+    ...library,
+    lastSyncedAt: meta.updateLastSynced === false ? library.lastSyncedAt : meta.syncedAt || new Date().toISOString(),
+    lastSyncCount: papers.length,
+    lastSyncAdded: added,
+    papers: merged
+  });
+
+  return {
+    library: nextLibrary,
+    added,
+    updated,
+    total: nextLibrary.papers.length,
+    fetched: papers.length
+  };
+};
+
 const readArxivCache = async (key) => {
   const memoryEntry = arxivMemoryCache.get(key);
 
@@ -245,6 +386,8 @@ const writeArxivCache = async (key, entry) => {
 
 const arxivCacheAgeSeconds = (entry) => Math.max(0, Math.round((Date.now() - Number(entry.fetchedAt)) / 1000));
 
+const atomEntryCount = (xml) => (String(xml || "").match(/<entry\b/gi) || []).length;
+
 const readArxivCooldown = async () => {
   if (arxivCooldownLoaded) {
     return arxivBlockedUntil;
@@ -255,9 +398,16 @@ const readArxivCooldown = async () => {
   try {
     const entry = JSON.parse(await readFile(arxivCooldownPath, "utf8"));
     const blockedUntil = Number(entry.blockedUntil);
+    const updatedAt = Number(entry.updatedAt);
+    const recentlyLimited = Number.isFinite(updatedAt) && Date.now() - updatedAt < arxivMaxCooldownMs;
+    arxivCooldownFailures = recentlyLimited ? Math.max(0, Number(entry.failures) || 0) : 0;
+    const inferredBlockedUntil = recentlyLimited
+      ? updatedAt + Math.min(arxivCooldownMs * (2 ** Math.min(arxivCooldownFailures, 3)), arxivMaxCooldownMs)
+      : 0;
+    const effectiveBlockedUntil = Math.max(Number.isFinite(blockedUntil) ? blockedUntil : 0, inferredBlockedUntil);
 
-    if (Number.isFinite(blockedUntil) && blockedUntil > Date.now()) {
-      arxivBlockedUntil = Math.max(arxivBlockedUntil, blockedUntil);
+    if (effectiveBlockedUntil > Date.now()) {
+      arxivBlockedUntil = Math.max(arxivBlockedUntil, effectiveBlockedUntil);
     }
   } catch {
     // Missing cooldown file just means arXiv has not rate-limited this app recently.
@@ -266,18 +416,40 @@ const readArxivCooldown = async () => {
   return arxivBlockedUntil;
 };
 
+const nextArxiv429Cooldown = (retryAfterMs) => {
+  if (retryAfterMs > 0) {
+    return Math.min(retryAfterMs, arxivMaxCooldownMs);
+  }
+
+  const multiplier = 2 ** Math.min(arxivCooldownFailures, 3);
+  return Math.min(arxivCooldownMs * multiplier, arxivMaxCooldownMs);
+};
+
 const writeArxivCooldown = async (blockedUntil, returnValue) => {
   arxivBlockedUntil = Math.max(arxivBlockedUntil, blockedUntil);
+  arxivCooldownFailures = Math.min(arxivCooldownFailures + 1, 8);
 
   try {
     await mkdir(join(__dirname, ".cache"), { recursive: true });
     await writeFile(arxivCooldownPath, JSON.stringify({
       blockedUntil: arxivBlockedUntil,
       updatedAt: Date.now(),
+      failures: arxivCooldownFailures,
       returnValue
     }), "utf8");
   } catch (error) {
     console.warn(`Could not write arXiv cooldown: ${error.message}`);
+  }
+};
+
+const clearArxivCooldown = async () => {
+  arxivBlockedUntil = 0;
+  arxivCooldownFailures = 0;
+
+  try {
+    await rm(arxivCooldownPath, { force: true });
+  } catch (error) {
+    console.warn(`Could not clear arXiv cooldown: ${error.message}`);
   }
 };
 
@@ -303,57 +475,6 @@ const cleanupPaperRequestStatuses = () => {
       paperRequestStatuses.delete(key);
     }
   }
-};
-
-const stripBooleanQuery = (query) => {
-  const cleaned = String(query || defaultQuery)
-    .replace(/\b(ANDNOT|AND|OR)\b/gi, " ")
-    .replace(/[()"[\]{}:]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  return cleaned.length > 280 ? cleaned.slice(0, 280) : cleaned;
-};
-
-const fallbackSearchQueries = (query) => {
-  const cleaned = stripBooleanQuery(query);
-  const lower = cleaned.toLowerCase();
-  const defaults = [
-    "network AI machine learning 5G 6G anomaly detection traffic prediction network optimization",
-    "telecom machine learning network automation orchestration",
-    "large language model network optimization autonomous agent"
-  ];
-
-  if (lower.includes("5g") || lower.includes("telecom") || lower.includes("network")) {
-    return defaults;
-  }
-
-  return [cleaned, ...defaults].filter(Boolean).slice(0, 3);
-};
-
-const dateDaysAgo = (days) => {
-  const date = new Date(Date.now() - days * 86400000);
-  return date.toISOString().slice(0, 10);
-};
-
-const abstractFromInvertedIndex = (index) => {
-  if (!index || typeof index !== "object") {
-    return "";
-  }
-
-  const words = [];
-
-  Object.entries(index).forEach(([word, positions]) => {
-    if (!Array.isArray(positions)) {
-      return;
-    }
-
-    positions.forEach((position) => {
-      words[Number(position)] = word;
-    });
-  });
-
-  return words.filter(Boolean).join(" ");
 };
 
 const normalizeIsoDate = (value) => {
@@ -439,279 +560,206 @@ const fetchArxivQueued = async (arxivUrl, signal) => {
   return request;
 };
 
-const fetchOpenAlexPapers = async ({ rawQuery, days, maxResults, signal }) => {
-  const queries = fallbackSearchQueries(rawQuery);
-  const dateWindows = days > 0 ? [...new Set([days, Math.max(days, 30), 0])] : [0];
-  let lastError = null;
-  const collected = [];
-  const seen = new Set();
+const decodeXml = (value) => String(value || "")
+  .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+  .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+  .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number.parseInt(code, 10)))
+  .replace(/&quot;/g, "\"")
+  .replace(/&apos;/g, "'")
+  .replace(/&lt;/g, "<")
+  .replace(/&gt;/g, ">")
+  .replace(/&amp;/g, "&");
 
-  for (const query of queries) {
-    for (const windowDays of dateWindows) {
-      const endpoint = new URL("https://api.openalex.org/works");
-      const filters = ["has_abstract:true"];
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-      if (windowDays > 0) {
-        filters.push(`from_publication_date:${dateDaysAgo(windowDays)}`);
-      }
-
-      endpoint.searchParams.set("search", query);
-      endpoint.searchParams.set("filter", filters.join(","));
-      endpoint.searchParams.set("sort", "publication_date:desc");
-      endpoint.searchParams.set("per-page", String(Math.min(Math.max(maxResults, 5), 25)));
-      endpoint.searchParams.set("select", [
-        "id",
-        "doi",
-        "display_name",
-        "abstract_inverted_index",
-        "publication_date",
-        "updated_date",
-        "authorships",
-        "open_access",
-        "primary_location",
-        "best_oa_location",
-        "primary_topic",
-        "topics"
-      ].join(","));
-
-      if (process.env.OPENALEX_MAILTO) {
-        endpoint.searchParams.set("mailto", process.env.OPENALEX_MAILTO);
-      }
-
-      const response = await fetch(endpoint, {
-        signal,
-        headers: {
-          "accept": "application/json",
-          "user-agent": "paper-insight/0.1 (local research discovery app)"
-        }
-      });
-
-      if (!response.ok) {
-        const returnValue = await readResponseReturnValue("OpenAlex", response);
-        lastError = responseSourceError("OpenAlex", returnValue);
-        continue;
-      }
-
-      const data = await response.json();
-      const results = Array.isArray(data.results) ? data.results : [];
-      const papers = results.map((work) => {
-      const summary = abstractFromInvertedIndex(work.abstract_inverted_index);
-      const pdfUrl = work.best_oa_location?.pdf_url
-        || work.primary_location?.pdf_url
-        || work.open_access?.oa_url
-        || work.best_oa_location?.landing_page_url
-        || work.primary_location?.landing_page_url
-        || "";
-      const absLink = work.doi ? `https://doi.org/${String(work.doi).replace(/^https?:\/\/doi\.org\//i, "")}` : work.id;
-      const topics = [
-        work.primary_topic?.display_name,
-        ...(Array.isArray(work.topics) ? work.topics.map((topic) => topic.display_name) : [])
-      ].filter(Boolean);
-
-      return {
-        id: work.id || absLink,
-        title: work.display_name || "Untitled paper",
-        authors: Array.isArray(work.authorships)
-          ? work.authorships.map((item) => item.author?.display_name).filter(Boolean)
-          : [],
-        summary,
-        published: work.publication_date || new Date().toISOString(),
-        updated: work.updated_date || work.publication_date || new Date().toISOString(),
-        link: pdfUrl,
-        absLink,
-        primaryCategory: topics[0] || "Paper",
-        categories: [...new Set(topics.length ? topics : ["Paper"])].slice(0, 12)
-      };
-    })
-    .filter((paper) => paper.id && paper.title && paper.summary)
-    .slice(0, maxResults);
-
-      appendUniquePapers(collected, seen, papers, maxResults);
-
-      if (collected.length >= maxResults) {
-        return collected;
-      }
-    }
-  }
-
-  if (collected.length) {
-    return collected;
-  }
-
-  if (lastError) {
-    throw lastError;
-  }
-
-  return [];
+const xmlTagText = (xml, tagName) => {
+  const tag = escapeRegExp(tagName);
+  const match = String(xml || "").match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return decodeXml(match?.[1] || "").replace(/\s+/g, " ").trim();
 };
 
-const fetchSemanticScholarPapers = async ({ rawQuery, days, maxResults, signal }) => {
-  const queries = fallbackSearchQueries(rawQuery);
-  const dateWindows = days > 0 ? [...new Set([days, Math.max(days, 30), 0])] : [0];
-  let lastError = null;
-  let rawResultCount = 0;
-  let usableResultCount = 0;
-  const collected = [];
-  const seen = new Set();
+const xmlAttribute = (tagXml, name) => {
+  const match = String(tagXml || "").match(new RegExp(`${escapeRegExp(name)}\\s*=\\s*["']([^"']+)["']`, "i"));
+  return decodeXml(match?.[1] || "").trim();
+};
 
-  for (const query of queries) {
-    for (const windowDays of dateWindows) {
-      const endpoint = new URL("https://api.semanticscholar.org/graph/v1/paper/search");
-      endpoint.searchParams.set("query", query);
-      endpoint.searchParams.set("limit", String(Math.min(Math.max(maxResults, 5), 25)));
-      endpoint.searchParams.set("fields", [
-        "paperId",
-        "title",
-        "abstract",
-        "authors",
-        "year",
-        "publicationDate",
-        "url",
-        "openAccessPdf",
-        "externalIds",
-        "fieldsOfStudy",
-        "s2FieldsOfStudy"
-      ].join(","));
+const queryTermGroups = (query) => {
+  const extractTerms = (segment) => tokenizeQuery(segment)
+    .map((token) => token.trim())
+    .filter((token) => token && !["(", ")"].includes(token) && !/^(AND|OR|ANDNOT)$/i.test(token))
+    .map((token) => token.replace(/^"|"$/g, "").replace(/^[a-zA-Z]+:/, "").trim())
+    .filter((token) => token && !/^submittedDate$/i.test(token) && !/^\[|\]$/.test(token));
 
-      if (windowDays > 0) {
-        endpoint.searchParams.set("publicationDateOrYear", `${dateDaysAgo(windowDays)}:`);
-      }
+  const parenthesized = [...String(query || defaultQuery).matchAll(/\(([^()]+)\)/g)]
+    .map((match) => extractTerms(match[1]))
+    .filter((terms) => terms.length);
 
-      const headers = {
-        "accept": "application/json",
-        "user-agent": "paper-insight/0.1 (local research discovery app)"
-      };
-
-      if (process.env.SEMANTIC_SCHOLAR_API_KEY) {
-        headers["x-api-key"] = process.env.SEMANTIC_SCHOLAR_API_KEY;
-      }
-
-      const response = await fetch(endpoint, { signal, headers });
-
-      if (!response.ok) {
-        const returnValue = await readResponseReturnValue("Semantic Scholar", response);
-        lastError = responseSourceError("Semantic Scholar", returnValue);
-        if (response.status === 429) {
-          throw lastError;
-        }
-        continue;
-      }
-
-      const data = await response.json();
-      const results = Array.isArray(data.data) ? data.data : [];
-      rawResultCount += results.length;
-      const papers = results.map((paper) => {
-      const categories = [
-        ...(Array.isArray(paper.fieldsOfStudy) ? paper.fieldsOfStudy : []),
-        ...(Array.isArray(paper.s2FieldsOfStudy) ? paper.s2FieldsOfStudy.map((field) => field.category).filter(Boolean) : [])
-      ].filter(Boolean);
-      const doi = paper.externalIds?.DOI;
-      const arxivId = paper.externalIds?.ArXiv;
-      const absLink = arxivId ? `https://arxiv.org/abs/${arxivId}` : doi ? `https://doi.org/${doi}` : paper.url;
-
-      return {
-        id: arxivId ? `https://arxiv.org/abs/${arxivId}` : paper.paperId || paper.url || doi,
-        title: paper.title || "Untitled paper",
-        authors: Array.isArray(paper.authors) ? paper.authors.map((author) => author.name).filter(Boolean) : [],
-        summary: paper.abstract || "",
-        published: paper.publicationDate || (paper.year ? `${paper.year}-01-01` : new Date().toISOString()),
-        updated: paper.publicationDate || (paper.year ? `${paper.year}-01-01` : new Date().toISOString()),
-        link: paper.openAccessPdf?.url || absLink,
-        absLink,
-        primaryCategory: categories[0] || "Paper",
-        categories: [...new Set(categories.length ? categories : ["Paper"])].slice(0, 12)
-      };
-    })
-    .filter((paper) => paper.id && paper.title && paper.summary)
-    .slice(0, maxResults);
-      usableResultCount += papers.length;
-
-      appendUniquePapers(collected, seen, papers, maxResults);
-
-      if (collected.length >= maxResults) {
-        return collected;
-      }
-    }
+  if (parenthesized.length) {
+    return parenthesized;
   }
 
-  if (collected.length) {
-    return collected;
+  const terms = extractTerms(query || defaultQuery);
+  return terms.length ? [terms] : [];
+};
+
+const textIncludesTerm = (text, term) => {
+  const normalizedTerm = String(term || "").trim().toLowerCase();
+
+  if (!normalizedTerm) {
+    return false;
   }
 
-  if (lastError) {
-    throw lastError;
+  if (normalizedTerm.length <= 3 || /^[a-z0-9.+-]+$/i.test(normalizedTerm)) {
+    return new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedTerm)}([^a-z0-9]|$)`, "i").test(text);
   }
 
-  if (rawResultCount && !usableResultCount) {
-    const error = new Error(`Semantic Scholar 返回了 ${rawResultCount} 条结果，但没有可用摘要，已过滤为不可用候选。`);
+  return text.includes(normalizedTerm);
+};
+
+const paperMatchesQueryGroups = (paper, groups) => {
+  if (!groups.length) {
+    return true;
+  }
+
+  const searchable = [
+    paper.title,
+    paper.summary,
+    paper.primaryCategory,
+    ...(Array.isArray(paper.categories) ? paper.categories : [])
+  ].join(" ").toLowerCase();
+
+  return groups.every((group) => group.some((term) => textIncludesTerm(searchable, term)));
+};
+
+const parseArxivRssPapers = (xml) => [...String(xml || "").matchAll(/<entry\b[\s\S]*?<\/entry>/gi)]
+  .map((match) => {
+    const entry = match[0];
+    const rawId = xmlTagText(entry, "id");
+    const arxivId = rawId.replace(/^oai:arXiv\.org:/i, "");
+    const linkTags = [...entry.matchAll(/<link\b[^>]*\/?>/gi)].map((item) => item[0]);
+    const alternate = linkTags.find((item) => /rel=["']alternate["']/i.test(item)) || linkTags[0] || "";
+    const absLink = xmlAttribute(alternate, "href") || (arxivId ? `https://arxiv.org/abs/${arxivId}` : rawId);
+    const categories = [...entry.matchAll(/<category\b[^>]*\bterm=["']([^"']+)["'][^>]*\/?>/gi)]
+      .map((item) => decodeXml(item[1]).trim())
+      .filter(Boolean);
+    const creatorAuthors = xmlTagText(entry, "dc:creator")
+      .split(/\s*,\s*/)
+      .map((author) => author.trim())
+      .filter(Boolean);
+    const atomAuthors = [...entry.matchAll(/<author\b[\s\S]*?<\/author>/gi)]
+      .map((item) => xmlTagText(item[0], "name"))
+      .filter(Boolean);
+    const authors = creatorAuthors.length ? creatorAuthors : atomAuthors;
+    const summary = xmlTagText(entry, "summary")
+      .replace(/^arXiv:\s*\S+\s+Announce Type:\s*\S+\s+Abstract:\s*/i, "")
+      .trim();
+
+    return {
+      id: absLink || rawId,
+      title: xmlTagText(entry, "title"),
+      authors,
+      summary,
+      published: xmlTagText(entry, "published"),
+      updated: xmlTagText(entry, "updated"),
+      link: absLink,
+      absLink,
+      primaryCategory: categories[0] || "arXiv",
+      categories
+    };
+  })
+  .filter((paper) => paper.id && paper.title && paper.summary);
+
+const fetchLatestArxivRssPapers = async ({ signal, requestId }) => {
+  const categories = arxivRssCategories.length ? arxivRssCategories : ["cs.NI", "cs.AI", "cs.LG"];
+  const rssUrl = new URL(`https://rss.arxiv.org/atom/${categories.map(encodeURIComponent).join("+")}`);
+
+  setPaperRequestStatus(requestId, "arxiv-rss", `正在同步 arXiv RSS：${categories.join(", ")}。`);
+  const response = await fetchArxivQueued(rssUrl, signal);
+
+  if (!response.ok) {
+    throw responseSourceError("arXiv RSS", await readResponseReturnValue("arXiv RSS", response));
+  }
+
+  const xml = await response.text();
+
+  if (/Feed error for query/i.test(xml)) {
+    const error = new Error(`arXiv RSS 不接受当前分类组合：${categories.join(", ")}`);
     error.detail = error.message;
     throw error;
   }
 
-  return [];
+  return parseArxivRssPapers(xml)
+    .sort((a, b) => new Date(b.published || b.updated).getTime() - new Date(a.published || a.updated).getTime());
 };
 
-const fetchFallbackPapers = async ({ rawQuery, days, maxResults, signal, requestId }) => {
-  const errors = [];
-  const sourceReturns = [];
+const syncArxivPaperLibrary = async ({ force = false, requestId = "", signal } = {}) => {
+  const run = async () => {
+    const library = await readArxivPaperLibrary();
+    const lastSyncedAt = Date.parse(library.lastSyncedAt || "");
+    const fresh = Number.isFinite(lastSyncedAt) && Date.now() - lastSyncedAt < arxivDailySyncMs;
 
-  setPaperRequestStatus(requestId, "semantic-scholar", "arXiv 暂时不可用，正在切换 Semantic Scholar 获取候选论文。");
-
-  try {
-    const papers = await fetchSemanticScholarPapers({ rawQuery, days, maxResults, signal });
-
-    if (papers.length) {
+    if (!force && fresh) {
+      setPaperRequestStatus(requestId, "arxiv-library", `本地库今日已同步，共 ${library.papers.length} 篇论文。`, "running");
       return {
-        source: "semantic-scholar",
-        xml: atomFeedFromPapers({ papers, query: rawQuery, source: "Semantic Scholar" }),
-        count: papers.length
+        library,
+        skipped: true,
+        added: 0,
+        updated: 0,
+        fetched: 0,
+        total: library.papers.length
       };
     }
 
-    errors.push("Semantic Scholar 没有返回可用候选论文");
-  } catch (error) {
-    errors.push(error.detail || error.message);
-    sourceReturns.push(...(Array.isArray(error.sourceReturns) ? error.sourceReturns : []));
-    setPaperRequestStatus(requestId, "semantic-scholar", error.detail || error.message, "running", { sourceReturns });
-  }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    const syncSignal = signal || controller.signal;
 
-  const semanticReason = errors.length ? errors.join("；") : "Semantic Scholar 没有可用结果";
-  setPaperRequestStatus(requestId, "openalex", `${semanticReason}，正在切换 OpenAlex。`, "running", { sourceReturns });
-
-  try {
-    const papers = await fetchOpenAlexPapers({ rawQuery, days, maxResults, signal });
-
-    if (papers.length) {
+    try {
+      const papers = await fetchLatestArxivRssPapers({ signal: syncSignal, requestId });
+      const result = await mergeArxivPapersIntoLibrary(papers, { syncedAt: new Date().toISOString() });
+      setPaperRequestStatus(requestId, "arxiv-library", `arXiv RSS 同步完成：获取 ${result.fetched} 篇，新增 ${result.added} 篇，本地库共 ${result.total} 篇。`, "running");
       return {
-        source: "openalex",
-        xml: atomFeedFromPapers({ papers, query: rawQuery, source: "OpenAlex" }),
-        count: papers.length
+        ...result,
+        skipped: false
       };
+    } finally {
+      clearTimeout(timeout);
     }
+  };
 
-    errors.push("OpenAlex 没有返回可用候选论文");
-  } catch (error) {
-    errors.push(error.detail || error.message);
-    sourceReturns.push(...(Array.isArray(error.sourceReturns) ? error.sourceReturns : []));
+  if (arxivSyncInflight) {
+    return arxivSyncInflight;
   }
 
-  const error = new Error("arXiv、Semantic Scholar 和 OpenAlex 都没有返回可用候选论文。");
-  error.detail = errors.join("；");
-  error.sourceReturns = sourceReturns;
-  throw error;
+  arxivSyncInflight = run().finally(() => {
+    arxivSyncInflight = null;
+  });
+
+  return arxivSyncInflight;
 };
 
-const fallbackSourceName = (source) => {
-  if (source === "semantic-scholar") {
-    return "Semantic Scholar";
-  }
+const selectArxivLibraryPapers = ({ library, rawQuery, days, maxResults, start = 0 }) => {
+  const earliest = days > 0 ? Date.now() - days * 86400000 : 0;
+  const groups = queryTermGroups(rawQuery);
+  const filtered = (Array.isArray(library.papers) ? library.papers : [])
+    .filter((paper) => {
+      if (!earliest) {
+        return true;
+      }
 
-  if (source === "openalex") {
-    return "OpenAlex";
-  }
+      const time = new Date(paper.published || paper.updated).getTime();
+      return Number.isFinite(time) && time >= earliest;
+    })
+    .filter((paper) => paperMatchesQueryGroups(paper, groups))
+    .sort((a, b) => new Date(b.published || b.updated).getTime() - new Date(a.published || a.updated).getTime());
+  const unique = [];
+  const seen = new Set();
 
-  return source || "备用数据源";
+  appendUniquePapers(unique, seen, filtered, Number.MAX_SAFE_INTEGER);
+  return unique.slice(start, start + maxResults);
 };
+
+const isArxivSource = (source) => source === "arxiv" || source === "arxiv-rss" || source === "arxiv-library";
 
 const tokenizeQuery = (query) => query.match(/"[^"]+"|\(|\)|\bANDNOT\b|\bAND\b|\bOR\b|[^\s()]+/gi) || [];
 
@@ -878,7 +926,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
           role: "user",
           content: JSON.stringify({
             query,
-            onlineSearchInstruction: "对每篇论文先用 title、authors、absLink、link 检索并核对公开论文信息。优先阅读论文原始页面、arXiv PDF/HTML、DOI 出版页、作者项目页或代码仓库；Semantic Scholar、OpenAlex 这类元数据页只能作为辅助线索，不能替代论文原文；无法访问时必须如实说明。",
+            onlineSearchInstruction: "对每篇论文先用 title、authors、absLink、link 检索并核对公开论文信息。优先阅读论文原始页面、arXiv PDF/HTML、DOI 出版页、作者项目页或代码仓库；公开元数据页只能作为辅助线索，不能替代论文原文；无法访问时必须如实说明。",
             dimensions,
             outputSchema: {
               recommendations: [
@@ -1039,6 +1087,53 @@ const normalizeAnalysis = (paper, analysis) => {
   };
 };
 
+const handleArxivSyncRequest = async (request, response) => {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === "GET") {
+    const library = await readArxivPaperLibrary();
+    sendJson(response, 200, {
+      count: library.papers.length,
+      lastSyncedAt: library.lastSyncedAt || "",
+      lastSyncCount: library.lastSyncCount || 0,
+      lastSyncAdded: library.lastSyncAdded || 0,
+      categories: library.categories || arxivRssCategories,
+      stale: !library.lastSyncedAt || Date.now() - Date.parse(library.lastSyncedAt) >= arxivDailySyncMs
+    });
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+    return;
+  }
+
+  const force = /^(1|true|yes)$/i.test(String(url.searchParams.get("force") || ""));
+  const requestId = String(url.searchParams.get("requestId") || "");
+
+  try {
+    const result = await syncArxivPaperLibrary({ force, requestId });
+    sendJson(response, 200, {
+      count: result.total,
+      fetched: result.fetched,
+      added: result.added,
+      updated: result.updated,
+      skipped: result.skipped,
+      lastSyncedAt: result.library.lastSyncedAt || "",
+      lastSyncCount: result.library.lastSyncCount || 0,
+      lastSyncAdded: result.library.lastSyncAdded || 0,
+      categories: result.library.categories || arxivRssCategories
+    });
+  } catch (error) {
+    sendJson(response, error.status || 502, {
+      error: error.code || "ARXIV_SYNC_FAILED",
+      message: error.message || "arXiv sync failed.",
+      detail: error.detail || error.message,
+      sourceReturns: error.sourceReturns || []
+    });
+  }
+};
+
 const handlePapersRequest = async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const maxResults = Math.min(Math.max(Number(url.searchParams.get("limit") || 10), 5), 30);
@@ -1047,6 +1142,9 @@ const handlePapersRequest = async (request, response) => {
   const days = Math.min(Math.max(Number(url.searchParams.get("days") || 0), 0), 365);
   const requestId = String(url.searchParams.get("requestId") || "");
   const forceRefresh = /^(1|true|yes)$/i.test(String(url.searchParams.get("refresh") || ""));
+  const forceArxivApi = /^(1|true|yes|api)$/i.test(String(url.searchParams.get("forceArxiv") || url.searchParams.get("arxivApi") || ""))
+    || /^api$/i.test(String(url.searchParams.get("arxivMode") || ""));
+  const ignoreCooldown = forceArxivApi || /^(1|true|yes)$/i.test(String(url.searchParams.get("ignoreCooldown") || ""));
   let searchQuery = normalizeQueryForArxiv(rawQuery);
 
   if (days > 0 && !/submittedDate:/i.test(searchQuery)) {
@@ -1060,12 +1158,16 @@ const handlePapersRequest = async (request, response) => {
   arxivUrl.searchParams.set("max_results", String(maxResults));
   arxivUrl.searchParams.set("sortBy", "submittedDate");
   arxivUrl.searchParams.set("sortOrder", "descending");
-  const cacheKey = arxivCacheKey(arxivUrl);
-  const cached = await readArxivCache(cacheKey);
+  const primaryMode = forceArxivApi ? "api" : "library";
+  const cacheKey = arxivCacheKey(primaryMode === "api"
+    ? arxivUrl
+    : `arxiv-library:${arxivRssCategories.join("+")}:${rawQuery}:${days}:${maxResults}:${start}`);
+  const cached = primaryMode === "api" ? await readArxivCache(cacheKey) : null;
   const cachedAge = cached ? Date.now() - Number(cached.fetchedAt) : Infinity;
+  const cachedCount = cached ? atomEntryCount(cached.xml) : 0;
   const cachedSource = cached?.source || "arxiv";
-  const canUseFreshCache = Boolean(cached) && !forceRefresh;
-  const canUseStaleCache = cached && cachedSource !== "openalex" && !forceRefresh;
+  const canUseFreshCache = Boolean(cached) && isArxivSource(cachedSource) && !forceRefresh;
+  const canUseStaleCache = cached && isArxivSource(cachedSource) && !forceRefresh;
 
   const sendPapersXml = (xml, cacheStatus, source = "arxiv", extraHeaders = {}) => {
     send(response, 200, xml, {
@@ -1075,18 +1177,22 @@ const handlePapersRequest = async (request, response) => {
       "x-paper-insight-arxiv-cache": cacheStatus,
       "x-paper-insight-source": source,
       "x-paper-insight-cache-age-seconds": cached ? String(arxivCacheAgeSeconds(cached)) : "0",
+      "x-paper-insight-arxiv-method": primaryMode,
       ...(forceRefresh ? { "x-paper-insight-cache-bypass": "1" } : {}),
+      ...(ignoreCooldown ? { "x-paper-insight-ignore-cooldown": "1" } : {}),
       ...extraHeaders
     });
   };
 
-  if (canUseFreshCache && cachedAge < arxivFreshCacheMs) {
+  if (primaryMode === "api" && canUseFreshCache && cachedAge < arxivFreshCacheMs) {
     setPaperRequestStatus(requestId, cachedSource || "cache", "已命中本地缓存。", "done");
-    sendPapersXml(cached.xml, "hit", cachedSource);
+    sendPapersXml(cached.xml, "hit", cachedSource, cachedCount < maxResults
+      ? { "x-paper-insight-arxiv-warning": encodeURIComponent(`arXiv 缓存中只有 ${cachedCount} 篇匹配候选，未使用备用数据源。`) }
+      : {});
     return;
   }
 
-  if (arxivInflight.has(cacheKey)) {
+  if (primaryMode === "api" && arxivInflight.has(cacheKey)) {
     try {
       const result = await arxivInflight.get(cacheKey);
       sendPapersXml(result.xml, result.cacheStatus, result.source, result.headers);
@@ -1103,52 +1209,97 @@ const handlePapersRequest = async (request, response) => {
   }
 
   const fetchAndCache = (async () => {
-    const blockedUntil = await readArxivCooldown();
-    const now = Date.now();
-
-    if (blockedUntil > now) {
-      if (canUseStaleCache && cachedAge < arxivStaleCacheMs) {
-        setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv 正在限流，已使用本地缓存。", "done");
-        return {
-          xml: cached.xml,
-          cacheStatus: "stale",
-          source: cachedSource,
-          headers: {
-            "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 正在限流，已使用本地缓存。"),
-            "retry-after": String(Math.ceil((blockedUntil - now) / 1000))
-          }
-        };
-      }
-
-      const fallback = await fetchFallbackPapers({ rawQuery, days, maxResults, signal: AbortSignal.timeout(30000), requestId });
-      await writeArxivCache(cacheKey, {
-        fetchedAt: Date.now(),
-        searchQuery,
-        source: fallback.source,
-        xml: fallback.xml
-      });
-      setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallbackSourceName(fallback.source)} 获取 ${fallback.count} 篇候选论文。`, "done");
-      return {
-        xml: fallback.xml,
-        cacheStatus: "fallback",
-        source: fallback.source,
-        headers: {
-          "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 正在限流，已使用备用数据源。"),
-          "x-paper-insight-cache-age-seconds": "0"
-        }
-      };
-    }
-
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
 
     try {
-      setPaperRequestStatus(requestId, "arxiv", "正在获取 arXiv 候选论文。");
+      if (primaryMode === "library") {
+        try {
+          const sync = await syncArxivPaperLibrary({ force: forceRefresh, requestId, signal: controller.signal });
+          const library = sync.library || await readArxivPaperLibrary();
+          const papers = selectArxivLibraryPapers({ library, rawQuery, days, maxResults, start });
+          const xml = atomFeedFromPapers({ papers, query: rawQuery, source: "arXiv Library" });
+          const rangeText = days > 0 ? `最近 ${days} 天` : "不限时间";
+          const countMessage = papers.length >= maxResults
+            ? `已从本地 arXiv 库筛选 ${papers.length} 篇候选论文。`
+            : `本地 arXiv 库${rangeText}只找到 ${papers.length} 篇匹配候选。可用 arXiv API 扩展到${rangeText}。`;
+          setPaperRequestStatus(
+            requestId,
+            "arxiv-library",
+            countMessage,
+            "done"
+          );
+          return {
+            xml,
+            cacheStatus: "library",
+            source: "arxiv-library",
+            headers: {
+              ...(papers.length < maxResults ? { "x-paper-insight-arxiv-warning": encodeURIComponent(countMessage) } : {}),
+              "x-paper-insight-library-total": String(library.papers.length),
+              "x-paper-insight-last-sync": encodeURIComponent(library.lastSyncedAt || ""),
+              "x-paper-insight-sync-skipped": sync.skipped ? "1" : "0",
+              "x-paper-insight-cache-age-seconds": "0"
+            }
+          };
+        } catch (error) {
+          const sourceReturns = Array.isArray(error.sourceReturns) ? [...error.sourceReturns] : [];
+          const sourceReturn = sourceReturns[0];
+
+          if (canUseStaleCache && cachedAge < arxivStaleCacheMs) {
+            setPaperRequestStatus(requestId, cachedSource || "cache", "本地 arXiv 库暂时不可用，已使用本地缓存。", "done", { sourceReturns });
+            return {
+              xml: cached.xml,
+              cacheStatus: "stale",
+              source: cachedSource,
+              headers: {
+                "x-paper-insight-arxiv-warning": encodeURIComponent("本地 arXiv 库暂时不可用，已使用本地缓存。"),
+                ...(sourceReturn ? { "x-paper-insight-source-return": responseReturnHeader(sourceReturn) } : {})
+              }
+            };
+          }
+
+          const wrapped = new Error(error.name === "AbortError" ? "arXiv sync request timed out." : error.message);
+          wrapped.status = error.status || 502;
+          wrapped.code = typeof error.code === "string" ? error.code : "ARXIV_LIBRARY_UNAVAILABLE";
+          wrapped.detail = error.detail || wrapped.message;
+          wrapped.sourceReturns = sourceReturns;
+          setPaperRequestStatus(requestId, "none", wrapped.detail, "error", { sourceReturns });
+          throw wrapped;
+        }
+      }
+
+      const blockedUntil = ignoreCooldown ? 0 : await readArxivCooldown();
+      const now = Date.now();
+
+      if (blockedUntil > now) {
+        if (canUseStaleCache && cachedAge < arxivStaleCacheMs) {
+          setPaperRequestStatus(requestId, cachedSource || "cache", "arXiv API 正在限流，已使用本地缓存。", "done");
+          return {
+            xml: cached.xml,
+            cacheStatus: "stale",
+            source: cachedSource,
+            headers: {
+              "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv API 正在限流，已使用本地缓存。"),
+              "retry-after": String(Math.ceil((blockedUntil - now) / 1000))
+            }
+          };
+        }
+
+        const error = new Error("arXiv API 正在限流，本次不会切换备用数据源。");
+        error.status = 429;
+        error.code = "ARXIV_RATE_LIMITED";
+        error.detail = error.message;
+        error.retryAfterSeconds = Math.ceil((blockedUntil - now) / 1000);
+        setPaperRequestStatus(requestId, "arxiv", error.detail, "error");
+        throw error;
+      }
+
+      setPaperRequestStatus(requestId, "arxiv", ignoreCooldown ? "正在强制连接 arXiv API，已绕过本地冷却。" : "正在获取 arXiv API 候选论文。");
       const arxivResponse = await fetchArxivQueued(arxivUrl, controller.signal);
 
       if (arxivResponse.status === 429) {
         const arxivReturn = await readResponseReturnValue("arXiv", arxivResponse);
-        const retryMs = parseRetryAfter(arxivReturn.retryAfter) || arxivCooldownMs;
+        const retryMs = nextArxiv429Cooldown(parseRetryAfter(arxivReturn.retryAfter));
         await writeArxivCooldown(Date.now() + retryMs, arxivReturn);
 
         if (canUseStaleCache && cachedAge < arxivStaleCacheMs) {
@@ -1165,34 +1316,13 @@ const handlePapersRequest = async (request, response) => {
           };
         }
 
-        let fallback;
-
-        try {
-          fallback = await fetchFallbackPapers({ rawQuery, days, maxResults, signal: controller.signal, requestId });
-        } catch (error) {
-          error.detail = [describeResponseReturnValue(arxivReturn), error.detail || error.message].filter(Boolean).join("；");
-          error.sourceReturns = [arxivReturn, ...(Array.isArray(error.sourceReturns) ? error.sourceReturns : [])];
-          throw error;
-        }
-
-        await writeArxivCache(cacheKey, {
-          fetchedAt: Date.now(),
-          searchQuery,
-          source: fallback.source,
-          xml: fallback.xml
-        });
-        setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallbackSourceName(fallback.source)} 获取 ${fallback.count} 篇候选论文。`, "done");
-        return {
-          xml: fallback.xml,
-          cacheStatus: "fallback",
-          source: fallback.source,
-          headers: {
-            "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 返回 429，已使用备用数据源。"),
-            "x-paper-insight-source-return": responseReturnHeader(arxivReturn),
-            "x-paper-insight-cache-age-seconds": "0",
-            "retry-after": String(Math.ceil(retryMs / 1000))
-          }
-        };
+        const error = responseSourceError("arXiv", arxivReturn);
+        error.status = 429;
+        error.code = "ARXIV_RATE_LIMITED";
+        error.retryAfterSeconds = Math.ceil(retryMs / 1000);
+        error.detail = `${describeResponseReturnValue(arxivReturn)}；本次不会切换备用数据源。`;
+        setPaperRequestStatus(requestId, "arxiv", error.detail, "error", { sourceReturns: [arxivReturn] });
+        throw error;
       }
 
       if (!arxivResponse.ok) {
@@ -1201,6 +1331,11 @@ const handlePapersRequest = async (request, response) => {
       }
 
       const xml = await arxivResponse.text();
+      await clearArxivCooldown();
+      const apiPapers = parseArxivRssPapers(xml);
+      if (apiPapers.length) {
+        await mergeArxivPapersIntoLibrary(apiPapers, { updateLastSynced: false });
+      }
       await writeArxivCache(cacheKey, {
         fetchedAt: Date.now(),
         searchQuery,
@@ -1226,34 +1361,10 @@ const handlePapersRequest = async (request, response) => {
         };
       }
 
-      try {
-        const fallback = await fetchFallbackPapers({ rawQuery, days, maxResults, signal: AbortSignal.timeout(30000), requestId });
-        await writeArxivCache(cacheKey, {
-          fetchedAt: Date.now(),
-          searchQuery,
-          source: fallback.source,
-          xml: fallback.xml
-        });
-        setPaperRequestStatus(requestId, fallback.source, `已通过 ${fallbackSourceName(fallback.source)} 获取 ${fallback.count} 篇候选论文。`, "done");
-        return {
-          xml: fallback.xml,
-          cacheStatus: "fallback",
-          source: fallback.source,
-          headers: {
-            "x-paper-insight-arxiv-warning": encodeURIComponent("arXiv 暂时不可用，已使用备用数据源。"),
-            "x-paper-insight-cache-age-seconds": "0",
-            ...(sourceReturn ? { "x-paper-insight-source-return": responseReturnHeader(sourceReturn) } : {})
-          }
-        };
-      } catch (fallbackError) {
-        error.fallbackDetail = fallbackError.detail || fallbackError.message;
-        sourceReturns.push(...(Array.isArray(fallbackError.sourceReturns) ? fallbackError.sourceReturns : []));
-      }
-
       const wrapped = new Error(error.name === "AbortError" ? "arXiv request timed out." : error.message);
       wrapped.status = error.status || 502;
       wrapped.code = typeof error.code === "string" ? error.code : "ARXIV_UNAVAILABLE";
-      wrapped.detail = [error.detail || wrapped.message, error.fallbackDetail].filter(Boolean).join("；");
+      wrapped.detail = error.detail || wrapped.message;
       wrapped.retryAfterSeconds = error.retryAfterSeconds || 0;
       wrapped.sourceReturns = sourceReturns;
       setPaperRequestStatus(requestId, "none", wrapped.detail, "error", { sourceReturns });
@@ -1473,6 +1584,11 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === "/api/papers/status") {
     handlePaperStatusRequest(request, response);
+    return;
+  }
+
+  if (url.pathname === "/api/arxiv-sync") {
+    await handleArxivSyncRequest(request, response);
     return;
   }
 
