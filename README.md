@@ -107,6 +107,9 @@ node server.js
 - `LLM_API_URL`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
+- `LLM_MAX_OUTPUT_TOKENS`：默认 `12000`，控制 LLM 单次分析的最大输出 token。
+- `LLM_RESPONSE_MAX_CHARS`：默认 `500000`，只做超大响应保护；不会再把 DeepSeek 返回内容截断成短文本。
+- `LLM_REQUEST_TIMEOUT_MS`：默认 `120000`，控制 LLM 分析请求超时时间。
 
 ## 可选配置
 

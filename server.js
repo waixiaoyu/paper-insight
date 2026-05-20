@@ -17,6 +17,9 @@ const arxivStaleCacheMs = Number(process.env.ARXIV_STALE_CACHE_TTL_MS || 24 * 60
 const arxivDailySyncMs = Number(process.env.ARXIV_DAILY_SYNC_MS || 20 * 60 * 60 * 1000);
 const arxivCooldownMs = Number(process.env.ARXIV_429_COOLDOWN_MS || 30 * 60 * 1000);
 const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 60 * 60 * 1000);
+const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
+const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
+const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 120000);
 const arxivRssCategories = String(process.env.ARXIV_RSS_CATEGORIES || "cs.NI,cs.AI,cs.LG,cs.MA,cs.DC,cs.IT,eess.SP,eess.SY")
   .split(/[,\s]+/)
   .map((item) => item.trim())
@@ -94,6 +97,20 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const truncate = (value, length = 2200) => {
   const text = String(value || "").replace(/\s+/g, " ").trim();
   return text.length > length ? `${text.slice(0, length)}...` : text;
+};
+
+const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+
+const ensureLlmResponseWithinLimit = (value) => {
+  const text = String(value || "").trim();
+
+  if (text.length > llmResponseMaxChars) {
+    const error = new Error(`LLM response is too large: ${text.length} chars, limit ${llmResponseMaxChars}.`);
+    error.code = "LLM_RESPONSE_TOO_LARGE";
+    throw error;
+  }
+
+  return text;
 };
 
 const escapeXml = (value) => String(value || "")
@@ -904,12 +921,13 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
   const { apiKey, endpoint, hasDeepSeekKey, model } = config;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 65000);
+  const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
 
   try {
     const payload = {
       model,
       temperature: 0.2,
+      max_tokens: llmMaxOutputTokens,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -919,6 +937,8 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
             "请优先使用给定的论文标题、作者、arXiv/DOI/论文链接在网上搜索论文原文页面、PDF、HTML、出版页、代码页或项目页，并基于可核对到的论文原文和公开页面做详细分析。",
             "如果当前 API 环境无法联网检索、无法打开链接或无法读取论文原文，必须在 limitations 和 whyRecommend 中明确说明检索限制，只能基于输入的摘要和元数据分析，不要假装读过全文。",
             "请用中文输出，给每篇论文计算 0 到 100 的推荐分，并按指定维度给出分项分。",
+            "分析正文要尽量具体、完整、可读：把问题背景、方法机制、技术路线、实验可信度、网络应用价值、局限和阅读路径写成可以直接帮助研究人员快速判断论文价值的内容。",
+            "如果只能基于摘要分析，也要明确区分事实、合理推断和需要打开原文核验的部分。",
             "只返回 JSON，不要输出 Markdown。"
           ].join("\n")
         },
@@ -939,19 +959,19 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
                     practicalValue: "0-100",
                     evidence: "0-100"
                   },
-                  tldr: "一句话概要",
-                  problem: "论文解决的问题",
-                  background: "研究背景和为什么这个问题重要，至少 120 字",
-                  method: "核心方法或系统思路，至少 160 字",
-                  technicalDetails: "技术细节、模型/算法/系统设计、关键模块和数据流，至少 220 字",
-                  contribution: "主要贡献",
-                  experiment: "实验设置、数据集、指标、基线和结果可信度分析，至少 160 字",
-                  networkUseCase: "对网络/电信/5G/6G的潜在价值",
-                  limitations: "从摘要可见的不足或需要进一步确认点",
-                  recommendedReadingPath: "建议快速阅读这篇论文时按什么顺序读，以及每部分重点看什么，至少 120 字",
-                  readingGuide: ["快速阅读建议1", "快速阅读建议2", "快速阅读建议3", "快速阅读建议4"],
+                  tldr: "一句话概要，说明论文核心价值",
+                  problem: "论文解决的问题，至少 180 字",
+                  background: "研究背景、业务/技术动机、为什么这个问题重要，至少 300 字",
+                  method: "核心方法或系统思路，至少 350 字",
+                  technicalDetails: "技术细节、模型/算法/系统设计、关键模块、输入输出、训练/推理流程、数据流和与网络场景的结合方式，至少 600 字",
+                  contribution: "主要贡献，至少 220 字",
+                  experiment: "实验设置、数据集、指标、基线、结果可信度、消融/鲁棒性/泛化线索和需要核验的点，至少 320 字",
+                  networkUseCase: "对网络/电信/5G/6G的潜在价值、适用场景、落地前提和可能收益，至少 280 字",
+                  limitations: "从摘要和元数据可见的不足、风险、假设、泛化边界和需要进一步确认点，至少 220 字",
+                  recommendedReadingPath: "建议快速阅读这篇论文时按什么顺序读，每部分重点看什么，如何判断是否值得深入复现，至少 240 字",
+                  readingGuide: ["快速阅读建议1", "快速阅读建议2", "快速阅读建议3", "快速阅读建议4", "快速阅读建议5", "快速阅读建议6"],
                   matchedKeywords: ["命中的关键词"],
-                  whyRecommend: "为什么进入或接近推荐列表"
+                  whyRecommend: "为什么进入或接近推荐列表，包含分数解释和适合/不适合推荐的理由，至少 220 字"
                 }
               ]
             },
@@ -1054,7 +1074,7 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
     }
 
     const data = await llmResponse.json();
-    return truncate(data.choices?.[0]?.message?.content || data.output_text || "", 3000);
+    return ensureLlmResponseWithinLimit(data.choices?.[0]?.message?.content || data.output_text || "");
   } finally {
     clearTimeout(timeout);
   }
@@ -1069,21 +1089,21 @@ const normalizeAnalysis = (paper, analysis) => {
   return {
     score: Math.round(score),
     scores,
-    tldr: truncate(analysis.tldr, 360),
-    problem: truncate(analysis.problem, 500),
-    background: truncate(analysis.background, 900),
-    method: truncate(analysis.method, 500),
-    technicalDetails: truncate(analysis.technicalDetails, 1200),
-    contribution: truncate(analysis.contribution, 500),
-    experiment: truncate(analysis.experiment, 900),
-    networkUseCase: truncate(analysis.networkUseCase, 500),
-    limitations: truncate(analysis.limitations, 500),
-    recommendedReadingPath: truncate(analysis.recommendedReadingPath, 700),
-    readingGuide: analysis.readingGuide.slice(0, 4).map((item) => truncate(item, 180)),
+    tldr: normalizeText(analysis.tldr),
+    problem: normalizeText(analysis.problem),
+    background: normalizeText(analysis.background),
+    method: normalizeText(analysis.method),
+    technicalDetails: normalizeText(analysis.technicalDetails),
+    contribution: normalizeText(analysis.contribution),
+    experiment: normalizeText(analysis.experiment),
+    networkUseCase: normalizeText(analysis.networkUseCase),
+    limitations: normalizeText(analysis.limitations),
+    recommendedReadingPath: normalizeText(analysis.recommendedReadingPath),
+    readingGuide: analysis.readingGuide.map((item) => normalizeText(item)).filter(Boolean),
     matchedKeywords: Array.isArray(analysis.matchedKeywords)
-      ? analysis.matchedKeywords.slice(0, 12).map((item) => truncate(item, 80))
+      ? analysis.matchedKeywords.map((item) => normalizeText(item)).filter(Boolean)
       : [],
-    whyRecommend: truncate(analysis.whyRecommend, 400)
+    whyRecommend: normalizeText(analysis.whyRecommend)
   };
 };
 

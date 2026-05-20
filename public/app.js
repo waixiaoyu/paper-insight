@@ -2043,9 +2043,9 @@ function openPaper(paper, options = {}) {
   state.paperReturnReport = options.report || state.currentReport || null;
   setActiveView("paper");
   setHeader({
-    eyebrow: "论文分析",
-    title: "分析详情",
-    description: "先看结论，再看方法、证据和局限。",
+    eyebrow: state.paperReturnView === "explore" ? "论文探索 / 单篇分析" : "推荐报告 / 单篇分析",
+    title: paper.title || "论文分析",
+    description: `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · 推荐分 ${paperScore(paper)}。`,
     showBack: true,
     backLabel: state.paperReturnView === "explore" ? "返回探索" : "返回报告"
   });
