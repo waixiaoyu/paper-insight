@@ -1351,7 +1351,7 @@ function showCandidateConfirmation(papers) {
   setTaskLocked(false);
   setTaskStep("confirm");
   showTaskPanel("candidate");
-  setTaskStatus(`已获取 ${annotatedPapers.length} 篇候选论文${reusedCount ? `，其中 ${reusedCount} 篇已有历史分析` : ""}。请确认要进入列表的论文。`, "warning");
+  setTaskStatus(`已获取 ${annotatedPapers.length} 篇候选论文${reusedCount ? `，其中 ${reusedCount} 篇已有历史分析` : ""}。请确认要进入列表的论文。`, "warning", "force-arxiv");
 
   annotatedPapers.forEach((paper, index) => {
     const label = document.createElement("label");
@@ -1416,7 +1416,7 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
   setTaskLocked(true);
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const dateWindowLabel = selectedDateWindowLabel();
-  elements.taskForceArxiv.textContent = `用 arXiv API 扩展到${dateWindowLabel}`;
+  elements.taskForceArxiv.textContent = `强制使用 arXiv API 查询${dateWindowLabel}`;
   setTaskStatus(forceArxiv ? `arXiv API：正在查询${dateWindowLabel}。` : "本地 arXiv 库：正在同步最新 RSS 并筛选候选论文。");
   const query = currentSearchQuery();
   const candidateLimit = Math.max(5, Math.min(30, Number(elements.limitInput.value) || 10));
