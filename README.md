@@ -125,10 +125,13 @@ $env:ARXIV_CACHE_TTL_MS=1800000
 $env:ARXIV_STALE_CACHE_TTL_MS=86400000
 $env:ARXIV_429_COOLDOWN_MS=600000
 $env:ARXIV_DAILY_SYNC_MS=72000000
+$env:ARXIV_AUTO_SYNC=1
+$env:ARXIV_AUTO_SYNC_INITIAL_DELAY_MS=30000
+$env:ARXIV_AUTO_SYNC_RETRY_MS=3600000
 $env:ARXIV_RSS_CATEGORIES="cs.NI,cs.AI,cs.LG,cs.MA,cs.DC,cs.IT,eess.SP,eess.SY"
 ```
 
-调整 arXiv 请求间隔、缓存时间、429 冷却时间、RSS 同步周期和 RSS 分类。
+调整 arXiv 请求间隔、缓存时间、429 冷却时间、RSS 自动同步和 RSS 分类。后端会读取本地库的 `lastSyncedAt`，按上一次成功同步时间计算下一次同步；如果服务停了几天，重启后会发现本地库过期并自动同步。
 
 ## 运行
 

@@ -21,6 +21,9 @@ const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 6
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
 const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
 const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 120000);
+const arxivAutoSyncEnabled = !/^(0|false|no)$/i.test(String(process.env.ARXIV_AUTO_SYNC || "1"));
+const arxivAutoSyncInitialDelayMs = Number(process.env.ARXIV_AUTO_SYNC_INITIAL_DELAY_MS || 30 * 1000);
+const arxivAutoSyncRetryMs = Number(process.env.ARXIV_AUTO_SYNC_RETRY_MS || 60 * 60 * 1000);
 const arxivRssCategories = String(process.env.ARXIV_RSS_CATEGORIES || "cs.NI,cs.AI,cs.LG,cs.MA,cs.DC,cs.IT,eess.SP,eess.SY")
   .split(/[,\s]+/)
   .map((item) => item.trim())
@@ -35,6 +38,7 @@ let arxivLastRequestAt = 0;
 let arxivBlockedUntil = 0;
 let arxivCooldownLoaded = false;
 let arxivCooldownFailures = 0;
+let arxivAutoSyncTimer = null;
 
 const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
@@ -754,6 +758,83 @@ const syncArxivPaperLibrary = async ({ force = false, requestId = "", signal } =
   });
 
   return arxivSyncInflight;
+};
+
+const runArxivAutoSync = async (reason = "scheduled") => {
+  try {
+    const result = await syncArxivPaperLibrary({ force: false });
+    const action = result.skipped ? "skipped" : "synced";
+    console.log(`[arXiv auto sync] ${action} (${reason}): fetched=${result.fetched}, added=${result.added}, updated=${result.updated}, total=${result.total}`);
+    return true;
+  } catch (error) {
+    console.error(`[arXiv auto sync] failed (${reason}): ${error.stack || error.message}`);
+    return false;
+  }
+};
+
+const nextArxivAutoSyncDelay = async () => {
+  const library = await readArxivPaperLibrary();
+  const lastSyncedAt = Date.parse(library.lastSyncedAt || "");
+
+  if (!Number.isFinite(lastSyncedAt)) {
+    return 0;
+  }
+
+  return Math.max(0, lastSyncedAt + arxivDailySyncMs - Date.now());
+};
+
+const scheduleArxivAutoSync = async (reason = "scheduled", delayOverrideMs = null) => {
+  if (!arxivAutoSyncEnabled) {
+    return;
+  }
+
+  if (arxivAutoSyncTimer) {
+    clearTimeout(arxivAutoSyncTimer);
+    arxivAutoSyncTimer = null;
+  }
+
+  let delayMs = 0;
+
+  if (delayOverrideMs !== null) {
+    delayMs = Number.isFinite(delayOverrideMs) && delayOverrideMs >= 0
+      ? delayOverrideMs
+      : 60 * 60 * 1000;
+  } else {
+    try {
+      delayMs = await nextArxivAutoSyncDelay();
+    } catch (error) {
+      console.error(`[arXiv auto sync] could not read last sync time: ${error.stack || error.message}`);
+      delayMs = Number.isFinite(arxivAutoSyncRetryMs) && arxivAutoSyncRetryMs > 0
+        ? arxivAutoSyncRetryMs
+        : 60 * 60 * 1000;
+    }
+  }
+
+  arxivAutoSyncTimer = setTimeout(async () => {
+    arxivAutoSyncTimer = null;
+    const success = await runArxivAutoSync(reason);
+    await scheduleArxivAutoSync(success ? "next-due" : "retry", success ? null : arxivAutoSyncRetryMs);
+  }, delayMs);
+
+  const nextAt = new Date(Date.now() + delayMs).toISOString();
+  console.log(`[arXiv auto sync] next run (${reason}) at ${nextAt}.`);
+};
+
+const startArxivAutoSync = () => {
+  if (!arxivAutoSyncEnabled) {
+    console.log("[arXiv auto sync] disabled.");
+    return;
+  }
+
+  const initialDelayMs = Number.isFinite(arxivAutoSyncInitialDelayMs) && arxivAutoSyncInitialDelayMs >= 0
+    ? arxivAutoSyncInitialDelayMs
+    : 30 * 1000;
+
+  arxivAutoSyncTimer = setTimeout(async () => {
+    arxivAutoSyncTimer = null;
+    await scheduleArxivAutoSync("startup");
+  }, initialDelayMs);
+  console.log(`[arXiv auto sync] enabled: startup check in ${initialDelayMs}ms.`);
 };
 
 const selectArxivLibraryPapers = ({ library, rawQuery, days, maxResults, start = 0 }) => {
@@ -1629,4 +1710,5 @@ const server = createServer(async (request, response) => {
 server.listen(port, host || undefined, () => {
   const visibleHost = host || "localhost";
   console.log(`Paper Insight is running at http://${visibleHost}:${port}`);
+  startArxivAutoSync();
 });
