@@ -156,6 +156,7 @@ const elements = {
   taskRefreshCandidates: $("#taskRefreshCandidates"),
   taskForceArxiv: $("#taskForceArxiv"),
   taskRetry: $("#taskRetry"),
+  candidateForceArxiv: $("#candidateForceArxiv"),
   taskCandidatePanel: $("#taskCandidatePanel"),
   taskProgressPanel: $("#taskProgressPanel"),
   taskDonePanel: $("#taskDonePanel"),
@@ -902,6 +903,7 @@ function setTaskLocked(locked) {
   elements.openExplore.disabled = locked;
   elements.taskRefreshCandidates.disabled = locked;
   elements.taskForceArxiv.disabled = locked;
+  elements.candidateForceArxiv.disabled = locked;
   elements.syncArxiv.disabled = locked;
 }
 
@@ -936,6 +938,7 @@ function showTaskPanel(panelName) {
   elements.taskCandidatePanel.classList.toggle("active", panelName === "candidate");
   elements.taskProgressPanel.classList.toggle("active", panelName === "progress");
   elements.taskDonePanel.classList.toggle("active", panelName === "done");
+  elements.candidateForceArxiv.hidden = panelName !== "candidate";
 }
 
 function llmPayload() {
@@ -985,6 +988,7 @@ function resetTaskModal() {
   elements.taskRefreshCandidates.hidden = true;
   elements.taskForceArxiv.hidden = true;
   elements.taskRetry.hidden = true;
+  elements.candidateForceArxiv.hidden = true;
   elements.candidateList.textContent = "";
   elements.progressFill.style.width = "0%";
   elements.progressPercent.textContent = "0%";
@@ -1004,6 +1008,50 @@ function sourceLabel(source) {
   };
 
   return labels[source] || source || "候选数据源";
+}
+
+function candidateSourceInfo({ source = "", method = "", cacheStatus = "", forceArxiv = false } = {}) {
+  if (forceArxiv || method === "api" || source === "arxiv") {
+    const cached = cacheStatus === "hit" || cacheStatus === "stale";
+    return {
+      code: cached ? "arxiv-api-cache" : "arxiv-api",
+      label: cached ? "arXiv API 缓存" : "arXiv API",
+      detail: "通过 export.arxiv.org/api/query 直接查询"
+    };
+  }
+
+  if (source === "arxiv-library" || method === "library") {
+    return {
+      code: "arxiv-library",
+      label: "本地 arXiv 库",
+      detail: "来自后端 RSS 同步后的本地论文库"
+    };
+  }
+
+  if (source === "arxiv-rss") {
+    return {
+      code: "arxiv-rss",
+      label: "arXiv RSS",
+      detail: "来自 arXiv RSS 同步"
+    };
+  }
+
+  return {
+    code: "unknown",
+    label: sourceLabel(source),
+    detail: "来源未明确标记"
+  };
+}
+
+function annotateCandidateSource(papers, info) {
+  const fetchedAt = new Date().toISOString();
+  return papers.map((paper) => ({
+    ...paper,
+    candidateSource: info.code,
+    candidateSourceLabel: info.label,
+    candidateSourceDetail: info.detail,
+    candidateFetchedAt: fetchedAt
+  }));
 }
 
 function selectedDateWindowLabel() {
@@ -1351,6 +1399,7 @@ function showCandidateConfirmation(papers) {
   setTaskLocked(false);
   setTaskStep("confirm");
   showTaskPanel("candidate");
+  elements.candidateForceArxiv.hidden = false;
   setTaskStatus(`已获取 ${annotatedPapers.length} 篇候选论文${reusedCount ? `，其中 ${reusedCount} 篇已有历史分析` : ""}。请确认要进入列表的论文。`, "warning", "force-arxiv");
 
   annotatedPapers.forEach((paper, index) => {
@@ -1381,10 +1430,16 @@ function showCandidateConfirmation(papers) {
 
     const meta = document.createElement("div");
     meta.className = "candidate-meta";
+    const sourceBadge = document.createElement("span");
+    sourceBadge.className = `candidate-source-badge source-${paper.candidateSource || "unknown"}`;
+    sourceBadge.title = paper.candidateSourceDetail || "";
+    sourceBadge.textContent = paper.candidateSourceLabel || "来源未知";
+
+    const metaText = `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · ${paper.authors.slice(0, 4).join(", ") || "Unknown authors"} · `;
     const reused = paper.reusedAnalysis
       ? ` · 已有分析：${paper.reusedAnalysis.reportTitle}${paper.reusedAnalysis.createdAt ? `（${formatDateTime(paper.reusedAnalysis.createdAt)}）` : ""}`
       : "";
-    meta.textContent = `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · ${paper.authors.slice(0, 4).join(", ") || "Unknown authors"}${reused}`;
+    meta.append(document.createTextNode(metaText), sourceBadge, document.createTextNode(reused));
 
     const summary = document.createElement("div");
     summary.className = "candidate-summary";
@@ -1417,6 +1472,7 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const dateWindowLabel = selectedDateWindowLabel();
   elements.taskForceArxiv.textContent = `强制使用 arXiv API 查询${dateWindowLabel}`;
+  elements.candidateForceArxiv.textContent = `强制 arXiv API 重新获取${dateWindowLabel}`;
   setTaskStatus(forceArxiv ? `arXiv API：正在查询${dateWindowLabel}。` : "本地 arXiv 库：正在同步最新 RSS 并筛选候选论文。");
   const query = currentSearchQuery();
   const candidateLimit = Math.max(5, Math.min(30, Number(elements.limitInput.value) || 10));
@@ -1439,9 +1495,13 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
 
   startSourceStatusPolling(requestId);
 
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), forceArxiv ? 70000 : 45000);
+
   try {
-    const response = await fetch(`/api/papers?${params.toString()}`);
+    const response = await fetch(`/api/papers?${params.toString()}`, { signal: controller.signal });
     resetSourceStatusTimer();
+    window.clearTimeout(timeout);
     const contentType = response.headers.get("content-type") || "";
 
     if (!response.ok) {
@@ -1462,7 +1522,8 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
     const warning = response.headers.get("x-paper-insight-arxiv-warning");
     const sourceReturn = decodeHeaderValue(response.headers.get("x-paper-insight-source-return"));
     const returnHint = sourceReturn ? ` 返回值：${sourceReturn}` : "";
-    const papers = parsePapers(await response.text()).slice(0, candidateLimit);
+    const sourceInfo = candidateSourceInfo({ source, method, cacheStatus, forceArxiv });
+    const papers = annotateCandidateSource(parsePapers(await response.text()).slice(0, candidateLimit), sourceInfo);
 
     if (!papers.length) {
       setTaskLocked(false);
@@ -1481,13 +1542,17 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
       setTaskStatus(`${sourceLabel(source)}：${text}`, "warning", "refresh");
     } else {
       const text = warning ? decodeURIComponent(warning) : `已获取 ${papers.length} 篇候选论文，请确认要进入 AI 分析的论文。`;
-      const action = source === "arxiv-library" && papers.length < candidateLimit ? "force-arxiv" : "";
+      const action = "force-arxiv";
       setTaskStatus(`${sourceLabel(source)}：${text}`, "warning", action);
     }
   } catch (error) {
     resetSourceStatusTimer();
+    window.clearTimeout(timeout);
     setTaskLocked(false);
-    setTaskStatus(`暂时无法获取候选论文：${error.message}`, "error", "force-arxiv");
+    const message = error.name === "AbortError"
+      ? "请求超过等待时间。可能是 arXiv API 或远端网络暂时无响应，请稍后再试。"
+      : error.message;
+    setTaskStatus(`暂时无法获取候选论文：${message}`, "error", "force-arxiv");
   }
 }
 
@@ -1828,10 +1893,13 @@ function appendPaperCard(paper, container, options = {}) {
   const authors = fragment.querySelector(".authors");
   authors.textContent = paper.authors?.slice(0, 8).join(", ") || "Unknown authors";
 
-  if (options.origin) {
+  const sourceOrigin = paper.candidateSourceLabel ? `候选来源：${paper.candidateSourceLabel}` : "";
+  const originText = [options.origin, sourceOrigin].filter(Boolean).join(" · ");
+
+  if (originText) {
     const origin = document.createElement("p");
     origin.className = "paper-origin";
-    origin.textContent = options.origin;
+    origin.textContent = originText;
     authors.insertAdjacentElement("afterend", origin);
   }
 
@@ -1903,7 +1971,7 @@ function appendExplorePaperRow(paper, container) {
 
   const meta = document.createElement("div");
   meta.className = "explore-paper-meta";
-  meta.textContent = `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · ${explorePaperOrigin(paper)}`;
+  meta.textContent = `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · ${paper.candidateSourceLabel || "来源未知"} · ${explorePaperOrigin(paper)}`;
 
   const title = document.createElement("h3");
   title.textContent = paper.title || "未命名论文";
@@ -2279,13 +2347,16 @@ elements.syncArxiv.addEventListener("click", () => {
   syncArxivLibrary({ force: true });
 });
 
-elements.taskForceArxiv.addEventListener("click", () => {
+function confirmForceArxivFetch() {
   const confirmed = window.confirm(`这会直接连接 export.arxiv.org API 查询${selectedDateWindowLabel()}，可能再次返回 429。确认要继续吗？`);
 
   if (confirmed) {
     fetchCandidates({ forceRefresh: true, forceArxiv: true });
   }
-});
+}
+
+elements.taskForceArxiv.addEventListener("click", confirmForceArxivFetch);
+elements.candidateForceArxiv.addEventListener("click", confirmForceArxivFetch);
 
 elements.taskClose.addEventListener("click", () => {
   closeTaskDialog();

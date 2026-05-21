@@ -916,7 +916,11 @@ const sanitizePaper = (paper) => ({
   link: String(paper.link || ""),
   absLink: String(paper.absLink || paper.id || ""),
   primaryCategory: String(paper.primaryCategory || "arXiv"),
-  categories: Array.isArray(paper.categories) ? paper.categories.slice(0, 12).map((category) => String(category)) : []
+  categories: Array.isArray(paper.categories) ? paper.categories.slice(0, 12).map((category) => String(category)) : [],
+  candidateSource: truncate(paper.candidateSource, 80),
+  candidateSourceLabel: truncate(paper.candidateSourceLabel, 120),
+  candidateSourceDetail: truncate(paper.candidateSourceDetail, 240),
+  candidateFetchedAt: String(paper.candidateFetchedAt || "")
 });
 
 const extractJson = (content) => {
