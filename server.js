@@ -8,6 +8,7 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(__dirname, "public");
 const publicRoot = publicDir.endsWith(sep) ? publicDir : `${publicDir}${sep}`;
 const port = Number(process.env.PORT || 3000);
+const host = String(process.env.HOST || process.env.BIND_HOST || "").trim();
 const arxivCacheDir = join(__dirname, ".cache", "arxiv");
 const arxivCooldownPath = join(__dirname, ".cache", "arxiv-cooldown.json");
 const arxivPaperLibraryPath = join(__dirname, ".cache", "arxiv-papers.json");
@@ -1625,6 +1626,7 @@ const server = createServer(async (request, response) => {
   await serveStatic(request, response);
 });
 
-server.listen(port, () => {
-  console.log(`Paper Insight is running at http://localhost:${port}`);
+server.listen(port, host || undefined, () => {
+  const visibleHost = host || "localhost";
+  console.log(`Paper Insight is running at http://${visibleHost}:${port}`);
 });
