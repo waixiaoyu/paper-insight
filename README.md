@@ -1,78 +1,113 @@
 # Paper Insight
 
-Paper Insight 是一个本地 Web 应用，用来生成论文推荐列表。它会先从论文数据源获取候选论文，再调用大模型对每篇论文做分析、抽取、打分和总结，最后把高于推荐阈值的论文展示为推荐列表。
+Paper Insight 是一个本地优先的论文推荐 Web 应用，用来持续同步 arXiv 最新论文，并通过 DeepSeek 对候选论文做分析、打分和总结。
 
 默认主题聚焦网络通信、5G/6G、AI/机器学习/大模型、异常检测、流量预测、网络优化、根因分析、数字孪生网络、意图网络、网络自动化、编排和智能体系统。
+
+## 当前能力
+
+- 从 arXiv RSS 自动同步最新论文到本地论文库。
+- 从本地论文库按时间范围和查询条件筛选候选论文。
+- 用户确认候选论文后，再逐篇调用 DeepSeek 分析。
+- 高于推荐阈值的论文进入推荐列表，其他论文进入隐藏列表。
+- 支持论文探索页，把历史生成过的论文集中浏览。
+- 支持摘要翻译，翻译必须通过 LLM API。
+- 支持强制使用 arXiv API 重新获取候选，并在界面中标注候选来源。
 
 ## 核心流程
 
 1. 在左侧确认或编辑论文搜索条件。
 2. 点击“生成推荐列表”。
-3. 应用弹出流程窗口，并依次展示当前步骤：
-   - 获取候选论文
-   - 用户确认候选论文
-   - 逐篇调用 DeepSeek 分析
-   - 生成推荐列表
-4. 分析完成后，最新推荐列表会在右侧自动打开。
-5. 可以在报告内切换推荐论文、隐藏论文和全部分析。
+3. 流程弹窗展示候选获取进度。
+4. 候选列表出现后，用户确认要分析的论文。
+5. 可选择“强制 arXiv API 重新获取”，绕过本地库直接查询 arXiv API。
+6. DeepSeek 逐篇分析论文，界面展示当前论文、耗时和进度。
+7. 分析完成后生成新的推荐列表。
+8. 可以在推荐模式、探索模式和单篇分析页之间切换。
 
-## 数据源
+## 论文来源
 
-候选论文来自 arXiv。为了避免 arXiv API 429 限流导致应用不可用，服务端优先使用 arXiv RSS 同步本地论文库，再从本地库筛选候选论文。
+候选论文只来自 arXiv。默认路径是：
+
+```text
+arXiv RSS -> 本地 arXiv 库 -> 候选筛选 -> 用户确认 -> DeepSeek 分析
+```
+
+强制获取路径是：
+
+```text
+arXiv API -> 候选列表 -> 用户确认 -> DeepSeek 分析
+```
+
+界面会标注每篇候选论文的来源：
+
+- `本地 arXiv 库`：来自后端 RSS 同步后的本地论文库。
+- `arXiv API`：来自 `export.arxiv.org/api/query` 的直接查询。
+- `arXiv API 缓存`：来自直接 API 查询后的短期缓存或异常兜底。
 
 更完整的论文获取、RSS 同步、本地库、429 处理和 DeepSeek 输入说明见 [论文获取逻辑说明](PAPER_FETCHING_README.md)。
 
-获取顺序：
+## 后端自动同步
 
-1. 本地 arXiv 库：默认路径，来自每日 RSS 同步。
-2. arXiv API：只有用户确认“用 arXiv API 扩展”时才直接查询。
-3. 本地 arXiv API 缓存：仅用于直接 API 查询后的短期缓存或异常兜底。
+后端进程会自动维护 arXiv RSS 同步，不依赖系统定时器调用 HTTP 接口。
 
-获取候选时，弹窗会显示当前正在使用 `本地 arXiv 库`、`arXiv RSS` 还是 `arXiv API`。
+同步判断逻辑：
+
+- 后端读取 `.cache/arxiv-papers.json` 里的 `lastSyncedAt`。
+- 按 `lastSyncedAt + ARXIV_DAILY_SYNC_MS` 计算下一次同步时间。
+- 如果服务停了几天，重启后发现本地库过期，会自动同步。
+- 如果刚同步过，会等到真正到期再同步。
+- 同步失败后会按 `ARXIV_AUTO_SYNC_RETRY_MS` 重新尝试。
+
+默认 RSS 分类：
+
+```text
+cs.NI, cs.AI, cs.LG, cs.MA, cs.DC, cs.IT, eess.SP, eess.SY
+```
 
 ## 大模型分析
 
 论文推荐必须使用 DeepSeek 或 OpenAI 兼容 API。应用不会使用本地关键词规则兜底。
+
+DeepSeek 当前输入包括论文标题、作者、分类、日期、arXiv 链接和摘要。当前服务端不读取 PDF 全文，DeepSeek API 也不能保证自行联网打开论文链接。
 
 大模型负责生成：
 
 - 推荐分数
 - 分维度评分
 - 一句话概要
-- 问题、方法、贡献、实验、网络价值和局限分析
+- 问题、背景、方法、技术细节、贡献、实验、网络价值和局限分析
 - 阅读路径和推荐理由
 - 摘要翻译
 
 如果 LLM 调用失败、结果缺字段或没有返回某篇论文的分析，服务端会返回错误。应用不会自动无限重试，用户可以在界面上手动确认是否重试。
 
+## 评分维度
+
+当前使用 4 个维度辅助打分：
+
+- 场景问题价值
+- 方法新意
+- 工程落地价值
+- 证据强度
+
+网络相关和 AI 相关不再作为评分维度，因为它们已经是搜索条件的一部分。
+
 ## 推荐展示
 
 推荐报告包含三种视图：
 
-- 推荐论文：分数达到阈值的论文
-- 隐藏论文：分数低于阈值的论文
-- 全部分析：本次已分析的所有论文
+- 推荐论文：分数达到阈值的论文。
+- 隐藏论文：分数低于阈值的论文，仍然可以打开查看。
+- 全部分析：本次已分析的所有论文。
 
-论文卡片用于快速浏览，包含概要、分数、命中关键词、阅读建议、原始摘要和摘要翻译。
+单篇论文分析页用于连续阅读，会保留大模型生成的技术分析正文，不再展示摘要和维度条。
 
-单篇论文分析页用于连续阅读，不再展示摘要和维度条，只保留大模型生成的技术分析正文。
-
-## 评分维度
-
-当前使用 6 个维度辅助打分：
-
-- 网络相关
-- AI 相关
-- 场景相关
-- 新颖性信号
-- 工程价值
-- 证据强度
-
-维度分只在论文列表卡片中展示，用于快速筛选；单篇详情页不展示这些维度条。
+论文探索页会汇总历史推荐列表里的论文，方便跨列表浏览和搜索。
 
 ## API Key
 
-打开应用时会弹出 DeepSeek API Key 输入框。Key 只保存在当前浏览器会话的 `sessionStorage`，不会写入项目文件。
+DeepSeek API Key 可以在页面左上角齿轮设置里输入。Key 只保存在当前浏览器会话的 `sessionStorage`，不会写入项目文件。
 
 也可以通过环境变量提供 API Key：
 
@@ -108,22 +143,24 @@ node server.js
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `LLM_MAX_OUTPUT_TOKENS`：默认 `12000`，控制 LLM 单次分析的最大输出 token。
-- `LLM_RESPONSE_MAX_CHARS`：默认 `500000`，只做超大响应保护；不会再把 DeepSeek 返回内容截断成短文本。
+- `LLM_RESPONSE_MAX_CHARS`：默认 `500000`，只做超大响应保护；不会把 DeepSeek 返回内容截断成短文本。
 - `LLM_REQUEST_TIMEOUT_MS`：默认 `120000`，控制 LLM 分析请求超时时间。
 
-## 可选配置
+## 配置
 
 ```powershell
-$env:PORT=3001
+$env:PORT=3000
+$env:HOST="127.0.0.1"
 ```
 
-指定服务端口，默认是 `3000`。
+`HOST` 或 `BIND_HOST` 用来控制监听地址。远端部署建议设置为 `127.0.0.1`，避免 Web 页面和 API 直接暴露在公网。
 
 ```powershell
 $env:ARXIV_MIN_INTERVAL_MS=3500
 $env:ARXIV_CACHE_TTL_MS=1800000
 $env:ARXIV_STALE_CACHE_TTL_MS=86400000
-$env:ARXIV_429_COOLDOWN_MS=600000
+$env:ARXIV_429_COOLDOWN_MS=1800000
+$env:ARXIV_429_MAX_COOLDOWN_MS=7200000
 $env:ARXIV_DAILY_SYNC_MS=72000000
 $env:ARXIV_AUTO_SYNC=1
 $env:ARXIV_AUTO_SYNC_INITIAL_DELAY_MS=30000
@@ -131,9 +168,7 @@ $env:ARXIV_AUTO_SYNC_RETRY_MS=3600000
 $env:ARXIV_RSS_CATEGORIES="cs.NI,cs.AI,cs.LG,cs.MA,cs.DC,cs.IT,eess.SP,eess.SY"
 ```
 
-调整 arXiv 请求间隔、缓存时间、429 冷却时间、RSS 自动同步和 RSS 分类。后端会读取本地库的 `lastSyncedAt`，按上一次成功同步时间计算下一次同步；如果服务停了几天，重启后会发现本地库过期并自动同步。
-
-## 运行
+## 本地运行
 
 项目不依赖第三方 npm 包，使用 Node.js 原生 HTTP 服务。
 
@@ -147,24 +182,57 @@ node server.js
 http://localhost:3000
 ```
 
+## 远端部署
+
+远端建议使用 systemd 常驻运行，并让服务只监听远端本机：
+
+```ini
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+ExecStart=/usr/bin/node /home/<user>/paper-insight/server.js
+```
+
+远端不直接开放公网 `3000` 端口。需要访问远端页面时，在本机开启 SSH 隧道：
+
+```powershell
+& 'D:\Program Files\Git\usr\bin\ssh.exe' -i D:\code\paper-insight\.cache\paper_insight_ed25519 -N -L 3001:127.0.0.1:3000 <user>@<server>
+```
+
+然后打开：
+
+```text
+http://localhost:3001
+```
+
+常用远端命令：
+
+```bash
+sudo systemctl status paper-insight
+sudo systemctl restart paper-insight
+sudo journalctl -u paper-insight -f
+```
+
 ## 项目结构
 
 ```text
-server.js          # Node HTTP 服务、论文数据源、LLM 分析和翻译接口
-public/index.html # 页面结构
-public/styles.css # 界面样式
-public/app.js     # 前端交互、流程弹窗、报告展示和本地历史列表
-README.md         # 项目说明
+server.js                 # Node HTTP 服务、arXiv 同步、候选筛选、LLM 分析和翻译接口
+public/index.html        # 页面结构
+public/styles.css        # 界面样式
+public/app.js            # 前端交互、流程弹窗、报告展示、探索页和本地历史列表
+PAPER_FETCHING_README.md # 论文获取业务逻辑说明
+README.md                # 项目说明
 ```
 
 ## 待办
 
-- 基于论文原文分析：当前 DeepSeek 分析输入主要是论文标题、作者、类别、日期、arXiv 链接和摘要。后续需要由服务端主动抓取 arXiv HTML、PDF 或 TeX 源文件，抽取正文并做本地缓存，再把可控长度的原文内容交给 DeepSeek 分析。
-- 分析来源标记：在结果中标明本次分析是基于“摘要和元数据”还是“论文原文”，避免把摘要判断误认为全文阅读。
+- 基于论文原文分析：服务端主动抓取 arXiv HTML、PDF 或 TeX 源文件，抽取正文并做本地缓存，再把可控长度的原文内容交给 DeepSeek 分析。
+- 分析来源标记：在结果中标明本次分析是基于“摘要和元数据”还是“论文原文”。
+- 给全文缓存增加大小上限和清理策略。
 
 ## 注意事项
 
-- 当前服务端不读取 PDF 全文，DeepSeek API 也不能保证自行联网打开论文链接。
-- 摘要翻译也必须通过 LLM API。
-- 本地缓存保存在 `.cache/`，该目录不会提交到 Git。
 - API Key 不应该提交到仓库。
+- 本地缓存保存在 `.cache/`，该目录不会提交到 Git。
+- 强制 arXiv API 可能遇到 `429 Rate exceeded`，这是 arXiv 服务端限流，不代表应用逻辑卡死。
+- 远端部署时不要把服务直接绑定到 `0.0.0.0` 暴露公网，优先使用 SSH 隧道访问。
