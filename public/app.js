@@ -927,10 +927,14 @@ function setTaskStep(step) {
 }
 
 function setTaskStatus(message, type = "loading", action = "") {
+  const candidatePanelActive = elements.taskCandidatePanel.classList.contains("active");
+  const showRefreshCandidates = action === "refresh";
+  const showForceArxiv = (action === "refresh" || action === "force-arxiv") && !candidatePanelActive;
+
   elements.taskStatus.className = `task-status visible${type === "error" ? " error" : ""}${type === "warning" ? " warning" : ""}${type === "success" ? " success" : ""}`;
   elements.taskStatus.querySelector("p").textContent = message;
-  elements.taskRefreshCandidates.hidden = action !== "refresh";
-  elements.taskForceArxiv.hidden = action !== "refresh" && action !== "force-arxiv";
+  elements.taskRefreshCandidates.hidden = !showRefreshCandidates;
+  elements.taskForceArxiv.hidden = !showForceArxiv;
   elements.taskRetry.hidden = action !== "retry";
 }
 
