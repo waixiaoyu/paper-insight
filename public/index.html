@@ -66,6 +66,48 @@
       </div>
     </dialog>
 
+    <dialog id="syncProgressDialog" class="sync-progress-dialog">
+      <div class="sync-progress-shell">
+        <header class="sync-progress-header">
+          <div>
+            <p class="eyebrow">arXiv 本地库</p>
+            <h2>正在同步</h2>
+          </div>
+        </header>
+
+        <div class="sync-progress-body">
+          <div class="spinner" aria-hidden="true"></div>
+          <p id="syncProgressMessage">正在连接 arXiv RSS...</p>
+          <div class="sync-progress-detail">
+            <span id="syncProgressCategories"></span>
+          </div>
+        </div>
+
+        <footer class="sync-progress-footer">
+          <button id="syncProgressClose" class="secondary-action" type="button" disabled>关闭</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <dialog id="syncHistoryDialog" class="sync-history-dialog">
+      <div class="sync-history-shell">
+        <header class="sync-history-header">
+          <div>
+            <p class="eyebrow">arXiv 本地库</p>
+            <h2>同步历史</h2>
+            <p id="syncHistoryStatus">查看最近的 RSS 同步记录。</p>
+          </div>
+          <button id="syncHistoryClose" class="ghost-button" type="button">关闭</button>
+        </header>
+
+        <div id="syncHistoryList" class="sync-history-list"></div>
+
+        <footer class="sync-history-footer">
+          <button id="refreshSyncHistory" class="secondary-action" type="button">刷新</button>
+        </footer>
+      </div>
+    </dialog>
+
     <dialog id="taskDialog" class="task-dialog">
       <div class="task-dialog-shell">
         <header class="task-dialog-header">
@@ -203,7 +245,10 @@
                 <strong id="syncStatus">检查同步状态</strong>
                 <div id="syncDetails" class="query-summary-details"></div>
               </div>
-              <button id="syncArxiv" class="secondary-action" type="button">同步 arXiv</button>
+              <div class="query-card-actions">
+                <button id="syncArxiv" class="secondary-action" type="button">同步 arXiv</button>
+                <button id="openSyncHistory" class="text-action" type="button">查看同步历史</button>
+              </div>
             </div>
           </section>
 

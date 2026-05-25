@@ -146,6 +146,16 @@ const elements = {
   syncStatus: $("#syncStatus"),
   syncDetails: $("#syncDetails"),
   syncArxiv: $("#syncArxiv"),
+  openSyncHistory: $("#openSyncHistory"),
+  syncProgressDialog: $("#syncProgressDialog"),
+  syncProgressMessage: $("#syncProgressMessage"),
+  syncProgressCategories: $("#syncProgressCategories"),
+  syncProgressClose: $("#syncProgressClose"),
+  syncHistoryDialog: $("#syncHistoryDialog"),
+  syncHistoryClose: $("#syncHistoryClose"),
+  syncHistoryStatus: $("#syncHistoryStatus"),
+  syncHistoryList: $("#syncHistoryList"),
+  refreshSyncHistory: $("#refreshSyncHistory"),
   restoreQuery: $("#restoreQuery"),
   taskDialog: $("#taskDialog"),
   taskTitle: $("#taskTitle"),
@@ -234,6 +244,7 @@ const state = {
   lastAnalyzePapers: [],
   progressTimer: 0,
   sourceStatusTimer: 0,
+  syncStatusTimer: 0,
   progressState: null,
   taskLocked: false,
   taskCloseTimer: 0
@@ -983,9 +994,17 @@ function resetSourceStatusTimer() {
   }
 }
 
+function resetSyncStatusTimer() {
+  if (state.syncStatusTimer) {
+    window.clearInterval(state.syncStatusTimer);
+    state.syncStatusTimer = 0;
+  }
+}
+
 function resetTaskModal() {
   resetProgressTimer();
   resetSourceStatusTimer();
+  resetSyncStatusTimer();
   setTaskLocked(false);
   setTaskStep("fetch");
   showTaskPanel("");
@@ -1073,6 +1092,134 @@ function renderArxivSyncStatus(data = {}) {
     : "";
 }
 
+function syncHistoryStatusLabel(status) {
+  const labels = {
+    success: "成功",
+    skipped: "跳过",
+    failed: "失败"
+  };
+
+  return labels[status] || "未知";
+}
+
+function syncHistoryTriggerLabel(trigger) {
+  const labels = {
+    manual: "手动同步",
+    auto: "自动同步",
+    "auto-startup": "启动检查",
+    "auto-next-due": "定时同步",
+    "auto-retry": "失败重试",
+    "candidate-fetch": "获取候选",
+    "candidate-refresh": "刷新候选"
+  };
+
+  return labels[trigger] || trigger || "未知来源";
+}
+
+function formatDurationMs(value) {
+  const ms = Math.max(0, Number(value) || 0);
+
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} 秒`;
+}
+
+function renderSyncHistory(records = []) {
+  elements.syncHistoryList.textContent = "";
+  elements.syncHistoryStatus.textContent = records.length
+    ? `最近 ${records.length} 次同步记录`
+    : "暂无同步历史；下一次同步后会自动记录。";
+
+  if (!records.length) {
+    const empty = document.createElement("p");
+    empty.className = "sync-history-empty";
+    empty.textContent = "还没有可展示的同步记录。";
+    elements.syncHistoryList.append(empty);
+    return;
+  }
+
+  records.forEach((record) => {
+    const item = document.createElement("article");
+    item.className = `sync-history-item sync-history-${record.status || "unknown"}`;
+
+    const heading = document.createElement("div");
+    heading.className = "sync-history-item-heading";
+
+    const badge = document.createElement("span");
+    badge.className = "sync-history-badge";
+    badge.textContent = syncHistoryStatusLabel(record.status);
+
+    const title = document.createElement("strong");
+    title.textContent = record.finishedAt ? formatDateTime(record.finishedAt) : "时间未知";
+
+    const trigger = document.createElement("span");
+    trigger.textContent = `${syncHistoryTriggerLabel(record.trigger)}${record.force ? " · 强制" : ""}`;
+
+    heading.append(badge, title, trigger);
+
+    const stats = document.createElement("div");
+    stats.className = "sync-history-stats";
+    [
+      ["获取", record.fetched],
+      ["新增", record.added],
+      ["更新", record.updated],
+      ["总量", record.total],
+      ["耗时", formatDurationMs(record.durationMs)]
+    ].forEach(([label, value]) => {
+      const stat = document.createElement("span");
+      stat.textContent = `${label} ${value}`;
+      stats.append(stat);
+    });
+
+    const detail = document.createElement("p");
+    detail.textContent = record.error?.detail || record.error?.message || record.message || "同步完成。";
+
+    item.append(heading, stats, detail);
+    elements.syncHistoryList.append(item);
+  });
+}
+
+async function loadSyncHistory() {
+  elements.syncHistoryStatus.textContent = "正在读取同步历史...";
+  elements.syncHistoryList.textContent = "";
+
+  try {
+    const response = await fetch("/api/arxiv-sync/history?limit=50");
+    const text = await response.text();
+    let data = {};
+
+    if (text.trim()) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        const preview = text.replace(/\s+/g, " ").trim().slice(0, 120);
+        const message = response.status === 404
+          ? "当前服务还没有同步历史接口，请部署最新代码后再试。"
+          : `同步历史返回格式异常：${preview || "空响应"}`;
+        throw new Error(message);
+      }
+    }
+
+    if (!response.ok) {
+      const message = response.status === 404
+        ? "当前服务还没有同步历史接口，请部署最新代码后再试。"
+        : data.message || data.detail || `读取同步历史失败（HTTP ${response.status}）。`;
+      throw new Error(message);
+    }
+
+    renderSyncHistory(Array.isArray(data.records) ? data.records : []);
+  } catch (error) {
+    elements.syncHistoryStatus.textContent = `读取失败：${error.message}`;
+    elements.syncHistoryList.textContent = "";
+    const empty = document.createElement("p");
+    empty.className = "sync-history-empty";
+    empty.textContent = "暂时无法读取同步历史。";
+    elements.syncHistoryList.append(empty);
+  }
+}
+
 async function refreshArxivSyncStatus({ autoSync = false } = {}) {
   try {
     const response = await fetch("/api/arxiv-sync");
@@ -1088,12 +1235,37 @@ async function refreshArxivSyncStatus({ autoSync = false } = {}) {
   }
 }
 
-async function syncArxivLibrary({ force = true, silent = false } = {}) {
+function showSyncProgressDialog(message = "正在同步...", categories = []) {
+  elements.syncProgressMessage.textContent = message;
+  elements.syncProgressCategories.textContent = categories.length ? `分类：${categories.join(", ")}` : "";
+  elements.syncProgressClose.disabled = true;
+
+  if (typeof elements.syncProgressDialog.showModal === "function") {
+    elements.syncProgressDialog.showModal();
+  }
+}
+
+function hideSyncProgressDialog() {
+  elements.syncProgressClose.disabled = false;
+
+  if (elements.syncProgressDialog.open) {
+    elements.syncProgressDialog.close();
+  }
+}
+
+async function syncArxivLibrary({ force = true, silent = false, trigger = "" } = {}) {
   elements.syncArxiv.disabled = true;
 
   if (!silent) {
+    showSyncProgressDialog("正在连接 arXiv RSS...", ["cs.NI", "cs.AI", "cs.LG", "cs.MA", "cs.DC", "cs.IT", "eess.SP", "eess.SY"]);
     elements.syncStatus.textContent = "正在同步 arXiv RSS";
     elements.syncDetails.textContent = "";
+  }
+
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (!silent) {
+    startSyncStatusPolling(requestId);
   }
 
   try {
@@ -1103,6 +1275,9 @@ async function syncArxivLibrary({ force = true, silent = false } = {}) {
       params.set("force", "1");
     }
 
+    params.set("trigger", trigger || (silent ? "auto" : "manual"));
+
+    elements.syncProgressMessage.textContent = "正在获取论文列表...";
     const response = await fetch(`/api/arxiv-sync?${params.toString()}`, { method: "POST" });
     const data = await response.json();
 
@@ -1110,10 +1285,16 @@ async function syncArxivLibrary({ force = true, silent = false } = {}) {
       throw new Error(data.detail || data.message || "同步失败。");
     }
 
+    elements.syncProgressMessage.textContent = "正在处理数据...";
+    await new Promise((resolve) => setTimeout(resolve, 300));
     renderArxivSyncStatus(data);
 
     if (!silent) {
       showStatus(`arXiv 同步完成：获取 ${data.fetched || 0} 篇，新增 ${data.added || 0} 篇。`, "warning");
+    }
+
+    if (elements.syncHistoryDialog.open) {
+      await loadSyncHistory();
     }
 
     return data;
@@ -1123,8 +1304,15 @@ async function syncArxivLibrary({ force = true, silent = false } = {}) {
     if (!silent) {
       showStatus(`arXiv 同步失败：${error.message}`, "error");
     }
+    if (elements.syncHistoryDialog.open) {
+      await loadSyncHistory();
+    }
     return null;
   } finally {
+    resetSyncStatusTimer();
+    if (!silent) {
+      hideSyncProgressDialog();
+    }
     elements.syncArxiv.disabled = state.taskLocked;
   }
 }
@@ -1200,6 +1388,35 @@ function startSourceStatusPolling(requestId) {
       // Status polling is only for display; the main request still owns errors.
     }
   }, 700);
+}
+
+function startSyncStatusPolling(requestId) {
+  resetSyncStatusTimer();
+  state.syncStatusTimer = window.setInterval(async () => {
+    try {
+      const response = await fetch(`/api/papers/status?requestId=${encodeURIComponent(requestId)}`);
+
+      if (!response.ok) {
+        return;
+      }
+
+      const data = await response.json();
+
+      if (!data.message || data.state === "idle") {
+        return;
+      }
+
+      if (data.source === "arxiv-rss") {
+        elements.syncProgressMessage.textContent = data.message;
+      }
+
+      if (data.state === "done" || data.state === "error") {
+        resetSyncStatusTimer();
+      }
+    } catch {
+      // Sync status polling is only for display; the main request still owns errors.
+    }
+  }, 500);
 }
 
 function setMetrics({ candidates = 0, recommended = 0, hidden = 0, mode = "-" } = {}) {
@@ -2350,6 +2567,28 @@ elements.taskRefreshCandidates.addEventListener("click", () => {
 elements.syncArxiv.addEventListener("click", () => {
   syncArxivLibrary({ force: true });
 });
+
+elements.openSyncHistory.addEventListener("click", () => {
+  if (typeof elements.syncHistoryDialog.showModal === "function" && !elements.syncHistoryDialog.open) {
+    elements.syncHistoryDialog.showModal();
+  }
+
+  loadSyncHistory();
+});
+
+elements.syncHistoryClose.addEventListener("click", () => {
+  if (elements.syncHistoryDialog.open) {
+    elements.syncHistoryDialog.close();
+  }
+});
+
+elements.syncProgressClose.addEventListener("click", () => {
+  if (elements.syncProgressDialog.open) {
+    elements.syncProgressDialog.close();
+  }
+});
+
+elements.refreshSyncHistory.addEventListener("click", loadSyncHistory);
 
 function confirmForceArxivFetch() {
   const confirmed = window.confirm(`这会直接连接 export.arxiv.org API 查询${selectedDateWindowLabel()}，可能再次返回 429。确认要继续吗？`);

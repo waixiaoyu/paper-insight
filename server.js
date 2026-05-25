@@ -12,10 +12,12 @@ const host = String(process.env.HOST || process.env.BIND_HOST || "").trim();
 const arxivCacheDir = join(__dirname, ".cache", "arxiv");
 const arxivCooldownPath = join(__dirname, ".cache", "arxiv-cooldown.json");
 const arxivPaperLibraryPath = join(__dirname, ".cache", "arxiv-papers.json");
+const arxivSyncHistoryPath = join(__dirname, ".cache", "arxiv-sync-history.json");
 const arxivMinIntervalMs = Number(process.env.ARXIV_MIN_INTERVAL_MS || 3500);
 const arxivFreshCacheMs = Number(process.env.ARXIV_CACHE_TTL_MS || 30 * 60 * 1000);
 const arxivStaleCacheMs = Number(process.env.ARXIV_STALE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
 const arxivDailySyncMs = Number(process.env.ARXIV_DAILY_SYNC_MS || 20 * 60 * 60 * 1000);
+const arxivSyncHistoryLimit = Math.min(Math.max(Number(process.env.ARXIV_SYNC_HISTORY_LIMIT || 100), 20), 500);
 const arxivCooldownMs = Number(process.env.ARXIV_429_COOLDOWN_MS || 30 * 60 * 1000);
 const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 60 * 60 * 1000);
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
@@ -32,6 +34,7 @@ const arxivMemoryCache = new Map();
 const arxivInflight = new Map();
 const paperRequestStatuses = new Map();
 let arxivPaperLibraryMemory = null;
+let arxivSyncHistoryMemory = null;
 let arxivSyncInflight = null;
 let arxivQueue = Promise.resolve();
 let arxivLastRequestAt = 0;
@@ -208,6 +211,44 @@ const arxivCacheKey = (value) => createHash("sha256").update(String(value)).dige
 
 const arxivCachePath = (key) => join(arxivCacheDir, `${key}.json`);
 
+const emptyArxivSyncHistory = () => ({
+  version: 1,
+  updatedAt: "",
+  records: []
+});
+
+const normalizeArxivSyncHistoryEntry = (entry = {}) => {
+  const startedAt = String(entry.startedAt || entry.finishedAt || new Date().toISOString());
+  const finishedAt = String(entry.finishedAt || startedAt);
+  const durationMs = Math.max(0, Math.round(Number(entry.durationMs) || 0));
+  const status = ["success", "skipped", "failed"].includes(entry.status) ? entry.status : "success";
+  const error = entry.error
+    ? {
+        code: truncate(entry.error.code, 80),
+        message: truncate(entry.error.message, 500),
+        detail: truncate(entry.error.detail, 800)
+      }
+    : null;
+
+  return {
+    id: truncate(entry.id || arxivCacheKey(`${startedAt}:${finishedAt}:${entry.trigger || ""}:${status}`).slice(0, 16), 40),
+    startedAt,
+    finishedAt,
+    durationMs,
+    status,
+    trigger: truncate(entry.trigger || "unknown", 80),
+    force: Boolean(entry.force),
+    requestId: truncate(entry.requestId, 80),
+    categories: Array.isArray(entry.categories) ? entry.categories.filter(Boolean).map(String).slice(0, 50) : [],
+    fetched: Math.max(0, Number(entry.fetched) || 0),
+    added: Math.max(0, Number(entry.added) || 0),
+    updated: Math.max(0, Number(entry.updated) || 0),
+    total: Math.max(0, Number(entry.total) || 0),
+    message: truncate(entry.message, 500),
+    error
+  };
+};
+
 const normalizePaperKey = (value) => String(value || "")
   .toLowerCase()
   .replace(/^https?:\/\/(dx\.)?doi\.org\//, "doi:")
@@ -320,6 +361,62 @@ const writeArxivPaperLibrary = async (library) => {
   return nextLibrary;
 };
 
+const readArxivSyncHistory = async () => {
+  if (arxivSyncHistoryMemory) {
+    return arxivSyncHistoryMemory;
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(arxivSyncHistoryPath, "utf8"));
+    arxivSyncHistoryMemory = {
+      ...emptyArxivSyncHistory(),
+      ...parsed,
+      records: Array.isArray(parsed.records)
+        ? parsed.records.map(normalizeArxivSyncHistoryEntry).filter((entry) => entry.startedAt)
+        : []
+    };
+  } catch {
+    arxivSyncHistoryMemory = emptyArxivSyncHistory();
+  }
+
+  return arxivSyncHistoryMemory;
+};
+
+const writeArxivSyncHistory = async (history) => {
+  const nextHistory = {
+    ...emptyArxivSyncHistory(),
+    ...history,
+    updatedAt: new Date().toISOString(),
+    records: Array.isArray(history.records)
+      ? history.records.map(normalizeArxivSyncHistoryEntry).filter((entry) => entry.startedAt).slice(0, arxivSyncHistoryLimit)
+      : []
+  };
+
+  arxivSyncHistoryMemory = nextHistory;
+  await mkdir(join(__dirname, ".cache"), { recursive: true });
+  await writeFile(arxivSyncHistoryPath, JSON.stringify(nextHistory, null, 2), "utf8");
+  return nextHistory;
+};
+
+const appendArxivSyncHistory = async (entry) => {
+  const history = await readArxivSyncHistory();
+  const normalized = normalizeArxivSyncHistoryEntry(entry);
+  await writeArxivSyncHistory({
+    ...history,
+    records: [normalized, ...history.records]
+  });
+  return normalized;
+};
+
+const safeAppendArxivSyncHistory = async (entry) => {
+  try {
+    return await appendArxivSyncHistory(entry);
+  } catch (error) {
+    console.warn(`Could not write arXiv sync history: ${error.message}`);
+    return null;
+  }
+};
+
 const mergeArxivPapersIntoLibrary = async (papers, meta = {}) => {
   const library = await readArxivPaperLibrary();
   const byKey = new Map();
@@ -342,12 +439,26 @@ const mergeArxivPapersIntoLibrary = async (papers, meta = {}) => {
 
     if (byKey.has(key)) {
       const existing = byKey.get(key);
-      byKey.set(key, {
+
+      const hasChanges = (
+        existing.title !== normalized.title ||
+        existing.summary !== normalized.summary ||
+        existing.published !== normalized.published ||
+        existing.updated !== normalized.updated ||
+        JSON.stringify(existing.authors) !== JSON.stringify(normalized.authors)
+      );
+
+      const merged = {
         ...existing,
         ...normalized,
         storedAt: existing.storedAt || normalized.storedAt
-      });
-      updated += 1;
+      };
+
+      byKey.set(key, merged);
+
+      if (hasChanges) {
+        updated += 1;
+      }
     } else {
       byKey.set(key, normalized);
       added += 1;
@@ -696,35 +807,93 @@ const fetchLatestArxivRssPapers = async ({ signal, requestId }) => {
   const rssUrl = new URL(`https://rss.arxiv.org/atom/${categories.map(encodeURIComponent).join("+")}`);
 
   setPaperRequestStatus(requestId, "arxiv-rss", `正在同步 arXiv RSS：${categories.join(", ")}。`);
+  setPaperRequestStatus(requestId, "arxiv-rss", "正在连接 arXiv...", "running");
   const response = await fetchArxivQueued(rssUrl, signal);
 
   if (!response.ok) {
     throw responseSourceError("arXiv RSS", await readResponseReturnValue("arXiv RSS", response));
   }
 
-  const xml = await response.text();
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  let downloadedBytes = 0;
+  const chunks = [];
+  let lastProgressUpdate = 0;
 
-  if (/Feed error for query/i.test(xml)) {
-    const error = new Error(`arXiv RSS 不接受当前分类组合：${categories.join(", ")}`);
-    error.detail = error.message;
-    throw error;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+
+      downloadedBytes += value.length;
+      chunks.push(value);
+
+      const now = Date.now();
+      if (now - lastProgressUpdate > 500) {
+        if (contentLength > 0) {
+          const percent = Math.round((downloadedBytes / contentLength) * 100);
+          const sizeMB = (downloadedBytes / 1024 / 1024).toFixed(1);
+          setPaperRequestStatus(requestId, "arxiv-rss", `正在下载论文列表 ${percent}% (${sizeMB} MB)...`, "running");
+        } else {
+          const sizeMB = (downloadedBytes / 1024 / 1024).toFixed(1);
+          setPaperRequestStatus(requestId, "arxiv-rss", `正在下载论文列表 (${sizeMB} MB)...`, "running");
+        }
+        lastProgressUpdate = now;
+      }
+    }
+
+    setPaperRequestStatus(requestId, "arxiv-rss", "正在解析数据...", "running");
+    const xml = decoder.decode(Buffer.concat(chunks));
+
+    if (/Feed error for query/i.test(xml)) {
+      const error = new Error(`arXiv RSS 不接受当前分类组合：${categories.join(", ")}`);
+      error.detail = error.message;
+      throw error;
+    }
+
+    setPaperRequestStatus(requestId, "arxiv-rss", "正在提取论文信息...", "running");
+
+    const papers = parseArxivRssPapers(xml)
+      .sort((a, b) => new Date(b.published || b.updated).getTime() - new Date(a.published || a.updated).getTime());
+
+    setPaperRequestStatus(requestId, "arxiv-rss", "同步完成", "done");
+
+    return papers;
+  } finally {
+    reader.releaseLock();
   }
-
-  return parseArxivRssPapers(xml)
-    .sort((a, b) => new Date(b.published || b.updated).getTime() - new Date(a.published || a.updated).getTime());
 };
 
-const syncArxivPaperLibrary = async ({ force = false, requestId = "", signal } = {}) => {
+const syncArxivPaperLibrary = async ({ force = false, requestId = "", signal, trigger = "unknown" } = {}) => {
   const run = async () => {
+    const startedAt = new Date().toISOString();
+    const startedMs = Date.now();
     const library = await readArxivPaperLibrary();
     const lastSyncedAt = Date.parse(library.lastSyncedAt || "");
     const fresh = Number.isFinite(lastSyncedAt) && Date.now() - lastSyncedAt < arxivDailySyncMs;
 
     if (!force && fresh) {
       setPaperRequestStatus(requestId, "arxiv-library", `本地库今日已同步，共 ${library.papers.length} 篇论文。`, "running");
+      const finishedAt = new Date().toISOString();
+      const syncHistory = await safeAppendArxivSyncHistory({
+        startedAt,
+        finishedAt,
+        durationMs: Date.now() - startedMs,
+        status: "skipped",
+        trigger,
+        force,
+        requestId,
+        categories: arxivRssCategories,
+        total: library.papers.length,
+        message: "Local arXiv library is still fresh."
+      });
       return {
         library,
         skipped: true,
+        syncHistory,
         added: 0,
         updated: 0,
         fetched: 0,
@@ -733,17 +902,72 @@ const syncArxivPaperLibrary = async ({ force = false, requestId = "", signal } =
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const timeout = setTimeout(() => controller.abort(), 240000);
     const syncSignal = signal || controller.signal;
 
     try {
-      const papers = await fetchLatestArxivRssPapers({ signal: syncSignal, requestId });
+      let papers;
+      let retryCount = 0;
+      const maxRetries = 1;
+
+      while (retryCount <= maxRetries) {
+        try {
+          papers = await fetchLatestArxivRssPapers({ signal: syncSignal, requestId });
+          break;
+        } catch (error) {
+          retryCount += 1;
+          if (retryCount > maxRetries) {
+            throw error;
+          }
+          setPaperRequestStatus(requestId, "arxiv-library", `连接失败，正在重试 (${retryCount}/${maxRetries})...`, "running");
+          await sleep(2000);
+        }
+      }
+
+      setPaperRequestStatus(requestId, "arxiv-library", "正在保存到本地库...", "running");
       const result = await mergeArxivPapersIntoLibrary(papers, { syncedAt: new Date().toISOString() });
-      setPaperRequestStatus(requestId, "arxiv-library", `arXiv RSS 同步完成：获取 ${result.fetched} 篇，新增 ${result.added} 篇，本地库共 ${result.total} 篇。`, "running");
+      const finishedAt = new Date().toISOString();
+      const syncHistory = await safeAppendArxivSyncHistory({
+        startedAt,
+        finishedAt,
+        durationMs: Date.now() - startedMs,
+        status: "success",
+        trigger,
+        force,
+        requestId,
+        categories: arxivRssCategories,
+        fetched: result.fetched,
+        added: result.added,
+        updated: result.updated,
+        total: result.total,
+        message: `Fetched ${result.fetched}, added ${result.added}, updated ${result.updated}.`
+      });
+      setPaperRequestStatus(requestId, "arxiv-library", `同步完成：获取 ${result.fetched} 篇，新增 ${result.added} 篇`, "done");
       return {
         ...result,
+        syncHistory,
         skipped: false
       };
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      await safeAppendArxivSyncHistory({
+        startedAt,
+        finishedAt,
+        durationMs: Date.now() - startedMs,
+        status: "failed",
+        trigger,
+        force,
+        requestId,
+        categories: arxivRssCategories,
+        total: library.papers.length,
+        message: error.message || "arXiv sync failed.",
+        error: {
+          code: error.code || "ARXIV_SYNC_FAILED",
+          message: error.message || "arXiv sync failed.",
+          detail: error.detail || error.message || ""
+        }
+      });
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
@@ -762,7 +986,7 @@ const syncArxivPaperLibrary = async ({ force = false, requestId = "", signal } =
 
 const runArxivAutoSync = async (reason = "scheduled") => {
   try {
-    const result = await syncArxivPaperLibrary({ force: false });
+    const result = await syncArxivPaperLibrary({ force: false, trigger: `auto-${reason}` });
     const action = result.skipped ? "skipped" : "synced";
     console.log(`[arXiv auto sync] ${action} (${reason}): fetched=${result.fetched}, added=${result.added}, updated=${result.updated}, total=${result.total}`);
     return true;
@@ -1198,11 +1422,13 @@ const handleArxivSyncRequest = async (request, response) => {
 
   if (request.method === "GET") {
     const library = await readArxivPaperLibrary();
+    const history = await readArxivSyncHistory();
     sendJson(response, 200, {
       count: library.papers.length,
       lastSyncedAt: library.lastSyncedAt || "",
       lastSyncCount: library.lastSyncCount || 0,
       lastSyncAdded: library.lastSyncAdded || 0,
+      lastSyncRecord: history.records[0] || null,
       categories: library.categories || arxivRssCategories,
       stale: !library.lastSyncedAt || Date.now() - Date.parse(library.lastSyncedAt) >= arxivDailySyncMs
     });
@@ -1216,15 +1442,17 @@ const handleArxivSyncRequest = async (request, response) => {
 
   const force = /^(1|true|yes)$/i.test(String(url.searchParams.get("force") || ""));
   const requestId = String(url.searchParams.get("requestId") || "");
+  const trigger = String(url.searchParams.get("trigger") || "manual");
 
   try {
-    const result = await syncArxivPaperLibrary({ force, requestId });
+    const result = await syncArxivPaperLibrary({ force, requestId, trigger });
     sendJson(response, 200, {
       count: result.total,
       fetched: result.fetched,
       added: result.added,
       updated: result.updated,
       skipped: result.skipped,
+      syncHistory: result.syncHistory || null,
       lastSyncedAt: result.library.lastSyncedAt || "",
       lastSyncCount: result.library.lastSyncCount || 0,
       lastSyncAdded: result.library.lastSyncAdded || 0,
@@ -1238,6 +1466,24 @@ const handleArxivSyncRequest = async (request, response) => {
       sourceReturns: error.sourceReturns || []
     });
   }
+};
+
+const handleArxivSyncHistoryRequest = async (request, response) => {
+  const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method !== "GET") {
+    sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+    return;
+  }
+
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), arxivSyncHistoryLimit);
+  const history = await readArxivSyncHistory();
+
+  sendJson(response, 200, {
+    count: Math.min(history.records.length, limit),
+    total: history.records.length,
+    records: history.records.slice(0, limit)
+  });
 };
 
 const handlePapersRequest = async (request, response) => {
@@ -1316,12 +1562,17 @@ const handlePapersRequest = async (request, response) => {
 
   const fetchAndCache = (async () => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const timeout = setTimeout(() => controller.abort(), 240000);
 
     try {
       if (primaryMode === "library") {
         try {
-          const sync = await syncArxivPaperLibrary({ force: forceRefresh, requestId, signal: controller.signal });
+          const sync = await syncArxivPaperLibrary({
+            force: forceRefresh,
+            requestId,
+            signal: controller.signal,
+            trigger: forceRefresh ? "candidate-refresh" : "candidate-fetch"
+          });
           const library = sync.library || await readArxivPaperLibrary();
           const papers = selectArxivLibraryPapers({ library, rawQuery, days, maxResults, start });
           const xml = atomFeedFromPapers({ papers, query: rawQuery, source: "arXiv Library" });
@@ -1690,6 +1941,11 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === "/api/papers/status") {
     handlePaperStatusRequest(request, response);
+    return;
+  }
+
+  if (url.pathname === "/api/arxiv-sync/history") {
+    await handleArxivSyncHistoryRequest(request, response);
     return;
   }
 

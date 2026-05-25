@@ -98,6 +98,187 @@ button {
   background: rgba(23, 32, 43, 0.34);
 }
 
+.sync-progress-dialog {
+  width: min(400px, calc(100vw - 32px));
+  padding: 0;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.sync-progress-dialog::backdrop {
+  background: rgba(23, 32, 43, 0.28);
+}
+
+.sync-progress-shell {
+  display: grid;
+  gap: 20px;
+  padding: 24px;
+}
+
+.sync-progress-header {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sync-progress-header h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.sync-progress-body {
+  display: grid;
+  gap: 16px;
+  padding: 20px 0;
+  text-align: center;
+}
+
+.sync-progress-body .spinner {
+  width: 40px;
+  height: 40px;
+  border-width: 3px;
+  margin: 0 auto;
+}
+
+.sync-progress-body p {
+  margin: 0;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.sync-progress-detail {
+  font-size: 13px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.sync-progress-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  text-align: right;
+}
+
+.sync-history-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 40px));
+  padding: 0;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.sync-history-dialog::backdrop {
+  background: rgba(23, 32, 43, 0.28);
+}
+
+.sync-history-shell {
+  display: grid;
+  gap: 16px;
+  max-height: min(760px, calc(100vh - 40px));
+  padding: 22px;
+  overflow: auto;
+}
+
+.sync-history-header,
+.sync-history-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sync-history-header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sync-history-header h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.sync-history-header p:not(.eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.sync-history-footer {
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.sync-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.sync-history-empty,
+.sync-history-item {
+  margin: 0;
+  padding: 14px;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.sync-history-item {
+  display: grid;
+  gap: 10px;
+  background: #fff;
+}
+
+.sync-history-item-heading,
+.sync-history-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sync-history-item-heading strong {
+  font-size: 14px;
+}
+
+.sync-history-item-heading span:last-child,
+.sync-history-stats {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sync-history-badge {
+  padding: 4px 8px;
+  color: var(--green);
+  background: var(--green-soft);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.sync-history-skipped .sync-history-badge {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.sync-history-failed .sync-history-badge {
+  color: var(--rose);
+  background: var(--rose-soft);
+}
+
+.sync-history-item p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .task-dialog-shell {
   display: grid;
   gap: 18px;
@@ -488,6 +669,33 @@ textarea {
   color: var(--ink);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.query-card-actions {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+
+.query-card-actions .secondary-action {
+  width: 100%;
+}
+
+.text-action {
+  min-height: auto;
+  padding: 0;
+  color: var(--accent-strong);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 900;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.text-action:hover {
+  color: var(--accent);
 }
 
 .query-summary-details {
@@ -1888,6 +2096,7 @@ button:disabled {
   }
 
   .task-dialog-header,
+  .sync-history-header,
   .candidate-heading {
     align-items: stretch;
     flex-direction: column;
