@@ -1,4 +1,4 @@
-const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
+﻿const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
 ("anomaly detection" OR "traffic prediction" OR "network optimization" OR "root cause analysis" OR
 "digital twin network" OR "intent-based networking" OR "network automation" OR "orchestration" OR

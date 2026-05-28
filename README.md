@@ -1,4 +1,4 @@
-# Paper Insight
+﻿# Paper Insight
 
 Paper Insight 是一个本地优先的论文推荐 Web 应用，用来持续同步 arXiv 最新论文，并通过 DeepSeek 对候选论文做分析、打分和总结。
 
