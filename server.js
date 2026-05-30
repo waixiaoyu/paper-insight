@@ -749,20 +749,51 @@ const textIncludesTerm = (text, term) => {
   return text.includes(normalizedTerm);
 };
 
+const paperSearchText = (paper) => [
+  paper.title,
+  paper.summary,
+  paper.primaryCategory,
+  ...(Array.isArray(paper.categories) ? paper.categories : [])
+].join(" ").toLowerCase();
+
+const paperQueryGroupHits = (paper, groups) => {
+  const searchable = paperSearchText(paper);
+  return groups.map((group) => group.filter((term) => textIncludesTerm(searchable, term)).length);
+};
+
 const paperMatchesQueryGroups = (paper, groups) => {
   if (!groups.length) {
     return true;
   }
 
-  const searchable = [
-    paper.title,
-    paper.summary,
-    paper.primaryCategory,
-    ...(Array.isArray(paper.categories) ? paper.categories : [])
-  ].join(" ").toLowerCase();
-
-  return groups.every((group) => group.some((term) => textIncludesTerm(searchable, term)));
+  return paperQueryGroupHits(paper, groups).every((hitCount) => hitCount > 0);
 };
+
+const paperQueryRelevance = (paper, groups) => {
+  if (!groups.length) {
+    return { matchedGroups: 0, matchedTerms: 0, score: 0 };
+  }
+
+  const hits = paperQueryGroupHits(paper, groups);
+  const matchedGroups = hits.filter((hitCount) => hitCount > 0).length;
+  const matchedTerms = hits.reduce((total, hitCount) => total + hitCount, 0);
+
+  return {
+    matchedGroups,
+    matchedTerms,
+    score: matchedGroups * 100 + matchedTerms
+  };
+};
+
+const aiQueryGroupIndex = (groups) => groups.findIndex((group) => group.some((term) => {
+  const value = String(term || "").toLowerCase();
+  return value === "ai"
+    || value === "llm"
+    || value.includes("machine learning")
+    || value.includes("deep learning")
+    || value.includes("large language model")
+    || value.includes("foundation model");
+}));
 
 const parseArxivRssPapers = (xml) => [...String(xml || "").matchAll(/<entry\b[\s\S]*?<\/entry>/gi)]
   .map((match) => {
@@ -1064,7 +1095,7 @@ const startArxivAutoSync = () => {
 const selectArxivLibraryPapers = ({ library, rawQuery, days, maxResults, start = 0 }) => {
   const earliest = days > 0 ? Date.now() - days * 86400000 : 0;
   const groups = queryTermGroups(rawQuery);
-  const filtered = (Array.isArray(library.papers) ? library.papers : [])
+  const datedPapers = (Array.isArray(library.papers) ? library.papers : [])
     .filter((paper) => {
       if (!earliest) {
         return true;
@@ -1072,14 +1103,49 @@ const selectArxivLibraryPapers = ({ library, rawQuery, days, maxResults, start =
 
       const time = new Date(paper.published || paper.updated).getTime();
       return Number.isFinite(time) && time >= earliest;
-    })
+    });
+  const strict = datedPapers
     .filter((paper) => paperMatchesQueryGroups(paper, groups))
     .sort((a, b) => new Date(b.published || b.updated).getTime() - new Date(a.published || a.updated).getTime());
   const unique = [];
   const seen = new Set();
 
-  appendUniquePapers(unique, seen, filtered, Number.MAX_SAFE_INTEGER);
-  return unique.slice(start, start + maxResults);
+  appendUniquePapers(unique, seen, strict, Number.MAX_SAFE_INTEGER);
+  const strictTotal = unique.length;
+  const strictKeys = new Set(unique.map((paper) => arxivPaperId(paper) || normalizePaperKey(paper.title)));
+  const needed = start + maxResults;
+  const aiGroupIndex = aiQueryGroupIndex(groups);
+
+  if (unique.length < needed && groups.length > 1) {
+    const relaxed = datedPapers
+      .map((paper) => ({ paper, relevance: paperQueryRelevance(paper, groups) }))
+      .filter((entry) => {
+        const hits = paperQueryGroupHits(entry.paper, groups);
+
+        if (aiGroupIndex >= 0) {
+          return hits[aiGroupIndex] > 0 && entry.relevance.matchedGroups >= 2;
+        }
+
+        return entry.relevance.matchedGroups >= Math.max(2, groups.length - 1);
+      })
+      .sort((a, b) => (
+        b.relevance.score - a.relevance.score
+        || new Date(b.paper.published || b.paper.updated).getTime() - new Date(a.paper.published || a.paper.updated).getTime()
+      ))
+      .map((entry) => entry.paper);
+
+    appendUniquePapers(unique, seen, relaxed, Number.MAX_SAFE_INTEGER);
+  }
+
+  const papers = unique.slice(start, start + maxResults);
+
+  return {
+    papers,
+    strictTotal,
+    relaxedTotal: Math.max(0, unique.length - strictTotal),
+    totalMatched: unique.length,
+    relaxedUsed: papers.some((paper) => !strictKeys.has(arxivPaperId(paper) || normalizePaperKey(paper.title)))
+  };
 };
 
 const isArxivSource = (source) => source === "arxiv" || source === "arxiv-rss" || source === "arxiv-library";
@@ -1205,30 +1271,182 @@ const validateAnalysis = (paper, analysis) => {
   return missing.length ? { id: paper.id, title: paper.title, missing } : null;
 };
 
+const llmProviderDefaults = {
+  deepseek: {
+    mode: "deepseek",
+    protocol: "openai",
+    model: "deepseek-v4-flash",
+    endpoint: "https://api.deepseek.com/chat/completions",
+    apiKey: () => process.env.DEEPSEEK_API_KEY,
+    modelEnv: () => process.env.DEEPSEEK_MODEL,
+    endpointEnv: () => process.env.DEEPSEEK_API_URL,
+    disableThinking: true
+  },
+  glm: {
+    mode: "glm",
+    protocol: "openai",
+    model: "glm-5.1",
+    endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    apiKey: () => process.env.GLM_API_KEY,
+    modelEnv: () => process.env.GLM_MODEL,
+    endpointEnv: () => process.env.GLM_API_URL,
+    disableThinking: true
+  },
+  "glm-coding": {
+    mode: "glm-coding",
+    protocol: "openai",
+    model: "glm-5.1",
+    endpoint: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    apiKey: () => process.env.GLM_CODING_API_KEY,
+    modelEnv: () => process.env.GLM_CODING_MODEL,
+    endpointEnv: () => process.env.GLM_CODING_OPENAI_API_URL || process.env.GLM_CODING_API_URL,
+    disableThinking: true
+  },
+  "glm-coding-anthropic": {
+    mode: "glm-coding-anthropic",
+    protocol: "anthropic",
+    model: "glm-5.1",
+    endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages",
+    apiKey: () => process.env.GLM_CODING_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
+    modelEnv: () => process.env.GLM_CODING_MODEL || process.env.ANTHROPIC_MODEL,
+    endpointEnv: () => process.env.GLM_CODING_ANTHROPIC_API_URL || process.env.ANTHROPIC_BASE_URL || process.env.GLM_CODING_API_URL,
+    disableThinking: false
+  },
+  openai: {
+    mode: "llm",
+    protocol: "openai",
+    model: "gpt-4o-mini",
+    endpoint: "https://api.openai.com/v1/chat/completions",
+    apiKey: () => process.env.OPENAI_API_KEY,
+    modelEnv: () => process.env.OPENAI_MODEL,
+    endpointEnv: () => process.env.OPENAI_API_URL,
+    disableThinking: false
+  }
+};
+
+const normalizeLlmProvider = (provider) => {
+  const value = String(provider || "").toLowerCase().trim();
+  if (["glm-coding", "glm_coding", "glm-coding-openai", "coding", "coding-plan", "coding_plan", "coding-openai", "coding-plan-openai"].includes(value)) {
+    return "glm-coding";
+  }
+  if (["glm-coding-anthropic", "glm_coding_anthropic", "coding-anthropic", "coding-plan-anthropic", "anthropic-glm"].includes(value)) {
+    return "glm-coding-anthropic";
+  }
+  if (["zhipu", "zhipuai", "bigmodel"].includes(value)) {
+    return "glm";
+  }
+  if (["deepseek", "glm", "openai"].includes(value)) {
+    return value;
+  }
+  return "";
+};
+
+const inferLlmProvider = (overrides = {}) => {
+  const requested = normalizeLlmProvider(overrides.provider || process.env.LLM_PROVIDER);
+
+  if (requested) {
+    return requested;
+  }
+
+  if (process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_BASE_URL) {
+    return "glm-coding-anthropic";
+  }
+
+  if (process.env.GLM_CODING_API_KEY) {
+    return "glm-coding";
+  }
+
+  if (process.env.GLM_API_KEY) {
+    return "glm";
+  }
+
+  if (process.env.DEEPSEEK_API_KEY) {
+    return "deepseek";
+  }
+
+  return "openai";
+};
+
 const getLlmConfig = (overrides = {}) => {
-  const requestedProvider = String(overrides.provider || "").toLowerCase();
-  const hasDeepSeekKey = requestedProvider === "deepseek" || Boolean(process.env.DEEPSEEK_API_KEY);
-  const apiKey = String(overrides.apiKey || "").trim() || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.DEEPSEEK_API_KEY;
-  const model = String(overrides.model || "").trim() || process.env.LLM_MODEL || process.env.OPENAI_MODEL || process.env.DEEPSEEK_MODEL || (hasDeepSeekKey ? "deepseek-v4-flash" : "gpt-4o-mini");
-  const endpoint = String(overrides.endpoint || "").trim() || process.env.LLM_API_URL || (hasDeepSeekKey ? "https://api.deepseek.com/chat/completions" : "https://api.openai.com/v1/chat/completions");
+  const provider = inferLlmProvider(overrides);
+  const defaults = llmProviderDefaults[provider] || llmProviderDefaults.openai;
+  const apiKey = String(overrides.apiKey || "").trim()
+    || process.env.LLM_API_KEY
+    || defaults.apiKey()
+    || process.env.OPENAI_API_KEY
+    || process.env.DEEPSEEK_API_KEY
+    || process.env.GLM_API_KEY
+    || process.env.GLM_CODING_API_KEY
+    || process.env.ANTHROPIC_AUTH_TOKEN;
+  const model = String(overrides.model || "").trim()
+    || process.env.LLM_MODEL
+    || defaults.modelEnv()
+    || defaults.model;
+  const rawEndpoint = String(overrides.endpoint || "").trim()
+    || process.env.LLM_API_URL
+    || defaults.endpointEnv()
+    || defaults.endpoint;
+  let endpoint = rawEndpoint;
+  if (defaults.protocol === "anthropic" && !/\/v1\/messages\/?$/i.test(rawEndpoint)) {
+    endpoint = `${rawEndpoint.replace(/\/+$/, "")}/v1/messages`;
+  } else if (provider === "glm-coding" && !/\/chat\/completions\/?$/i.test(rawEndpoint)) {
+    endpoint = `${rawEndpoint.replace(/\/+$/, "")}/chat/completions`;
+  }
 
   if (!apiKey) {
     return null;
   }
 
-  return { apiKey, endpoint, hasDeepSeekKey, model };
+  return {
+    apiKey,
+    endpoint,
+    model,
+    provider,
+    protocol: defaults.protocol,
+    mode: defaults.mode,
+    disableThinking: defaults.disableThinking && !process.env.LLM_API_URL
+  };
 };
+
+const llmTextFromResponse = (data, protocol = "openai") => {
+  if (protocol === "anthropic") {
+    if (typeof data.content === "string") {
+      return data.content;
+    }
+
+    if (Array.isArray(data.content)) {
+      return data.content
+        .map((item) => typeof item === "string" ? item : item?.text || "")
+        .filter(Boolean)
+        .join("\n");
+    }
+  }
+
+  return data.choices?.[0]?.message?.content || data.output_text || "";
+};
+
+const llmHeaders = (config) => config.protocol === "anthropic"
+  ? {
+      "authorization": `Bearer ${config.apiKey}`,
+      "x-api-key": config.apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json"
+    }
+  : {
+      "authorization": `Bearer ${config.apiKey}`,
+      "content-type": "application/json"
+    };
 
 const callLlmAnalyzer = async ({ query, papers, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 DeepSeek 或 OpenAI 兼容 API key。");
+    const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
 
-  const { apiKey, endpoint, hasDeepSeekKey, model } = config;
+  const { endpoint, model, disableThinking, protocol } = config;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
@@ -1302,17 +1520,21 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
       ]
     };
 
-    if (hasDeepSeekKey && !process.env.LLM_API_URL) {
+    if (protocol === "anthropic") {
+      const [systemMessage, userMessage] = payload.messages;
+      payload.system = systemMessage.content;
+      payload.messages = [userMessage];
+      delete payload.response_format;
+    }
+
+    if (disableThinking && protocol === "openai") {
       payload.thinking = { type: "disabled" };
     }
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
-      headers: {
-        "authorization": `Bearer ${apiKey}`,
-        "content-type": "application/json"
-      },
+      headers: llmHeaders(config),
       body: JSON.stringify(payload)
     });
 
@@ -1322,7 +1544,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
     }
 
     const data = await llmResponse.json();
-    const content = data.choices?.[0]?.message?.content || data.output_text || "";
+    const content = llmTextFromResponse(data, protocol);
     const parsed = extractJson(content);
     return Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
   } finally {
@@ -1334,12 +1556,12 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 DeepSeek 或 OpenAI 兼容 API key。");
+    const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
 
-  const { apiKey, endpoint, hasDeepSeekKey, model } = config;
+  const { endpoint, model, disableThinking, protocol } = config;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45000);
 
@@ -1364,17 +1586,20 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
       ]
     };
 
-    if (hasDeepSeekKey && !process.env.LLM_API_URL) {
+    if (protocol === "anthropic") {
+      const [systemMessage, userMessage] = payload.messages;
+      payload.system = systemMessage.content;
+      payload.messages = [userMessage];
+    }
+
+    if (disableThinking && protocol === "openai") {
       payload.thinking = { type: "disabled" };
     }
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
-      headers: {
-        "authorization": `Bearer ${apiKey}`,
-        "content-type": "application/json"
-      },
+      headers: llmHeaders(config),
       body: JSON.stringify(payload)
     });
 
@@ -1384,7 +1609,7 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
     }
 
     const data = await llmResponse.json();
-    return ensureLlmResponseWithinLimit(data.choices?.[0]?.message?.content || data.output_text || "");
+    return ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol));
   } finally {
     clearTimeout(timeout);
   }
@@ -1574,12 +1799,15 @@ const handlePapersRequest = async (request, response) => {
             trigger: forceRefresh ? "candidate-refresh" : "candidate-fetch"
           });
           const library = sync.library || await readArxivPaperLibrary();
-          const papers = selectArxivLibraryPapers({ library, rawQuery, days, maxResults, start });
+          const selection = selectArxivLibraryPapers({ library, rawQuery, days, maxResults, start });
+          const { papers } = selection;
           const xml = atomFeedFromPapers({ papers, query: rawQuery, source: "arXiv Library" });
           const rangeText = days > 0 ? `最近 ${days} 天` : "不限时间";
-          const countMessage = papers.length >= maxResults
-            ? `已从本地 arXiv 库筛选 ${papers.length} 篇候选论文。`
-            : `本地 arXiv 库${rangeText}只找到 ${papers.length} 篇匹配候选。可用 arXiv API 扩展到${rangeText}。`;
+          const countMessage = selection.relaxedUsed
+            ? `严格匹配 ${selection.strictTotal} 篇，已用“AI + 另一组关键词”补充到 ${papers.length} 篇候选论文。`
+            : papers.length >= maxResults
+              ? `已从本地 arXiv 库筛选 ${papers.length} 篇候选论文。`
+              : `本地 arXiv 库${rangeText}只找到 ${papers.length} 篇匹配候选。可用 arXiv API 扩展到${rangeText}。`;
           setPaperRequestStatus(
             requestId,
             "arxiv-library",
@@ -1591,8 +1819,10 @@ const handlePapersRequest = async (request, response) => {
             cacheStatus: "library",
             source: "arxiv-library",
             headers: {
-              ...(papers.length < maxResults ? { "x-paper-insight-arxiv-warning": encodeURIComponent(countMessage) } : {}),
+              ...((papers.length < maxResults || selection.relaxedUsed) ? { "x-paper-insight-arxiv-warning": encodeURIComponent(countMessage) } : {}),
               "x-paper-insight-library-total": String(library.papers.length),
+              "x-paper-insight-library-strict-matches": String(selection.strictTotal),
+              "x-paper-insight-library-relaxed-matches": String(selection.relaxedTotal),
               "x-paper-insight-last-sync": encodeURIComponent(library.lastSyncedAt || ""),
               "x-paper-insight-sync-skipped": sync.skipped ? "1" : "0",
               "x-paper-insight-cache-age-seconds": "0"
@@ -1787,7 +2017,7 @@ const handleAnalyzeRequest = async (request, response) => {
       model: payload.llmModel
     };
     let llmAnalyses = null;
-    const mode = requestLlm.provider === "deepseek" || process.env.DEEPSEEK_API_KEY ? "deepseek" : "llm";
+    const mode = llmProviderDefaults[inferLlmProvider(requestLlm)]?.mode || "llm";
 
     try {
       llmAnalyses = await callLlmAnalyzer({ query: payload.query || defaultQuery, papers, llm: requestLlm });
@@ -1898,7 +2128,11 @@ const handleTranslateRequest = async (request, response) => {
     });
     sendJson(response, 200, {
       translation,
-      mode: process.env.DEEPSEEK_API_KEY ? "deepseek" : "llm"
+      mode: llmProviderDefaults[inferLlmProvider({
+        apiKey: payload.llmApiKey,
+        provider: payload.llmProvider,
+        model: payload.llmModel
+      })]?.mode || "llm"
     });
   } catch (error) {
     sendJson(response, error.code === "LLM_NOT_CONFIGURED" ? 503 : 500, {
