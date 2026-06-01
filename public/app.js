@@ -4,17 +4,24 @@
 "digital twin network" OR "intent-based networking" OR "network automation" OR "orchestration" OR
 "multi-agent" OR "AI agent" OR "autonomous agent" OR "agent-based system")`;
 
-const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "wireless communication" OR "5G" OR "6G") AND
+const legacyResearchBalancedDefaultQuery = `("network" OR "wireless network" OR "mobile network" OR "wireless communication" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "foundation model" OR "graph neural network" OR
 "reinforcement learning" OR "self-supervised learning" OR "LLM") AND
 ("network representation learning" OR "semantic communication" OR "edge intelligence" OR "network modeling" OR
 "network measurement" OR "network simulation" OR "protocol learning" OR "routing" OR "resource allocation" OR
 "spectrum management" OR "channel estimation" OR "traffic modeling" OR "network optimization" OR "digital twin network")`;
 
+const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "telecommunication network" OR "5G" OR "6G") AND
+("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
+"multi-agent" OR "agentic AI" OR "autonomous agent") AND
+("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
+"network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR
+"agentic framework" OR "end-to-end framework" OR "closed-loop autonomy" OR "network automation")`;
+
 const dimensionLabels = {
-  scenarioProblemValue: "场景问题价值",
+  scenarioProblemValue: "研究问题价值",
   methodNovelty: "方法新意",
-  practicalValue: "工程落地价值",
+  practicalValue: "框架系统价值",
   evidence: "证据强度"
 };
 
@@ -33,9 +40,10 @@ const queryKeywordGroups = [
       "network",
       "wireless network",
       "mobile network",
-      "wireless communication",
+      "telecommunication network",
       "5G",
       "6G",
+      { value: "wireless communication", selected: false },
       { value: "telecommunication", selected: false },
       { value: "telecom", selected: false },
       { value: "cellular network", selected: false },
@@ -57,17 +65,24 @@ const queryKeywordGroups = [
   },
   {
     id: "ai",
-    title: "技术方法",
+    title: "大模型/智能体",
     terms: [
-      "AI",
-      "machine learning",
-      "deep learning",
-      "foundation model",
-      "graph neural network",
-      "reinforcement learning",
-      "self-supervised learning",
+      "large language model",
       "LLM",
-      { value: "large language model", selected: false },
+      "foundation model",
+      "AI agent",
+      "LLM agent",
+      "multi-agent",
+      "agentic AI",
+      "autonomous agent",
+      { value: "AI", selected: false },
+      { value: "machine learning", selected: false },
+      { value: "deep learning", selected: false },
+      { value: "graph neural network", selected: false },
+      { value: "reinforcement learning", selected: false },
+      { value: "self-supervised learning", selected: false },
+      { value: "planning", selected: false },
+      { value: "tool use", selected: false },
       { value: "time series forecasting", selected: false },
       { value: "federated learning", selected: false },
       { value: "transfer learning", selected: false },
@@ -81,32 +96,35 @@ const queryKeywordGroups = [
   },
   {
     id: "task",
-    title: "研究主题/场景",
+    title: "研究方向",
     terms: [
-      "network optimization",
+      "autonomous network",
+      "autonomous networking",
+      "self-driving network",
+      "zero-touch network",
+      "network digital twin",
       "digital twin network",
-      "network representation learning",
-      "semantic communication",
-      "edge intelligence",
-      "network modeling",
-      "network measurement",
-      "network simulation",
-      "protocol learning",
-      "routing",
-      "resource allocation",
-      "spectrum management",
-      "channel estimation",
-      "traffic modeling",
+      "intent-based networking",
+      "agent framework",
+      "agentic framework",
+      "end-to-end framework",
+      "closed-loop autonomy",
+      "network automation",
+      { value: "network orchestration", selected: false },
+      { value: "closed-loop automation", selected: false },
+      { value: "network management", selected: false },
+      { value: "agent-based system", selected: false },
+      { value: "multi-agent system", selected: false },
+      { value: "semantic communication", selected: false },
+      { value: "edge intelligence", selected: false },
+      { value: "network modeling", selected: false },
+      { value: "network simulation", selected: false },
+      { value: "protocol learning", selected: false },
+      { value: "network optimization", selected: false },
       { value: "anomaly detection", selected: false },
       { value: "traffic prediction", selected: false },
-      { value: "multi-agent", selected: false },
-      { value: "AI agent", selected: false },
       { value: "root cause analysis", selected: false },
-      { value: "intent-based networking", selected: false },
-      { value: "network automation", selected: false },
       { value: "orchestration", selected: false },
-      { value: "autonomous agent", selected: false },
-      { value: "agent-based system", selected: false },
       { value: "fault diagnosis", selected: false },
       { value: "alarm correlation", selected: false },
       { value: "performance prediction", selected: false },
@@ -119,7 +137,6 @@ const queryKeywordGroups = [
       { value: "service assurance", selected: false },
       { value: "security monitoring", selected: false },
       { value: "intrusion detection", selected: false },
-      { value: "closed-loop automation", selected: false },
       { value: "policy optimization", selected: false }
     ]
   }
@@ -302,7 +319,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit"
 });
 
-const queryDefaultsVersion = "research-balanced-2026-06";
+const queryDefaultsVersion = "agentic-autonomous-network-2026-06";
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -314,7 +331,9 @@ function migrateStoredQueryDefaults() {
   }
 
   const saved = localStorage.getItem(storageKeys.query);
-  const usesLegacyDefault = !saved || normalizeQueryText(saved) === normalizeQueryText(legacyIndustrialDefaultQuery);
+  const usesLegacyDefault = !saved
+    || normalizeQueryText(saved) === normalizeQueryText(legacyIndustrialDefaultQuery)
+    || normalizeQueryText(saved) === normalizeQueryText(legacyResearchBalancedDefaultQuery);
 
   if (usesLegacyDefault) {
     localStorage.removeItem(storageKeys.query);

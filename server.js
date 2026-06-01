@@ -43,19 +43,19 @@ let arxivCooldownLoaded = false;
 let arxivCooldownFailures = 0;
 let arxivAutoSyncTimer = null;
 
-const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "wireless communication" OR "5G" OR "6G") AND
-("AI" OR "machine learning" OR "deep learning" OR "foundation model" OR "graph neural network" OR
-"reinforcement learning" OR "self-supervised learning" OR "LLM") AND
-("network representation learning" OR "semantic communication" OR "edge intelligence" OR "network modeling" OR
-"network measurement" OR "network simulation" OR "protocol learning" OR "routing" OR "resource allocation" OR
-"spectrum management" OR "channel estimation" OR "traffic modeling" OR "network optimization" OR "digital twin network")`;
+const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "telecommunication network" OR "5G" OR "6G") AND
+("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
+"multi-agent" OR "agentic AI" OR "autonomous agent") AND
+("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
+"network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR
+"agentic framework" OR "end-to-end framework" OR "closed-loop autonomy" OR "network automation")`;
 
 const dimensions = [
   {
     key: "scenarioProblemValue",
-    label: "场景问题价值",
+    label: "研究问题价值",
     weight: 0.35,
-    description: "是否命中关键应用场景，问题是否真实、重要、有业务价值。"
+    description: "是否命中网络自治、网络数字孪生或智能体框架等关键研究问题，问题是否真实、重要、有研究价值。"
   },
   {
     key: "methodNovelty",
@@ -65,9 +65,9 @@ const dimensions = [
   },
   {
     key: "practicalValue",
-    label: "工程落地价值",
+    label: "框架系统价值",
     weight: 0.25,
-    description: "是否可能用于网络运营、优化、自动化、RCA、Agent 等实际系统。"
+    description: "是否提出可复用的端到端框架、系统架构、智能体协同机制或闭环自治流程。"
   },
   {
     key: "evidence",
