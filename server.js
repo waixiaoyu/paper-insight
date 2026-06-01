@@ -22,7 +22,7 @@ const arxivCooldownMs = Number(process.env.ARXIV_429_COOLDOWN_MS || 30 * 60 * 10
 const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 60 * 60 * 1000);
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
 const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
-const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 120000);
+const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
 const arxivAutoSyncEnabled = !/^(0|false|no)$/i.test(String(process.env.ARXIV_AUTO_SYNC || "1"));
 const arxivAutoSyncInitialDelayMs = Number(process.env.ARXIV_AUTO_SYNC_INITIAL_DELAY_MS || 30 * 1000);
 const arxivAutoSyncRetryMs = Number(process.env.ARXIV_AUTO_SYNC_RETRY_MS || 60 * 60 * 1000);
@@ -1547,6 +1547,15 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
     const content = llmTextFromResponse(data, protocol);
     const parsed = extractJson(content);
     return Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
+      const timeoutError = new Error(`LLM 请求超过 ${timeoutSeconds} 秒未完成，已自动中止。请稍后重试，或通过 LLM_REQUEST_TIMEOUT_MS 调大超时时间。`);
+      timeoutError.code = "LLM_ANALYSIS_TIMEOUT";
+      throw timeoutError;
+    }
+
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -2022,7 +2031,12 @@ const handleAnalyzeRequest = async (request, response) => {
     try {
       llmAnalyses = await callLlmAnalyzer({ query: payload.query || defaultQuery, papers, llm: requestLlm });
     } catch (error) {
-      sendJson(response, error.code === "LLM_NOT_CONFIGURED" ? 503 : 500, {
+      const status = error.code === "LLM_NOT_CONFIGURED"
+        ? 503
+        : error.code === "LLM_ANALYSIS_TIMEOUT"
+          ? 504
+          : 500;
+      sendJson(response, status, {
         error: error.code || "LLM_ANALYSIS_FAILED",
         message: "LLM analysis is required for recommendations.",
         detail: error.message,
