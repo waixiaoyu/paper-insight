@@ -308,6 +308,7 @@ const state = {
   candidatePapers: [],
   selectedCandidateIds: new Set(),
   lastAnalyzePapers: [],
+  analysisSession: null,
   progressTimer: 0,
   sourceStatusTimer: 0,
   syncStatusTimer: 0,
@@ -1590,6 +1591,7 @@ function clearWorkingState() {
   state.candidatePapers = [];
   state.selectedCandidateIds = new Set();
   state.lastAnalyzePapers = [];
+  state.analysisSession = null;
   state.currentPaperView = "recommended";
   state.currentSort = "score";
   elements.candidateList.textContent = "";
@@ -1798,6 +1800,7 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
   state.candidatePapers = [];
   state.selectedCandidateIds = new Set();
   state.lastAnalyzePapers = [];
+  state.analysisSession = null;
   state.currentThreshold = Number(elements.thresholdInput.value || 70);
   resetTaskModal();
   showTaskDialog();
@@ -1967,11 +1970,7 @@ async function analyzeOnePaper(paper) {
   };
 }
 
-async function analyzeConfirmedPapers(papers) {
-  if (!ensureApiKey(`请先输入 ${providerLabel()} API Key，然后再开始 AI 分析。`)) {
-    return;
-  }
-
+function createAnalysisSession(papers) {
   const reused = [];
   const pending = [];
 
@@ -1985,18 +1984,38 @@ async function analyzeConfirmedPapers(papers) {
     }
   });
 
-  state.lastAnalyzePapers = pending;
+  return {
+    papers: [...papers],
+    reused,
+    pending,
+    analyzed: [...reused],
+    mode: pending.length ? providerLabel() : "历史复用",
+    nextIndex: 0,
+    failedPaper: null
+  };
+}
+
+async function analyzeConfirmedPapers(papers, existingSession = null) {
+  if (!ensureApiKey(`请先输入 ${providerLabel()} API Key，然后再开始 AI 分析。`)) {
+    return;
+  }
+
+  const session = existingSession || createAnalysisSession(papers);
+  const { reused, pending, analyzed } = session;
+  const startIndex = Math.min(Math.max(Number(session.nextIndex || 0), 0), pending.length);
+
+  state.analysisSession = session;
+  state.lastAnalyzePapers = pending[startIndex] ? [pending[startIndex]] : [];
   state.currentThreshold = Number(elements.thresholdInput.value || 70);
   state.currentPaperView = "recommended";
   state.currentSort = "score";
-  const analyzed = [...reused];
-  let mode = pending.length ? providerLabel() : "历史复用";
+  let mode = session.mode || (pending.length ? providerLabel() : "历史复用");
   const startedAt = performance.now();
 
-  showProgressView(papers.length, reused.length, pending.length);
+  showProgressView(session.papers.length, reused.length, pending.length);
 
   try {
-    for (let index = 0; index < pending.length; index += 1) {
+    for (let index = startIndex; index < pending.length; index += 1) {
       const paper = pending[index];
       const paperStartedAt = performance.now();
       state.progressState = { done: index, total: pending.length, paper, phase: "running", startedAt, paperStartedAt };
@@ -2004,19 +2023,35 @@ async function analyzeConfirmedPapers(papers) {
       resetProgressTimer();
       state.progressTimer = window.setInterval(() => updateProgress(state.progressState), 500);
 
-      const result = await analyzeOnePaper(paper);
+      session.nextIndex = index;
+      session.failedPaper = paper;
+      state.lastAnalyzePapers = [paper];
+
+      let result;
+      try {
+        result = await analyzeOnePaper(paper);
+      } catch (error) {
+        state.analysisSession = session;
+        state.lastAnalyzePapers = [paper];
+        throw error;
+      }
+
       mode = reused.length ? `${result.mode} + 历史复用` : result.mode;
+      session.mode = mode;
       analyzed.push(result.paper);
+      session.failedPaper = null;
+      session.nextIndex = index + 1;
+      state.lastAnalyzePapers = pending[index + 1] ? [pending[index + 1]] : [];
 
       const tempReport = {
         threshold: state.currentThreshold,
-        candidateCount: papers.length,
+        candidateCount: session.papers.length,
         mode,
         items: analyzed
       };
       const counts = splitReport(tempReport);
       setMetrics({
-        candidates: papers.length,
+        candidates: session.papers.length,
         recommended: counts.recommended.length,
         hidden: counts.hidden.length,
         mode
@@ -2032,12 +2067,12 @@ async function analyzeConfirmedPapers(papers) {
   if (!pending.length) {
     const counts = splitReport({
       threshold: state.currentThreshold,
-      candidateCount: papers.length,
+      candidateCount: session.papers.length,
       mode,
       items: analyzed
     });
     setMetrics({
-      candidates: papers.length,
+      candidates: session.papers.length,
       recommended: counts.recommended.length,
       hidden: counts.hidden.length,
       mode
@@ -2050,12 +2085,14 @@ async function analyzeConfirmedPapers(papers) {
     createdAt: new Date().toISOString(),
     mode,
     threshold: state.currentThreshold,
-    candidateCount: papers.length,
+    candidateCount: session.papers.length,
     items: analyzed
   };
   state.reports = [report, ...state.reports].slice(0, 20);
   persistReports();
   openReport(report);
+  state.analysisSession = null;
+  state.lastAnalyzePapers = [];
   setTaskLocked(false);
   setTaskStep("done");
   showTaskPanel("done");
@@ -2724,7 +2761,9 @@ elements.taskDialog.addEventListener("cancel", (event) => {
 });
 
 elements.taskRetry.addEventListener("click", async () => {
-  if (!state.lastAnalyzePapers.length) {
+  const retrySession = state.analysisSession;
+
+  if (!retrySession && !state.lastAnalyzePapers.length) {
     setTaskStatus("没有可重试的候选论文，请重新生成推荐列表。", "warning");
     return;
   }
@@ -2732,7 +2771,7 @@ elements.taskRetry.addEventListener("click", async () => {
   elements.taskRetry.hidden = true;
 
   try {
-    await analyzeConfirmedPapers(state.lastAnalyzePapers);
+    await analyzeConfirmedPapers(retrySession ? retrySession.papers : state.lastAnalyzePapers, retrySession);
   } catch (error) {
     resetProgressTimer();
     setTaskLocked(false);
@@ -2741,7 +2780,9 @@ elements.taskRetry.addEventListener("click", async () => {
 });
 
 elements.retryButton.addEventListener("click", async () => {
-  if (!state.lastAnalyzePapers.length) {
+  const retrySession = state.analysisSession;
+
+  if (!retrySession && !state.lastAnalyzePapers.length) {
     showStatus("没有可重试的候选论文，请重新生成推荐任务。", "warning");
     return;
   }
@@ -2749,7 +2790,7 @@ elements.retryButton.addEventListener("click", async () => {
   elements.retryButton.hidden = true;
 
   try {
-    await analyzeConfirmedPapers(state.lastAnalyzePapers);
+    await analyzeConfirmedPapers(retrySession ? retrySession.papers : state.lastAnalyzePapers, retrySession);
   } catch (error) {
     resetProgressTimer();
     showStatus(`重试失败：${error.message}`, "error", error.retryable ? "retry" : "");
