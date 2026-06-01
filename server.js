@@ -43,11 +43,12 @@ let arxivCooldownLoaded = false;
 let arxivCooldownFailures = 0;
 let arxivAutoSyncTimer = null;
 
-const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
-("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
-("anomaly detection" OR "traffic prediction" OR "network optimization" OR "root cause analysis" OR
-"digital twin network" OR "intent-based networking" OR "network automation" OR "orchestration" OR
-"multi-agent" OR "AI agent" OR "autonomous agent" OR "agent-based system")`;
+const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "wireless communication" OR "5G" OR "6G") AND
+("AI" OR "machine learning" OR "deep learning" OR "foundation model" OR "graph neural network" OR
+"reinforcement learning" OR "self-supervised learning" OR "LLM") AND
+("network representation learning" OR "semantic communication" OR "edge intelligence" OR "network modeling" OR
+"network measurement" OR "network simulation" OR "protocol learning" OR "routing" OR "resource allocation" OR
+"spectrum management" OR "channel estimation" OR "traffic modeling" OR "network optimization" OR "digital twin network")`;
 
 const dimensions = [
   {

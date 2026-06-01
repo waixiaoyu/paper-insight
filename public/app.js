@@ -1,8 +1,15 @@
-﻿const defaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
+﻿const legacyIndustrialDefaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
 ("anomaly detection" OR "traffic prediction" OR "network optimization" OR "root cause analysis" OR
 "digital twin network" OR "intent-based networking" OR "network automation" OR "orchestration" OR
 "multi-agent" OR "AI agent" OR "autonomous agent" OR "agent-based system")`;
+
+const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "wireless communication" OR "5G" OR "6G") AND
+("AI" OR "machine learning" OR "deep learning" OR "foundation model" OR "graph neural network" OR
+"reinforcement learning" OR "self-supervised learning" OR "LLM") AND
+("network representation learning" OR "semantic communication" OR "edge intelligence" OR "network modeling" OR
+"network measurement" OR "network simulation" OR "protocol learning" OR "routing" OR "resource allocation" OR
+"spectrum management" OR "channel estimation" OR "traffic modeling" OR "network optimization" OR "digital twin network")`;
 
 const dimensionLabels = {
   scenarioProblemValue: "场景问题价值",
@@ -24,11 +31,13 @@ const queryKeywordGroups = [
     title: "技术方向",
     terms: [
       "network",
-      "telecom",
+      "wireless network",
+      "mobile network",
+      "wireless communication",
       "5G",
       "6G",
-      { value: "wireless network", selected: false },
-      { value: "mobile network", selected: false },
+      { value: "telecommunication", selected: false },
+      { value: "telecom", selected: false },
       { value: "cellular network", selected: false },
       { value: "radio access network", selected: false },
       { value: "RAN", selected: false },
@@ -53,15 +62,15 @@ const queryKeywordGroups = [
       "AI",
       "machine learning",
       "deep learning",
-      "LLM",
-      "large language model",
       "foundation model",
-      { value: "reinforcement learning", selected: false },
-      { value: "graph neural network", selected: false },
+      "graph neural network",
+      "reinforcement learning",
+      "self-supervised learning",
+      "LLM",
+      { value: "large language model", selected: false },
       { value: "time series forecasting", selected: false },
       { value: "federated learning", selected: false },
       { value: "transfer learning", selected: false },
-      { value: "self-supervised learning", selected: false },
       { value: "retrieval augmented generation", selected: false },
       { value: "knowledge graph", selected: false },
       { value: "transformer", selected: false },
@@ -72,26 +81,36 @@ const queryKeywordGroups = [
   },
   {
     id: "task",
-    title: "目标应用场景",
+    title: "研究主题/场景",
     terms: [
-      "anomaly detection",
-      "traffic prediction",
       "network optimization",
-      "root cause analysis",
       "digital twin network",
-      "intent-based networking",
-      "network automation",
-      "orchestration",
-      "multi-agent",
-      "AI agent",
-      "autonomous agent",
-      "agent-based system",
+      "network representation learning",
+      "semantic communication",
+      "edge intelligence",
+      "network modeling",
+      "network measurement",
+      "network simulation",
+      "protocol learning",
+      "routing",
+      "resource allocation",
+      "spectrum management",
+      "channel estimation",
+      "traffic modeling",
+      { value: "anomaly detection", selected: false },
+      { value: "traffic prediction", selected: false },
+      { value: "multi-agent", selected: false },
+      { value: "AI agent", selected: false },
+      { value: "root cause analysis", selected: false },
+      { value: "intent-based networking", selected: false },
+      { value: "network automation", selected: false },
+      { value: "orchestration", selected: false },
+      { value: "autonomous agent", selected: false },
+      { value: "agent-based system", selected: false },
       { value: "fault diagnosis", selected: false },
       { value: "alarm correlation", selected: false },
       { value: "performance prediction", selected: false },
       { value: "QoS prediction", selected: false },
-      { value: "resource allocation", selected: false },
-      { value: "spectrum management", selected: false },
       { value: "routing optimization", selected: false },
       { value: "energy efficiency", selected: false },
       { value: "load balancing", selected: false },
@@ -111,6 +130,7 @@ const storageKeys = {
   query: "paper-insight:query",
   queryMode: "paper-insight:query-mode",
   querySelection: "paper-insight:query-selection",
+  queryDefaultsVersion: "paper-insight:query-defaults-version",
   apiKey: "paper-insight:llm-key",
   legacyApiKey: "paper-insight:deepseek-key",
   provider: "paper-insight:llm-provider",
@@ -281,6 +301,31 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
   minute: "2-digit"
 });
+
+const queryDefaultsVersion = "research-balanced-2026-06";
+
+function normalizeQueryText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function migrateStoredQueryDefaults() {
+  if (localStorage.getItem(storageKeys.queryDefaultsVersion) === queryDefaultsVersion) {
+    return;
+  }
+
+  const saved = localStorage.getItem(storageKeys.query);
+  const usesLegacyDefault = !saved || normalizeQueryText(saved) === normalizeQueryText(legacyIndustrialDefaultQuery);
+
+  if (usesLegacyDefault) {
+    localStorage.removeItem(storageKeys.query);
+    localStorage.removeItem(storageKeys.queryMode);
+    localStorage.removeItem(storageKeys.querySelection);
+  }
+
+  localStorage.setItem(storageKeys.queryDefaultsVersion, queryDefaultsVersion);
+}
+
+migrateStoredQueryDefaults();
 
 const savedQuery = localStorage.getItem(storageKeys.query);
 const savedQueryMode = localStorage.getItem(storageKeys.queryMode);
