@@ -1556,7 +1556,12 @@ function startSourceStatusPolling(requestId) {
 
       const returnText = sourceReturnsSummary(data.sourceReturns);
       const detail = returnText && !data.message.includes("Body=") ? ` 返回值：${returnText}` : "";
-      setTaskStatus(`${sourceLabel(data.source)}：${data.message}${detail}`, data.state === "error" ? "error" : "loading");
+      const type = data.state === "error"
+        ? "error"
+        : data.state === "done"
+          ? "warning"
+          : "loading";
+      setTaskStatus(`${sourceLabel(data.source)}：${data.message}${detail}`, type);
 
       if (data.state === "done" || data.state === "error") {
         resetSourceStatusTimer();
