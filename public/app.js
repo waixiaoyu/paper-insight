@@ -842,6 +842,10 @@ function thresholdFor(report = state.currentReport) {
   return Number(report?.threshold ?? state.currentThreshold ?? 70);
 }
 
+function recommendationTargetFor(report = state.currentReport) {
+  return Math.max(0, Math.min(30, Number(report?.recommendedTarget ?? report?.minRecommended ?? 0) || 0));
+}
+
 function paperScore(paper) {
   return clamp(paper?.analysis?.score ?? 0);
 }
@@ -1776,7 +1780,9 @@ function renderReportHome() {
 
     const meta = document.createElement("span");
     const created = report.createdAt ? `${formatDateTime(report.createdAt)} 生成 · ` : "";
-    meta.textContent = `${created}${counts.recommended.length} 篇推荐 · ${counts.hidden.length} 篇隐藏 · 阈值 ${thresholdFor(report)} · ${modeLabel(report.mode)}`;
+    const target = recommendationTargetFor(report);
+    const targetText = target ? ` · 最低达标 ${target}` : "";
+    meta.textContent = `${created}${counts.recommended.length} 篇推荐 · ${counts.hidden.length} 篇隐藏 · 阈值 ${thresholdFor(report)}${targetText} · ${modeLabel(report.mode)}`;
 
     item.append(title, meta);
     item.addEventListener("click", () => openReport(report));
@@ -1846,7 +1852,9 @@ function showCandidateConfirmation(papers) {
   setTaskStep("confirm");
   showTaskPanel("candidate");
   elements.candidateForceArxiv.hidden = false;
-  setTaskStatus(`已获取 ${annotatedPapers.length} 篇候选论文${reusedCount ? `，其中 ${reusedCount} 篇已有历史分析` : ""}。请确认要进入列表的论文。`, "warning", "force-arxiv");
+  const target = minRecommendedValue();
+  const targetText = target ? `；最低达标 ${target} 篇推荐论文` : "";
+  setTaskStatus(`已获取 ${annotatedPapers.length} 篇候选论文${targetText}${reusedCount ? `，其中 ${reusedCount} 篇已有历史分析` : ""}。请确认要进入列表的论文。`, "warning", "force-arxiv");
 
   annotatedPapers.forEach((paper, index) => {
     const label = document.createElement("label");
@@ -2047,6 +2055,8 @@ function updateProgress(progress) {
 }
 
 function showProgressView(total, reusedCount = 0, analyzeCount = total) {
+  const target = Math.min(state.analysisSession?.minRecommended || state.currentMinRecommended || 0, 30);
+  const targetText = target ? `，最低达标 ${target} 篇` : "";
   showTaskDialog();
   setTaskLocked(true);
   setTaskStep("analyze");
@@ -2055,12 +2065,12 @@ function showProgressView(total, reusedCount = 0, analyzeCount = total) {
   elements.progressPercent.textContent = "0%";
   elements.progressTitle.textContent = "准备分析";
   elements.progressCurrent.textContent = reusedCount
-    ? `已复用 ${reusedCount} 篇历史分析，准备分析 ${analyzeCount} 篇新论文。`
-    : `已确认 ${total} 篇论文，准备调用 ${providerLabel()}。`;
+    ? `已复用 ${reusedCount} 篇历史分析，准备分析 ${analyzeCount} 篇新论文${targetText}。`
+    : `已确认 ${total} 篇候选论文${targetText}，准备调用 ${providerLabel()}。`;
   elements.progressElapsed.textContent = "总耗时 0 秒，本篇耗时 0 秒。";
   setTaskStatus(reusedCount
-    ? `已确认 ${total} 篇候选论文，${reusedCount} 篇复用历史分析，${analyzeCount} 篇需要调用 ${providerLabel()}。`
-    : `已确认 ${total} 篇候选论文，正在逐篇分析...`);
+    ? `已确认 ${total} 篇候选论文${targetText}，${reusedCount} 篇复用历史分析，${analyzeCount} 篇需要调用 ${providerLabel()}。`
+    : `已确认 ${total} 篇候选论文${targetText}，正在逐篇分析...`);
 }
 
 function analysisErrorFromPayload(data) {
@@ -2140,6 +2150,8 @@ function createAnalysisSession(papers) {
     mode: pending.length ? providerLabel() : "历史复用",
     nextIndex: 0,
     extraBatchCount: 0,
+    stoppedAfterTarget: false,
+    skippedAfterTarget: 0,
     failedPaper: null
   };
 }
@@ -2212,6 +2224,14 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
 
         state.progressState = { done: index + 1, total: pending.length, paper, phase: "done", startedAt, paperStartedAt };
         updateProgress(state.progressState);
+
+        const target = Math.min(session.minRecommended || 0, 30);
+        if (session.extraBatchCount > 0 && target && counts.recommended.length >= target) {
+          session.stoppedAfterTarget = true;
+          session.skippedAfterTarget = Math.max(0, pending.length - session.nextIndex);
+          setTaskStatus(`阈值以上论文已达到 ${counts.recommended.length}/${target} 篇，停止分析剩余追加候选。`, "success");
+          break;
+        }
       }
 
       const currentCounts = splitReport({
@@ -2279,7 +2299,9 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
     threshold: state.currentThreshold,
     minRecommended: session.minRecommended,
     extraBatchCount: session.extraBatchCount,
-    candidateCount: session.papers.length,
+    stoppedAfterTarget: session.stoppedAfterTarget,
+    skippedAfterTarget: session.skippedAfterTarget,
+    candidateCount: analyzed.length,
     items: analyzed
   };
   state.reports = [report, ...state.reports].slice(0, 20);
@@ -2295,15 +2317,19 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
   const targetReached = !target || counts.recommended.length >= target;
   const targetText = target
     ? targetReached
-      ? `最低推荐目标 ${target} 篇已达到。`
-      : `最低推荐目标 ${target} 篇未达到，只找到 ${counts.recommended.length} 篇达标论文，低于阈值的论文未纳入推荐。`
+      ? `最低达标数 ${target} 篇已达到。`
+      : `最低达标数 ${target} 篇未达到，只找到 ${counts.recommended.length} 篇达标论文，低于阈值的论文未纳入推荐。`
     : "";
   const expansionText = session.extraBatchCount ? `已额外查询 ${session.extraBatchCount} 轮候选。` : "";
+  const stoppedText = session.stoppedAfterTarget
+    ? `达到最低达标数后已停止 ${session.skippedAfterTarget} 篇追加候选分析。`
+    : "";
   const reusedText = reused.length ? `复用 ${reused.length} 篇历史分析。` : "";
   elements.taskDoneSummary.textContent = [
     `推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`,
     targetText,
     expansionText,
+    stoppedText,
     reusedText
   ].filter(Boolean).join("");
 
