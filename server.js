@@ -43,8 +43,7 @@ let arxivCooldownLoaded = false;
 let arxivCooldownFailures = 0;
 let arxivAutoSyncTimer = null;
 
-const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "telecommunication network" OR "5G" OR "6G") AND
-("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
+const defaultQuery = `("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
 "multi-agent" OR "agentic AI" OR "autonomous agent") AND
 ("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
 "network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR

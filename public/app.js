@@ -11,8 +11,14 @@ const legacyResearchBalancedDefaultQuery = `("network" OR "wireless network" OR 
 "network measurement" OR "network simulation" OR "protocol learning" OR "routing" OR "resource allocation" OR
 "spectrum management" OR "channel estimation" OR "traffic modeling" OR "network optimization" OR "digital twin network")`;
 
-const defaultQuery = `("network" OR "wireless network" OR "mobile network" OR "telecommunication network" OR "5G" OR "6G") AND
+const legacyAgenticNetworkDefaultQuery = `("network" OR "wireless network" OR "mobile network" OR "telecommunication network" OR "5G" OR "6G") AND
 ("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
+"multi-agent" OR "agentic AI" OR "autonomous agent") AND
+("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
+"network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR
+"agentic framework" OR "end-to-end framework" OR "closed-loop autonomy" OR "network automation")`;
+
+const defaultQuery = `("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
 "multi-agent" OR "agentic AI" OR "autonomous agent") AND
 ("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
 "network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR
@@ -35,14 +41,14 @@ const dimensionFallbacks = {
 const queryKeywordGroups = [
   {
     id: "domain",
-    title: "技术方向",
+    title: "背景领域（可选）",
     terms: [
-      "network",
-      "wireless network",
-      "mobile network",
-      "telecommunication network",
-      "5G",
-      "6G",
+      { value: "network", selected: false },
+      { value: "wireless network", selected: false },
+      { value: "mobile network", selected: false },
+      { value: "telecommunication network", selected: false },
+      { value: "5G", selected: false },
+      { value: "6G", selected: false },
       { value: "wireless communication", selected: false },
       { value: "telecommunication", selected: false },
       { value: "telecom", selected: false },
@@ -319,7 +325,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit"
 });
 
-const queryDefaultsVersion = "agentic-autonomous-network-2026-06";
+const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -333,7 +339,8 @@ function migrateStoredQueryDefaults() {
   const saved = localStorage.getItem(storageKeys.query);
   const usesLegacyDefault = !saved
     || normalizeQueryText(saved) === normalizeQueryText(legacyIndustrialDefaultQuery)
-    || normalizeQueryText(saved) === normalizeQueryText(legacyResearchBalancedDefaultQuery);
+    || normalizeQueryText(saved) === normalizeQueryText(legacyResearchBalancedDefaultQuery)
+    || normalizeQueryText(saved) === normalizeQueryText(legacyAgenticNetworkDefaultQuery);
 
   if (usesLegacyDefault) {
     localStorage.removeItem(storageKeys.query);
