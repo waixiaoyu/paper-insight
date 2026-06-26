@@ -244,6 +244,7 @@ const elements = {
   queryText: $("#queryText"),
   queryBuilder: $("#queryBuilder"),
   limitInput: $("#limit"),
+  minRecommendedInput: $("#minRecommended"),
   thresholdInput: $("#threshold"),
   thresholdValue: $("#thresholdValue"),
   dateWindow: $("#dateWindow"),
@@ -376,8 +377,10 @@ const state = {
   paperReturnReport: null,
   queryMode: savedQueryMode || (savedQuery ? "manual" : "builder"),
   currentThreshold: 70,
+  currentMinRecommended: 3,
   candidatePapers: [],
   selectedCandidateIds: new Set(),
+  candidateSearch: null,
   lastAnalyzePapers: [],
   analysisSession: null,
   progressTimer: 0,
@@ -393,6 +396,7 @@ elements.queryText.value = savedQuery || buildQueryFromSelectedKeywords() || def
 setQueryMode(state.queryMode === "manual" ? "manual" : "builder", { sync: !savedQuery });
 renderApiModelOptions(state.runtimeProvider, state.runtimeModel);
 state.currentThreshold = Number(elements.thresholdInput.value || 70);
+state.currentMinRecommended = minRecommendedValue();
 
 function loadReports() {
   try {
@@ -705,6 +709,14 @@ function clamp(value, min = 0, max = 100) {
   return Math.max(min, Math.min(max, Number(value) || 0));
 }
 
+function candidateLimitValue() {
+  return Math.max(5, Math.min(30, Number(elements.limitInput.value) || 10));
+}
+
+function minRecommendedValue() {
+  return Math.max(0, Math.min(30, Number(elements.minRecommendedInput?.value) || 0));
+}
+
 function secondsSince(start) {
   return Math.max(0, Math.round((performance.now() - start) / 1000));
 }
@@ -756,6 +768,28 @@ function paperDuplicateKeys(paper) {
     normalizePaperKey(paper?.link),
     normalizedTitleKey(paper?.title)
   ].filter(Boolean);
+}
+
+function rememberPaperKeys(seen, paper) {
+  paperDuplicateKeys(paper).forEach((key) => seen.add(key));
+}
+
+function uniqueCandidatePapers(papers, seen) {
+  const unique = [];
+
+  papers.forEach((paper) => {
+    const keys = paperDuplicateKeys(paper);
+    const duplicate = keys.some((key) => seen.has(key));
+
+    if (duplicate) {
+      return;
+    }
+
+    unique.push(paper);
+    keys.forEach((key) => seen.add(key));
+  });
+
+  return unique;
 }
 
 function findHistoricalAnalysis(paper) {
@@ -1666,6 +1700,7 @@ function clearWorkingState() {
   state.currentPaper = null;
   state.candidatePapers = [];
   state.selectedCandidateIds = new Set();
+  state.candidateSearch = null;
   state.lastAnalyzePapers = [];
   state.analysisSession = null;
   state.currentPaperView = "recommended";
@@ -1864,56 +1899,29 @@ function showCandidateConfirmation(papers) {
   updateCandidateActionState();
 }
 
-async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}) {
-  if (state.taskLocked) {
-    return;
-  }
-
-  if (!ensureApiKey()) {
-    return;
-  }
-
-  state.candidatePapers = [];
-  state.selectedCandidateIds = new Set();
-  state.lastAnalyzePapers = [];
-  state.analysisSession = null;
-  state.currentThreshold = Number(elements.thresholdInput.value || 70);
-  resetTaskModal();
-  showTaskDialog();
-  setTaskLocked(true);
-  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const dateWindowLabel = selectedDateWindowLabel();
-  elements.taskForceArxiv.textContent = `强制使用 arXiv API 查询${dateWindowLabel}`;
-  elements.candidateForceArxiv.textContent = `强制 arXiv API 重新获取${dateWindowLabel}`;
-  setTaskStatus(forceArxiv ? `arXiv API：正在查询${dateWindowLabel}。` : "本地 arXiv 库：正在同步最新 RSS 并筛选候选论文。");
-  const query = currentSearchQuery();
-  const candidateLimit = Math.max(5, Math.min(30, Number(elements.limitInput.value) || 10));
+async function loadCandidateBatch(search, { start = 0, requestId = "" } = {}) {
   const params = new URLSearchParams({
-    query,
-    limit: String(candidateLimit),
-    days: elements.dateWindow.value,
-    requestId
+    query: search.query,
+    limit: String(search.limit),
+    days: search.days,
+    requestId,
+    start: String(start)
   });
 
-  if (forceRefresh) {
+  if ((search.forceRefresh || search.forceArxiv) && start === 0) {
     params.set("refresh", "1");
   }
 
-  if (forceArxiv) {
+  if (search.forceArxiv) {
     params.set("forceArxiv", "1");
     params.set("ignoreCooldown", "1");
-    params.set("refresh", "1");
   }
 
-  startSourceStatusPolling(requestId);
-
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), forceArxiv ? 70000 : 45000);
+  const timeout = window.setTimeout(() => controller.abort(), search.forceArxiv ? 90000 : 60000);
 
   try {
     const response = await fetch(`/api/papers?${params.toString()}`, { signal: controller.signal });
-    resetSourceStatusTimer();
-    window.clearTimeout(timeout);
     const contentType = response.headers.get("content-type") || "";
 
     if (!response.ok) {
@@ -1934,8 +1942,66 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
     const warning = response.headers.get("x-paper-insight-arxiv-warning");
     const sourceReturn = decodeHeaderValue(response.headers.get("x-paper-insight-source-return"));
     const returnHint = sourceReturn ? ` 返回值：${sourceReturn}` : "";
-    const sourceInfo = candidateSourceInfo({ source, method, cacheStatus, forceArxiv });
-    const papers = annotateCandidateSource(parsePapers(await response.text()).slice(0, candidateLimit), sourceInfo);
+    const sourceInfo = candidateSourceInfo({ source, method, cacheStatus, forceArxiv: search.forceArxiv });
+    const papers = annotateCandidateSource(parsePapers(await response.text()).slice(0, search.limit), sourceInfo);
+
+    return {
+      papers,
+      cacheStatus,
+      source,
+      method,
+      cacheAge,
+      warning,
+      returnHint
+    };
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}) {
+  if (state.taskLocked) {
+    return;
+  }
+
+  if (!ensureApiKey()) {
+    return;
+  }
+
+  state.candidatePapers = [];
+  state.selectedCandidateIds = new Set();
+  state.candidateSearch = null;
+  state.lastAnalyzePapers = [];
+  state.analysisSession = null;
+  state.currentThreshold = Number(elements.thresholdInput.value || 70);
+  state.currentMinRecommended = minRecommendedValue();
+  resetTaskModal();
+  showTaskDialog();
+  setTaskLocked(true);
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const dateWindowLabel = selectedDateWindowLabel();
+  elements.taskForceArxiv.textContent = `强制使用 arXiv API 查询${dateWindowLabel}`;
+  elements.candidateForceArxiv.textContent = `强制 arXiv API 重新获取${dateWindowLabel}`;
+  setTaskStatus(forceArxiv ? `arXiv API：正在查询${dateWindowLabel}。` : "本地 arXiv 库：正在同步最新 RSS 并筛选候选论文。");
+  const query = currentSearchQuery();
+  const candidateLimit = candidateLimitValue();
+  const search = {
+    query,
+    limit: candidateLimit,
+    days: elements.dateWindow.value,
+    forceRefresh,
+    forceArxiv,
+    nextStart: 0
+  };
+
+  startSourceStatusPolling(requestId);
+
+  try {
+    const result = await loadCandidateBatch(search, { start: 0, requestId });
+    resetSourceStatusTimer();
+    search.nextStart = result.papers.length;
+    state.candidateSearch = search;
+    const { papers, cacheStatus, source, cacheAge, warning, returnHint } = result;
 
     if (!papers.length) {
       setTaskLocked(false);
@@ -1959,7 +2025,6 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
     }
   } catch (error) {
     resetSourceStatusTimer();
-    window.clearTimeout(timeout);
     setTaskLocked(false);
     const message = error.name === "AbortError"
       ? "请求超过等待时间。可能是 arXiv API 或远端网络暂时无响应，请稍后再试。"
@@ -2049,6 +2114,8 @@ async function analyzeOnePaper(paper) {
 function createAnalysisSession(papers) {
   const reused = [];
   const pending = [];
+  const seedPapers = state.candidatePapers.length ? state.candidatePapers : papers;
+  const seenKeys = new Set();
 
   papers.forEach((paper) => {
     const withHistory = paper.analysis ? paper : annotateHistoricalAnalysis(paper);
@@ -2060,13 +2127,19 @@ function createAnalysisSession(papers) {
     }
   });
 
+  seedPapers.forEach((paper) => rememberPaperKeys(seenKeys, paper));
+
   return {
     papers: [...papers],
     reused,
     pending,
     analyzed: [...reused],
+    seenKeys,
+    search: state.candidateSearch ? { ...state.candidateSearch } : null,
+    minRecommended: state.currentMinRecommended,
     mode: pending.length ? providerLabel() : "历史复用",
     nextIndex: 0,
+    extraBatchCount: 0,
     failedPaper: null
   };
 }
@@ -2091,50 +2164,93 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
   showProgressView(session.papers.length, reused.length, pending.length);
 
   try {
-    for (let index = startIndex; index < pending.length; index += 1) {
-      const paper = pending[index];
-      const paperStartedAt = performance.now();
-      state.progressState = { done: index, total: pending.length, paper, phase: "running", startedAt, paperStartedAt };
-      updateProgress(state.progressState);
-      resetProgressTimer();
-      state.progressTimer = window.setInterval(() => updateProgress(state.progressState), 500);
+    session.nextIndex = startIndex;
 
-      session.nextIndex = index;
-      session.failedPaper = paper;
-      state.lastAnalyzePapers = [paper];
+    while (true) {
+      while (session.nextIndex < pending.length) {
+        const index = session.nextIndex;
+        const paper = pending[index];
+        const paperStartedAt = performance.now();
+        state.progressState = { done: index, total: pending.length, paper, phase: "running", startedAt, paperStartedAt };
+        updateProgress(state.progressState);
+        resetProgressTimer();
+        state.progressTimer = window.setInterval(() => updateProgress(state.progressState), 500);
 
-      let result;
-      try {
-        result = await analyzeOnePaper(paper);
-      } catch (error) {
-        state.analysisSession = session;
+        session.nextIndex = index;
+        session.failedPaper = paper;
         state.lastAnalyzePapers = [paper];
-        throw error;
+
+        let result;
+        try {
+          result = await analyzeOnePaper(paper);
+        } catch (error) {
+          state.analysisSession = session;
+          state.lastAnalyzePapers = [paper];
+          throw error;
+        }
+
+        mode = reused.length ? `${result.mode} + 历史复用` : result.mode;
+        session.mode = mode;
+        analyzed.push(result.paper);
+        session.failedPaper = null;
+        session.nextIndex = index + 1;
+        state.lastAnalyzePapers = pending[index + 1] ? [pending[index + 1]] : [];
+
+        const tempReport = {
+          threshold: state.currentThreshold,
+          candidateCount: session.papers.length,
+          mode,
+          items: analyzed
+        };
+        const counts = splitReport(tempReport);
+        setMetrics({
+          candidates: session.papers.length,
+          recommended: counts.recommended.length,
+          hidden: counts.hidden.length,
+          mode
+        });
+
+        state.progressState = { done: index + 1, total: pending.length, paper, phase: "done", startedAt, paperStartedAt };
+        updateProgress(state.progressState);
       }
 
-      mode = reused.length ? `${result.mode} + 历史复用` : result.mode;
-      session.mode = mode;
-      analyzed.push(result.paper);
-      session.failedPaper = null;
-      session.nextIndex = index + 1;
-      state.lastAnalyzePapers = pending[index + 1] ? [pending[index + 1]] : [];
-
-      const tempReport = {
+      const currentCounts = splitReport({
         threshold: state.currentThreshold,
         candidateCount: session.papers.length,
         mode,
         items: analyzed
-      };
-      const counts = splitReport(tempReport);
-      setMetrics({
-        candidates: session.papers.length,
-        recommended: counts.recommended.length,
-        hidden: counts.hidden.length,
-        mode
       });
+      const target = Math.min(session.minRecommended || 0, 30);
 
-      state.progressState = { done: index + 1, total: pending.length, paper, phase: "done", startedAt, paperStartedAt };
-      updateProgress(state.progressState);
+      if (!target || currentCounts.recommended.length >= target || !session.search || session.extraBatchCount >= 5) {
+        break;
+      }
+
+      const nextStart = Math.max(Number(session.search.nextStart || 0), session.papers.length);
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      session.extraBatchCount += 1;
+      setTaskStatus(`阈值以上论文 ${currentCounts.recommended.length}/${target} 篇，正在查询第 ${session.extraBatchCount + 1} 批候选论文...`);
+      startSourceStatusPolling(requestId);
+
+      let extraResult;
+      try {
+        extraResult = await loadCandidateBatch(session.search, { start: nextStart, requestId });
+      } finally {
+        resetSourceStatusTimer();
+      }
+
+      session.search.nextStart = nextStart + extraResult.papers.length;
+      const extraPapers = uniqueCandidatePapers(extraResult.papers, session.seenKeys);
+
+      if (!extraPapers.length) {
+        setTaskStatus(`阈值以上论文只有 ${currentCounts.recommended.length}/${target} 篇，后续候选已经耗尽或重复。`, "warning");
+        break;
+      }
+
+      session.papers.push(...extraPapers);
+      pending.push(...extraPapers);
+      state.lastAnalyzePapers = [pending[session.nextIndex]];
+      showProgressView(session.papers.length, reused.length, pending.length);
     }
   } finally {
     resetProgressTimer();
@@ -2161,6 +2277,8 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
     createdAt: new Date().toISOString(),
     mode,
     threshold: state.currentThreshold,
+    minRecommended: session.minRecommended,
+    extraBatchCount: session.extraBatchCount,
     candidateCount: session.papers.length,
     items: analyzed
   };
@@ -2173,8 +2291,27 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
   setTaskStep("done");
   showTaskPanel("done");
   const counts = splitReport(report);
-  elements.taskDoneSummary.textContent = `推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。${reused.length ? `复用 ${reused.length} 篇历史分析。` : ""}`;
-  setTaskStatus(reused.length ? `最新列表已生成，${reused.length} 篇论文未重复调用 ${providerLabel()}。` : "最新列表已生成。", "success");
+  const target = Math.min(session.minRecommended || 0, 30);
+  const targetReached = !target || counts.recommended.length >= target;
+  const targetText = target
+    ? targetReached
+      ? `最低推荐目标 ${target} 篇已达到。`
+      : `最低推荐目标 ${target} 篇未达到，只找到 ${counts.recommended.length} 篇达标论文，低于阈值的论文未纳入推荐。`
+    : "";
+  const expansionText = session.extraBatchCount ? `已额外查询 ${session.extraBatchCount} 轮候选。` : "";
+  const reusedText = reused.length ? `复用 ${reused.length} 篇历史分析。` : "";
+  elements.taskDoneSummary.textContent = [
+    `推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`,
+    targetText,
+    expansionText,
+    reusedText
+  ].filter(Boolean).join("");
+
+  if (targetReached) {
+    setTaskStatus(reused.length ? `最新列表已生成，${reused.length} 篇论文未重复调用 ${providerLabel()}。` : "最新列表已生成。", "success");
+  } else {
+    setTaskStatus(`最新列表已生成，但只找到 ${counts.recommended.length}/${target} 篇阈值以上论文；低分论文不会补进推荐。`, "warning");
+  }
   state.taskCloseTimer = window.setTimeout(() => {
     closeTaskDialog();
   }, 1200);
@@ -2696,6 +2833,10 @@ elements.filters.addEventListener("submit", (event) => {
 elements.thresholdInput.addEventListener("input", () => {
   elements.thresholdValue.textContent = elements.thresholdInput.value;
   state.currentThreshold = Number(elements.thresholdInput.value);
+});
+
+elements.minRecommendedInput.addEventListener("input", () => {
+  state.currentMinRecommended = minRecommendedValue();
 });
 
 elements.openQueryDialog.addEventListener("click", () => {
