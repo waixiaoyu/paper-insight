@@ -287,7 +287,6 @@ const elements = {
   readingListOutput: $("#readingListOutput"),
   readingListClose: $("#readingListClose"),
   readingListRegenerate: $("#readingListRegenerate"),
-  readingListEmail: $("#readingListEmail"),
   readingListDownload: $("#readingListDownload"),
   readingListCopy: $("#readingListCopy"),
   generateReadingList: $("#generateReadingList"),
@@ -1993,7 +1992,6 @@ function setReadingListBusy(busy) {
   const hasMarkdown = Boolean(elements.readingListOutput.value.trim());
   elements.generateReadingList.disabled = busy;
   elements.readingListRegenerate.disabled = busy;
-  elements.readingListEmail.disabled = busy || !hasMarkdown;
   elements.readingListDownload.disabled = busy || !hasMarkdown;
   elements.readingListCopy.disabled = busy || !hasMarkdown;
   elements.readingListClose.disabled = false;
@@ -2209,44 +2207,6 @@ function downloadReadingListMarkdown() {
   link.remove();
   URL.revokeObjectURL(url);
   elements.readingListStatus.textContent = `Markdown 已下载：${link.download}`;
-}
-
-async function sendReadingListEmail() {
-  const markdown = elements.readingListOutput.value.trim();
-
-  if (!markdown) {
-    elements.readingListStatus.textContent = "还没有可发送的 Markdown。";
-    return;
-  }
-
-  elements.readingListEmail.disabled = true;
-  elements.readingListStatus.textContent = "正在发送邮件到 yaoyayu@huawei.com...";
-
-  try {
-    const response = await fetch("/api/reading-list-email", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        title: elements.readingListTitle.textContent || "每周高价值论文阅读清单",
-        markdown
-      })
-    });
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.detail || data.message || "邮件发送失败。");
-    }
-
-    elements.readingListStatus.textContent = `邮件已发送到 ${data.to || "yaoyayu@huawei.com"}。`;
-    showStatus("阅读清单邮件已发送。", "warning");
-  } catch (error) {
-    elements.readingListStatus.textContent = `邮件发送失败：${error.message}`;
-    showStatus(`邮件发送失败：${error.message}`, "error");
-  } finally {
-    setReadingListBusy(false);
-  }
 }
 
 function text(node, selector) {
@@ -3422,8 +3382,6 @@ elements.readingListRegenerate.addEventListener("click", () => {
 });
 
 elements.readingListDownload.addEventListener("click", downloadReadingListMarkdown);
-
-elements.readingListEmail.addEventListener("click", sendReadingListEmail);
 
 elements.readingListCopy.addEventListener("click", copyReadingListMarkdown);
 

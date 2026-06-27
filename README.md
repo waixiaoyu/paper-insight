@@ -219,34 +219,6 @@ node server.js
 - `LLM_RESPONSE_MAX_CHARS`：默认 `500000`，只做超大响应保护；不会把模型返回内容截断成短文本。
 - `LLM_REQUEST_TIMEOUT_MS`：默认 `600000`，控制 LLM 分析请求超时时间。
 
-## 邮件发送
-
-阅读清单生成后，可以在弹窗里点击“发送邮件”，将当前 Markdown 周报发送到默认收件人 `yaoyayu@huawei.com`。
-
-邮件发送由服务端 SMTP 环境变量控制，不会在前端保存 SMTP 密码：
-
-```powershell
-$env:SMTP_HOST="smtp.example.com"
-$env:SMTP_PORT="587"
-$env:SMTP_STARTTLS="1"
-$env:SMTP_USER="your-smtp-user"
-$env:SMTP_PASS="your-smtp-password"
-$env:SMTP_FROM="paper-insight@example.com"
-node server.js
-```
-
-如果使用 465 端口隐式 TLS：
-
-```powershell
-$env:SMTP_PORT="465"
-$env:SMTP_SECURE="1"
-```
-
-可选项：
-
-- `READING_LIST_EMAIL_TO`：覆盖默认收件人。
-- `SMTP_TLS_REJECT_UNAUTHORIZED=0`：仅用于内部自签名证书场景。
-
 ## 配置
 
 ```powershell
