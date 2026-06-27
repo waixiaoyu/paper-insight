@@ -1991,6 +1991,23 @@ function setReadingListBusy(busy) {
   elements.readingListClose.disabled = false;
 }
 
+function adjustReadingListOutputHeight() {
+  if (!elements.readingListOutput) {
+    return;
+  }
+
+  elements.readingListOutput.style.height = "";
+
+  if (!elements.readingListDialog.classList.contains("ready") || !elements.readingListOutput.value.trim()) {
+    return;
+  }
+
+  const viewportLimit = Math.max(220, Math.min(500, window.innerHeight - 330));
+  const contentHeight = elements.readingListOutput.scrollHeight + 4;
+  const nextHeight = Math.max(160, Math.min(contentHeight, viewportLimit));
+  elements.readingListOutput.style.height = `${Math.round(nextHeight)}px`;
+}
+
 function openReadingListDialog(report = state.currentReport) {
   if (!report) {
     return;
@@ -2019,6 +2036,8 @@ function openReadingListDialog(report = state.currentReport) {
   if (typeof elements.readingListDialog.showModal === "function" && !elements.readingListDialog.open) {
     elements.readingListDialog.showModal();
   }
+
+  window.requestAnimationFrame(adjustReadingListOutputHeight);
 }
 
 async function generateReadingListForReport(report = state.currentReport, { force = false } = {}) {
@@ -2047,6 +2066,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   openReadingListDialog(report);
   elements.readingListTitle.textContent = meta.title;
   elements.readingListOutput.value = "";
+  elements.readingListOutput.style.height = "";
   elements.readingListStatus.textContent = `准备生成 ${papers.length} 篇论文的发布版周报。`;
   setReadingListProgress("loading", "整理推荐论文", `已收集当前列表中的 ${papers.length} 篇达标论文，正在准备上下文。`, {
     step: "collect",
@@ -2103,6 +2123,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
       step: "save",
       meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 完成`
     });
+    adjustReadingListOutputHeight();
     elements.generateReadingList.textContent = "查看发布版周报";
     showStatus("发布版阅读清单已生成，可以复制到洞察网站。", "warning");
   } catch (error) {
@@ -3355,6 +3376,12 @@ elements.readingListClose.addEventListener("click", () => {
 
 elements.readingListDialog.addEventListener("cancel", () => {
   resetReadingListTimer();
+});
+
+window.addEventListener("resize", () => {
+  if (elements.readingListDialog.open) {
+    adjustReadingListOutputHeight();
+  }
 });
 
 elements.taskRefreshCandidates.addEventListener("click", () => {

@@ -335,9 +335,9 @@ button {
 
 .reading-list-dialog.ready .reading-list-progress {
   grid-template-columns: minmax(0, 1fr);
-  min-height: 98px;
-  padding-top: 12px;
-  padding-bottom: 12px;
+  min-height: 0;
+  padding-top: 10px;
+  padding-bottom: 10px;
   background: var(--green-soft);
   border-bottom-color: rgba(47, 125, 87, 0.18);
 }
@@ -355,6 +355,10 @@ button {
 .reading-list-dialog.ready .reading-list-steps li.active span {
   background: var(--green);
   border-color: var(--green);
+}
+
+.reading-list-dialog.ready .reading-list-steps {
+  display: none;
 }
 
 .reading-list-dialog.ready .reading-list-progress .spinner {
@@ -382,15 +386,44 @@ button {
   display: none;
 }
 
+.reading-list-preview {
+  min-height: 0;
+  overflow: hidden;
+  background: #fbfcfe;
+}
+
+.reading-list-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 20px;
+  color: var(--muted);
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.reading-list-preview-header span {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.reading-list-preview-header em {
+  font-style: normal;
+  white-space: nowrap;
+}
+
 .reading-list-output {
+  display: block;
   width: 100%;
   height: clamp(280px, 46dvh, 520px);
   min-height: 0;
   max-height: calc(100dvh - 310px);
-  padding: 18px 20px;
+  padding: 16px 20px;
   overflow: auto;
   color: var(--ink);
-  background: #fbfcfe;
+  background: transparent;
   border: 0;
   border-radius: 0;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -400,7 +433,7 @@ button {
 }
 
 .reading-list-dialog.ready .reading-list-output {
-  height: clamp(300px, 44dvh, 500px);
+  height: clamp(180px, 36dvh, 500px);
 }
 
 .reading-list-footer {

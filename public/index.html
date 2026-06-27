@@ -217,7 +217,13 @@
             </ol>
           </div>
         </section>
-        <textarea id="readingListOutput" class="reading-list-output" spellcheck="false" readonly></textarea>
+        <section class="reading-list-preview" aria-label="Markdown 预览">
+          <div class="reading-list-preview-header">
+            <span>Markdown 预览</span>
+            <em>可复制到洞察网站</em>
+          </div>
+          <textarea id="readingListOutput" class="reading-list-output" spellcheck="false" readonly></textarea>
+        </section>
         <footer class="reading-list-footer">
           <button id="readingListRegenerate" class="secondary-action" type="button">重新生成</button>
           <button id="readingListDownload" class="secondary-action" type="button">下载 Markdown</button>
