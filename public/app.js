@@ -279,6 +279,9 @@ const elements = {
   readingListDialog: $("#readingListDialog"),
   readingListTitle: $("#readingListTitle"),
   readingListStatus: $("#readingListStatus"),
+  readingListProgress: $("#readingListProgress"),
+  readingListProgressTitle: $("#readingListProgressTitle"),
+  readingListProgressDetail: $("#readingListProgressDetail"),
   readingListOutput: $("#readingListOutput"),
   readingListClose: $("#readingListClose"),
   readingListRegenerate: $("#readingListRegenerate"),
@@ -395,6 +398,8 @@ const state = {
   progressTimer: 0,
   sourceStatusTimer: 0,
   syncStatusTimer: 0,
+  readingListTimer: 0,
+  readingListStartedAt: 0,
   progressState: null,
   taskLocked: false,
   taskCloseTimer: 0
@@ -1324,6 +1329,20 @@ function resetSyncStatusTimer() {
   }
 }
 
+function resetReadingListTimer() {
+  if (state.readingListTimer) {
+    window.clearInterval(state.readingListTimer);
+    state.readingListTimer = 0;
+  }
+}
+
+function setReadingListProgress(type, title, detail) {
+  elements.readingListDialog.classList.toggle("ready", type === "ready");
+  elements.readingListDialog.classList.toggle("failed", type === "failed");
+  elements.readingListProgressTitle.textContent = title;
+  elements.readingListProgressDetail.textContent = detail;
+}
+
 function resetTaskModal() {
   resetProgressTimer();
   resetSourceStatusTimer();
@@ -1925,6 +1944,11 @@ function openReadingListDialog(report = state.currentReport) {
   elements.readingListStatus.textContent = report.readingList?.generatedAt
     ? `已生成 ${report.readingList.paperCount || recommendedPapersForReadingList(report).length} 篇论文的发布版 Markdown，可复制到洞察网站。`
     : "基于当前推荐列表生成 Markdown。";
+  setReadingListProgress(
+    report.readingList?.markdown ? "ready" : "idle",
+    report.readingList?.markdown ? "已生成" : "等待生成",
+    report.readingList?.markdown ? "可以复制 Markdown，或点击“重新生成”刷新内容。" : "点击“生成发布版周报”后会显示进度。"
+  );
   setReadingListBusy(false);
 
   if (typeof elements.readingListDialog.showModal === "function" && !elements.readingListDialog.open) {
@@ -1957,10 +1981,19 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   openReadingListDialog(report);
   elements.readingListTitle.textContent = meta.title;
   elements.readingListOutput.value = "";
-  elements.readingListStatus.textContent = `正在生成 ${papers.length} 篇论文的发布版阅读清单...`;
+  elements.readingListStatus.textContent = `准备生成 ${papers.length} 篇论文的发布版周报。`;
+  setReadingListProgress("loading", "整理推荐论文", `已收集当前列表中的 ${papers.length} 篇达标论文，正在准备提交给 ${providerLabel()}。`);
   setReadingListBusy(true);
+  state.readingListStartedAt = performance.now();
+  resetReadingListTimer();
+  state.readingListTimer = window.setInterval(() => {
+    const elapsed = secondsSince(state.readingListStartedAt);
+    setReadingListProgress("loading", `${providerLabel()} 正在生成`, `已等待 ${elapsed} 秒。模型正在组织报告导读、论文分层、文章内容和阅读顺序。`);
+    elements.readingListStatus.textContent = `生成中，已等待 ${elapsed} 秒...`;
+  }, 1000);
 
   try {
+    setReadingListProgress("loading", "提交生成请求", `正在把 ${papers.length} 篇推荐论文和已有分析发送给 ${providerLabel()}。`);
     const response = await fetch("/api/reading-list", {
       method: "POST",
       headers: {
@@ -1993,13 +2026,17 @@ async function generateReadingListForReport(report = state.currentReport, { forc
 
     elements.readingListTitle.textContent = updatedReport.readingList.title;
     elements.readingListOutput.value = updatedReport.readingList.markdown;
-    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown。`;
-    elements.generateReadingList.textContent = "查看阅读清单";
+    const charCount = updatedReport.readingList.markdown.length;
+    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown，约 ${charCount} 字符。`;
+    setReadingListProgress("ready", "生成完成", `已保存到当前推荐列表。可以复制 Markdown 到洞察网站，或点击“重新生成”。`);
+    elements.generateReadingList.textContent = "查看发布版周报";
     showStatus("发布版阅读清单已生成，可以复制到洞察网站。", "warning");
   } catch (error) {
     elements.readingListStatus.textContent = `生成失败：${error.message}`;
+    setReadingListProgress("failed", "生成失败", error.message);
     showStatus(`阅读清单生成失败：${error.message}`, "error");
   } finally {
+    resetReadingListTimer();
     setReadingListBusy(false);
   }
 }
@@ -2901,7 +2938,7 @@ function openReport(report, options = {}) {
   const rangePapers = counts.recommended.length ? counts.recommended : counts.all;
   const rangeLabel = counts.recommended.length ? "推荐论文时间范围" : "候选论文时间范围";
   elements.generateReadingList.disabled = !counts.recommended.length || state.taskLocked;
-  elements.generateReadingList.textContent = report.readingList?.markdown ? "查看阅读清单" : "生成阅读清单";
+  elements.generateReadingList.textContent = report.readingList?.markdown ? "查看发布版周报" : "生成发布版周报";
 
   setHeader({
     eyebrow: "推荐报告",
@@ -3204,9 +3241,14 @@ elements.readingListRegenerate.addEventListener("click", () => {
 elements.readingListCopy.addEventListener("click", copyReadingListMarkdown);
 
 elements.readingListClose.addEventListener("click", () => {
+  resetReadingListTimer();
   if (elements.readingListDialog.open) {
     elements.readingListDialog.close();
   }
+});
+
+elements.readingListDialog.addEventListener("cancel", () => {
+  resetReadingListTimer();
 });
 
 elements.taskRefreshCandidates.addEventListener("click", () => {

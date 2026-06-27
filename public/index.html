@@ -202,6 +202,13 @@
           </div>
           <button id="readingListClose" class="ghost-button" type="button">关闭</button>
         </header>
+        <section id="readingListProgress" class="reading-list-progress" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <div>
+            <strong id="readingListProgressTitle">等待生成</strong>
+            <p id="readingListProgressDetail">点击“生成发布版周报”后会显示进度。</p>
+          </div>
+        </section>
         <textarea id="readingListOutput" class="reading-list-output" spellcheck="false" readonly></textarea>
         <footer class="reading-list-footer">
           <button id="readingListRegenerate" class="secondary-action" type="button">重新生成</button>
@@ -344,6 +351,15 @@
             </article>
           </section>
 
+          <section class="reading-list-card" aria-label="发布版周报">
+            <div>
+              <span>洞察网站发布</span>
+              <strong>高价值论文阅读清单</strong>
+              <p>基于当前推荐列表里的达标论文生成 Markdown，可复制到你的洞察网站。</p>
+            </div>
+            <button id="generateReadingList" class="reading-list-action" type="button">生成发布版周报</button>
+          </section>
+
           <div class="report-toolbar">
             <div class="paper-view-tabs" aria-label="论文视图">
               <button class="paper-view-tab active" data-paper-view="recommended" type="button">推荐论文</button>
@@ -351,7 +367,6 @@
               <button class="paper-view-tab" data-paper-view="all" type="button">全部分析</button>
             </div>
             <div class="report-toolbar-actions">
-              <button id="generateReadingList" class="secondary-action" type="button">生成阅读清单</button>
               <div class="view-tools" role="group" aria-label="排序方式">
                 <button class="tool-button active" data-sort="score" type="button">按分数</button>
                 <button class="tool-button" data-sort="latest" type="button">按时间</button>
