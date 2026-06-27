@@ -178,6 +178,78 @@ button {
   background: rgba(23, 32, 43, 0.28);
 }
 
+.reading-list-dialog {
+  width: min(1080px, calc(100vw - 32px));
+  height: min(860px, calc(100dvh - 40px));
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  overflow: hidden;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.reading-list-dialog::backdrop {
+  background: rgba(23, 32, 43, 0.32);
+}
+
+.reading-list-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+}
+
+.reading-list-header,
+.reading-list-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+}
+
+.reading-list-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.reading-list-header h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+
+.reading-list-header p:last-child {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.reading-list-output {
+  width: 100%;
+  min-height: 0;
+  padding: 18px 20px;
+  overflow: auto;
+  color: var(--ink);
+  background: #fbfcfe;
+  border: 0;
+  border-radius: 0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  resize: none;
+}
+
+.reading-list-footer {
+  align-items: center;
+  border-top: 1px solid var(--line);
+}
+
+.reading-list-footer .secondary-action,
+.reading-list-footer .primary-action {
+  min-width: 130px;
+}
+
 .sync-history-shell {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1130,6 +1202,13 @@ button:disabled {
   margin-bottom: 18px;
 }
 
+.report-toolbar-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .explore-toolbar {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;
@@ -2057,6 +2136,11 @@ button:disabled {
     flex-direction: column;
   }
 
+  .report-toolbar-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .view-tools {
     width: 100%;
   }
@@ -2106,6 +2190,8 @@ button:disabled {
 
   .task-dialog-header,
   .sync-history-header,
+  .reading-list-header,
+  .reading-list-footer,
   .candidate-heading {
     align-items: stretch;
     flex-direction: column;

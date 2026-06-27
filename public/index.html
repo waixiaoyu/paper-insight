@@ -192,6 +192,24 @@
       </div>
     </dialog>
 
+    <dialog id="readingListDialog" class="reading-list-dialog">
+      <div class="reading-list-shell">
+        <header class="reading-list-header">
+          <div>
+            <p class="eyebrow">发布版阅读清单</p>
+            <h2 id="readingListTitle">每周高价值论文阅读清单</h2>
+            <p id="readingListStatus">基于当前推荐列表生成 Markdown。</p>
+          </div>
+          <button id="readingListClose" class="ghost-button" type="button">关闭</button>
+        </header>
+        <textarea id="readingListOutput" class="reading-list-output" spellcheck="false" readonly></textarea>
+        <footer class="reading-list-footer">
+          <button id="readingListRegenerate" class="secondary-action" type="button">重新生成</button>
+          <button id="readingListCopy" class="primary-action" type="button">复制 Markdown</button>
+        </footer>
+      </div>
+    </dialog>
+
     <div class="app-shell">
       <aside class="sidebar" aria-label="推荐设置">
         <div class="brand-row">
@@ -332,9 +350,12 @@
               <button class="paper-view-tab" data-paper-view="hidden" type="button">隐藏论文</button>
               <button class="paper-view-tab" data-paper-view="all" type="button">全部分析</button>
             </div>
-            <div class="view-tools" role="group" aria-label="排序方式">
-              <button class="tool-button active" data-sort="score" type="button">按分数</button>
-              <button class="tool-button" data-sort="latest" type="button">按时间</button>
+            <div class="report-toolbar-actions">
+              <button id="generateReadingList" class="secondary-action" type="button">生成阅读清单</button>
+              <div class="view-tools" role="group" aria-label="排序方式">
+                <button class="tool-button active" data-sort="score" type="button">按分数</button>
+                <button class="tool-button" data-sort="latest" type="button">按时间</button>
+              </div>
             </div>
           </div>
 

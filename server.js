@@ -1186,7 +1186,7 @@ const readJsonBody = async (request) => {
 
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 1_500_000) {
+    if (size > 3_000_000) {
       throw new Error("Request body is too large.");
     }
     chunks.push(chunk);
@@ -1212,6 +1212,35 @@ const sanitizePaper = (paper) => ({
   candidateSourceDetail: truncate(paper.candidateSourceDetail, 240),
   candidateFetchedAt: String(paper.candidateFetchedAt || "")
 });
+
+const sanitizeReadingListPaper = (paper) => {
+  const sanitized = sanitizePaper(paper);
+  const analysis = paper?.analysis || {};
+
+  return {
+    ...sanitized,
+    analysis: {
+      score: Math.round(clamp(analysis.score ?? 0)),
+      tldr: truncate(analysis.tldr, 420),
+      problem: truncate(analysis.problem, 900),
+      background: truncate(analysis.background, 900),
+      method: truncate(analysis.method, 1200),
+      technicalDetails: truncate(analysis.technicalDetails, 1600),
+      contribution: truncate(analysis.contribution, 900),
+      experiment: truncate(analysis.experiment, 900),
+      networkUseCase: truncate(analysis.networkUseCase, 900),
+      limitations: truncate(analysis.limitations, 800),
+      recommendedReadingPath: truncate(analysis.recommendedReadingPath, 800),
+      whyRecommend: truncate(analysis.whyRecommend, 900),
+      readingGuide: Array.isArray(analysis.readingGuide)
+        ? analysis.readingGuide.slice(0, 8).map((item) => truncate(item, 180)).filter(Boolean)
+        : [],
+      matchedKeywords: Array.isArray(analysis.matchedKeywords)
+        ? analysis.matchedKeywords.slice(0, 16).map((item) => truncate(item, 80)).filter(Boolean)
+        : []
+    }
+  };
+};
 
 const extractJson = (content) => {
   const text = String(content || "").trim();
@@ -1619,6 +1648,155 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
 
     const data = await llmResponse.json();
     return ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol));
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const callLlmReadingList = async ({ report, papers, llm }) => {
+  const config = getLlmConfig(llm);
+
+  if (!config) {
+    const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
+    error.code = "LLM_NOT_CONFIGURED";
+    throw error;
+  }
+
+  const { endpoint, model, disableThinking, protocol } = config;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
+
+  try {
+    const title = truncate(report.title, 120) || "每周高价值论文阅读清单";
+    const payload = {
+      model,
+      temperature: 0.25,
+      max_tokens: llmMaxOutputTokens,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是一名面向科研读者和技术负责人的论文周报编辑。",
+            "请基于输入中的高价值论文列表，生成一篇适合发布到洞察网站的中文 Markdown 阅读清单。",
+            "读者关注大模型、智能体、网络自治、网络数字孪生、端到端 Agent 框架技术。",
+            "这份清单要帮助读者快速判断：本周哪些论文值得读、每篇文章做了什么、为什么值得读、应该按什么顺序读。",
+            "输出必须是 Markdown 正文，不要使用代码围栏，不要输出额外解释。"
+          ].join("\n")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            report: {
+              title,
+              date: report.date,
+              month: report.month,
+              weekOfMonth: report.weekOfMonth,
+              sourceReport: report.sourceReport,
+              threshold: report.threshold,
+              paperCount: papers.length,
+              tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "端到端框架"]
+            },
+            instruction: [
+              `请生成「${title}」。`,
+              "标题格式固定为：{year} 年 {month} 月第 {weekOfMonth} 周高价值论文阅读清单。",
+              "输出必须包含 YAML front matter 和正文标题。",
+              "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、2-3 条研究趋势、以及时间有限时的阅读建议。",
+              "每篇论文都要重点介绍文章内容：研究问题、方法或系统设计、实验/验证方式、主要结论。不要只写推荐理由。",
+              "论文条目按照「本周必读」「值得跟进」「快速扫读」分层组织。输入论文数量少时可以减少层级，但完整论文清单必须覆盖全部论文。",
+              "「如果只读三篇」从输入论文里选最值得优先读的 3 篇；不足 3 篇就按实际数量输出。",
+              "「本周主题线索」提炼 2-4 条趋势，每条趋势要综合多篇论文。",
+              "「推荐阅读顺序」要给出实际阅读路线和原因。",
+              "完整论文清单放在最后，表格列为：分数、论文、方向、阅读级别、链接。"
+            ].join("\n"),
+            outputTemplate: [
+              "---",
+              `title: \"${title}\"`,
+              `date: \"${report.date}\"`,
+              `month: \"${report.month}\"`,
+              `week_of_month: ${report.weekOfMonth}`,
+              "category: \"论文周报\"",
+              "tags:",
+              "  - 大模型",
+              "  - 智能体",
+              "  - 网络自治",
+              "  - 网络数字孪生",
+              "  - 端到端框架",
+              `paper_count: ${papers.length}`,
+              "---",
+              "",
+              `# ${title}`,
+              "",
+              "## 报告导读",
+              "",
+              "## 如果只读三篇",
+              "",
+              "## 本周必读",
+              "",
+              "### 1. 论文标题",
+              "",
+              "- 推荐分：",
+              "- 方向：",
+              "- 链接：",
+              "",
+              "**文章内容**",
+              "",
+              "**为什么值得读**",
+              "",
+              "**重点看什么**",
+              "",
+              "**适合谁读**",
+              "",
+              "**局限提醒**",
+              "",
+              "## 值得跟进",
+              "",
+              "## 快速扫读",
+              "",
+              "## 本周主题线索",
+              "",
+              "## 推荐阅读顺序",
+              "",
+              "## 完整论文清单"
+            ].join("\n"),
+            papers
+          })
+        }
+      ]
+    };
+
+    if (protocol === "anthropic") {
+      const [systemMessage, userMessage] = payload.messages;
+      payload.system = systemMessage.content;
+      payload.messages = [userMessage];
+    }
+
+    if (disableThinking && protocol === "openai") {
+      payload.thinking = { type: "disabled" };
+    }
+
+    const llmResponse = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: llmHeaders(config),
+      body: JSON.stringify(payload)
+    });
+
+    if (!llmResponse.ok) {
+      const errorText = await llmResponse.text();
+      throw new Error(`LLM request failed with ${llmResponse.status}: ${truncate(redactSensitive(errorText), 300)}`);
+    }
+
+    const data = await llmResponse.json();
+    return ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol)).replace(/^```(?:markdown)?\s*|\s*```$/g, "").trim();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
+      const timeoutError = new Error(`LLM 请求超过 ${timeoutSeconds} 秒未完成，已自动中止。请稍后重试，或通过 LLM_REQUEST_TIMEOUT_MS 调大超时时间。`);
+      timeoutError.code = "LLM_READING_LIST_TIMEOUT";
+      throw timeoutError;
+    }
+
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -2157,6 +2335,64 @@ const handleTranslateRequest = async (request, response) => {
   }
 };
 
+const handleReadingListRequest = async (request, response) => {
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(request);
+    const papers = Array.isArray(payload.papers)
+      ? payload.papers.slice(0, 40).map(sanitizeReadingListPaper)
+      : [];
+
+    if (!papers.length) {
+      sendJson(response, 400, { error: "NO_RECOMMENDED_PAPERS", message: "No recommended papers were provided." });
+      return;
+    }
+
+    const report = {
+      title: truncate(payload.title, 160),
+      date: String(payload.date || new Date().toISOString().slice(0, 10)),
+      month: truncate(payload.month, 16),
+      weekOfMonth: Math.min(Math.max(Number(payload.weekOfMonth || 1), 1), 6),
+      sourceReport: truncate(payload.sourceReport, 240),
+      threshold: clamp(payload.threshold ?? 70)
+    };
+
+    const requestLlm = {
+      apiKey: payload.llmApiKey,
+      provider: payload.llmProvider,
+      model: payload.llmModel
+    };
+    const markdown = await callLlmReadingList({
+      report,
+      papers,
+      llm: requestLlm
+    });
+
+    sendJson(response, 200, {
+      markdown,
+      mode: llmProviderDefaults[inferLlmProvider(requestLlm)]?.mode || "llm",
+      paperCount: papers.length,
+      title: report.title
+    });
+  } catch (error) {
+    const status = error.code === "LLM_NOT_CONFIGURED"
+      ? 503
+      : error.code === "LLM_READING_LIST_TIMEOUT"
+        ? 504
+        : 500;
+    sendJson(response, status, {
+      error: error.code || "READING_LIST_FAILED",
+      message: "Could not generate the weekly reading list.",
+      detail: error.message,
+      retryable: error.code !== "LLM_NOT_CONFIGURED"
+    });
+  }
+};
+
 const serveStatic = async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const requestedPath = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
@@ -2209,6 +2445,11 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === "/api/translate") {
     await handleTranslateRequest(request, response);
+    return;
+  }
+
+  if (url.pathname === "/api/reading-list") {
+    await handleReadingListRequest(request, response);
     return;
   }
 

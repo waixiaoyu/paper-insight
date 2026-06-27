@@ -276,6 +276,14 @@ const elements = {
   taskProgressPanel: $("#taskProgressPanel"),
   taskDonePanel: $("#taskDonePanel"),
   taskDoneSummary: $("#taskDoneSummary"),
+  readingListDialog: $("#readingListDialog"),
+  readingListTitle: $("#readingListTitle"),
+  readingListStatus: $("#readingListStatus"),
+  readingListOutput: $("#readingListOutput"),
+  readingListClose: $("#readingListClose"),
+  readingListRegenerate: $("#readingListRegenerate"),
+  readingListCopy: $("#readingListCopy"),
+  generateReadingList: $("#generateReadingList"),
   breadcrumb: $("#breadcrumb"),
   pageEyebrow: $("#pageEyebrow"),
   pageTitle: $("#pageTitle"),
@@ -369,6 +377,7 @@ const state = {
   view: "home",
   currentReport: null,
   currentPaper: null,
+  currentReadingListReport: null,
   currentPaperView: "recommended",
   currentSort: "score",
   exploreSort: "score",
@@ -409,6 +418,25 @@ function loadReports() {
 
 function persistReports() {
   localStorage.setItem(storageKeys.reports, JSON.stringify(state.reports));
+}
+
+function replaceStoredReport(report) {
+  if (!report) {
+    return null;
+  }
+
+  state.reports = state.reports.map((item) => item.key === report.key ? report : item);
+
+  if (state.currentReport?.key === report.key) {
+    state.currentReport = report;
+  }
+
+  if (state.currentReadingListReport?.key === report.key) {
+    state.currentReadingListReport = report;
+  }
+
+  persistReports();
+  return report;
 }
 
 function quoteQueryTerm(term) {
@@ -928,6 +956,57 @@ function splitReport(report = state.currentReport) {
   return { all, recommended, hidden };
 }
 
+function recommendedPapersForReadingList(report = state.currentReport) {
+  return [...splitReport(report).recommended].sort((a, b) => (
+    paperScore(b) - paperScore(a)
+    || new Date(b.published || b.updated) - new Date(a.published || a.updated)
+  ));
+}
+
+function readingListDirection(paper) {
+  const keywords = Array.isArray(paper?.analysis?.matchedKeywords) ? paper.analysis.matchedKeywords : [];
+  const candidates = [
+    ...keywords,
+    paperCategoryLabel(paper)
+  ].filter(Boolean);
+
+  return candidates.slice(0, 4).join(" / ") || "相关研究";
+}
+
+function readingListPaperPayload(paper) {
+  const analysis = paper.analysis || {};
+
+  return {
+    id: paper.id,
+    title: paper.title,
+    authors: paper.authors,
+    published: paper.published,
+    updated: paper.updated,
+    primaryCategory: paper.primaryCategory,
+    categories: paper.categories,
+    absLink: paper.absLink,
+    link: paper.link,
+    summary: paper.summary,
+    direction: readingListDirection(paper),
+    analysis: {
+      score: paperScore(paper),
+      tldr: analysis.tldr || "",
+      problem: analysis.problem || "",
+      background: analysis.background || "",
+      method: analysis.method || "",
+      technicalDetails: analysis.technicalDetails || "",
+      contribution: analysis.contribution || "",
+      experiment: analysis.experiment || "",
+      networkUseCase: analysis.networkUseCase || "",
+      limitations: analysis.limitations || "",
+      recommendedReadingPath: analysis.recommendedReadingPath || "",
+      whyRecommend: analysis.whyRecommend || "",
+      readingGuide: Array.isArray(analysis.readingGuide) ? analysis.readingGuide : [],
+      matchedKeywords: Array.isArray(analysis.matchedKeywords) ? analysis.matchedKeywords : []
+    }
+  };
+}
+
 function explorePapers() {
   const keyMap = new Map();
   const papers = [];
@@ -1032,8 +1111,29 @@ function weekStart(date = new Date()) {
   return start;
 }
 
+function isoDate(value = new Date()) {
+  const date = new Date(value);
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = safeDate.getFullYear();
+  const month = String(safeDate.getMonth() + 1).padStart(2, "0");
+  const day = String(safeDate.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function weekOfMonth(value = new Date()) {
+  const date = new Date(value);
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  return Math.floor((safeDate.getDate() - 1) / 7) + 1;
+}
+
 function reportTitle() {
   return `${dateTimeFormatter.format(new Date())} 推荐列表`;
+}
+
+function readingListTitle(report = state.currentReport) {
+  const date = new Date(report?.createdAt || new Date());
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  return `${safeDate.getFullYear()} 年 ${safeDate.getMonth() + 1} 月第 ${weekOfMonth(safeDate)} 周高价值论文阅读清单`;
 }
 
 function setActiveView(name) {
@@ -1138,6 +1238,7 @@ function setTaskLocked(locked) {
   elements.taskForceArxiv.disabled = locked;
   elements.candidateForceArxiv.disabled = locked;
   elements.syncArxiv.disabled = locked;
+  elements.generateReadingList.disabled = locked || !recommendedPapersForReadingList(state.currentReport).length;
 }
 
 function setTaskStep(step) {
@@ -1702,6 +1803,7 @@ function clearWorkingState() {
   resetProgressTimer();
   state.currentReport = null;
   state.currentPaper = null;
+  state.currentReadingListReport = null;
   state.candidatePapers = [];
   state.selectedCandidateIds = new Set();
   state.candidateSearch = null;
@@ -1788,6 +1890,143 @@ function renderReportHome() {
     item.addEventListener("click", () => openReport(report));
     elements.reportHomeList.append(item);
   });
+}
+
+function readingListMetadata(report = state.currentReport) {
+  const date = new Date(report?.createdAt || new Date());
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const year = safeDate.getFullYear();
+  const month = safeDate.getMonth() + 1;
+
+  return {
+    title: readingListTitle(report),
+    date: isoDate(safeDate),
+    month: `${year}-${String(month).padStart(2, "0")}`,
+    weekOfMonth: weekOfMonth(safeDate)
+  };
+}
+
+function setReadingListBusy(busy) {
+  elements.generateReadingList.disabled = busy;
+  elements.readingListRegenerate.disabled = busy;
+  elements.readingListCopy.disabled = busy || !elements.readingListOutput.value.trim();
+  elements.readingListClose.disabled = false;
+}
+
+function openReadingListDialog(report = state.currentReport) {
+  if (!report) {
+    return;
+  }
+
+  const meta = readingListMetadata(report);
+  state.currentReadingListReport = report;
+  elements.readingListTitle.textContent = report.readingList?.title || meta.title;
+  elements.readingListOutput.value = report.readingList?.markdown || "";
+  elements.readingListStatus.textContent = report.readingList?.generatedAt
+    ? `已生成 ${report.readingList.paperCount || recommendedPapersForReadingList(report).length} 篇论文的发布版 Markdown，可复制到洞察网站。`
+    : "基于当前推荐列表生成 Markdown。";
+  setReadingListBusy(false);
+
+  if (typeof elements.readingListDialog.showModal === "function" && !elements.readingListDialog.open) {
+    elements.readingListDialog.showModal();
+  }
+}
+
+async function generateReadingListForReport(report = state.currentReport, { force = false } = {}) {
+  if (!report) {
+    return;
+  }
+
+  if (!ensureApiKey(`请先输入 ${providerLabel()} API Key，然后再生成发布版阅读清单。`)) {
+    return;
+  }
+
+  const papers = recommendedPapersForReadingList(report);
+
+  if (!papers.length) {
+    showStatus("当前推荐列表没有高于阈值的论文，无法生成高价值阅读清单。", "warning");
+    return;
+  }
+
+  if (report.readingList?.markdown && !force) {
+    openReadingListDialog(report);
+    return;
+  }
+
+  const meta = readingListMetadata(report);
+  openReadingListDialog(report);
+  elements.readingListTitle.textContent = meta.title;
+  elements.readingListOutput.value = "";
+  elements.readingListStatus.textContent = `正在生成 ${papers.length} 篇论文的发布版阅读清单...`;
+  setReadingListBusy(true);
+
+  try {
+    const response = await fetch("/api/reading-list", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        ...meta,
+        sourceReport: reportDisplayTitle(report),
+        threshold: thresholdFor(report),
+        papers: papers.map(readingListPaperPayload),
+        ...llmPayload()
+      })
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || data.message || "阅读清单生成失败。");
+    }
+
+    const updatedReport = replaceStoredReport({
+      ...report,
+      readingList: {
+        title: data.title || meta.title,
+        markdown: data.markdown || "",
+        generatedAt: new Date().toISOString(),
+        mode: modeLabel(data.mode),
+        paperCount: data.paperCount || papers.length
+      }
+    });
+
+    elements.readingListTitle.textContent = updatedReport.readingList.title;
+    elements.readingListOutput.value = updatedReport.readingList.markdown;
+    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown。`;
+    elements.generateReadingList.textContent = "查看阅读清单";
+    showStatus("发布版阅读清单已生成，可以复制到洞察网站。", "warning");
+  } catch (error) {
+    elements.readingListStatus.textContent = `生成失败：${error.message}`;
+    showStatus(`阅读清单生成失败：${error.message}`, "error");
+  } finally {
+    setReadingListBusy(false);
+  }
+}
+
+async function copyReadingListMarkdown() {
+  const markdown = elements.readingListOutput.value.trim();
+
+  if (!markdown) {
+    elements.readingListStatus.textContent = "还没有可复制的 Markdown。";
+    return;
+  }
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(markdown);
+    } else {
+      elements.readingListOutput.focus();
+      elements.readingListOutput.select();
+      document.execCommand("copy");
+    }
+
+    elements.readingListStatus.textContent = "Markdown 已复制。";
+  } catch (error) {
+    elements.readingListOutput.focus();
+    elements.readingListOutput.select();
+    elements.readingListStatus.textContent = "复制失败，请手动全选复制。";
+  }
 }
 
 function text(node, selector) {
@@ -2661,6 +2900,8 @@ function openReport(report, options = {}) {
   const candidateTotal = report.candidateCount ?? counts.all.length;
   const rangePapers = counts.recommended.length ? counts.recommended : counts.all;
   const rangeLabel = counts.recommended.length ? "推荐论文时间范围" : "候选论文时间范围";
+  elements.generateReadingList.disabled = !counts.recommended.length || state.taskLocked;
+  elements.generateReadingList.textContent = report.readingList?.markdown ? "查看阅读清单" : "生成阅读清单";
 
   setHeader({
     eyebrow: "推荐报告",
@@ -2951,6 +3192,22 @@ elements.selectAllCandidates.addEventListener("click", () => {
 });
 
 elements.confirmCandidates.addEventListener("click", confirmCandidates);
+
+elements.generateReadingList.addEventListener("click", () => {
+  generateReadingListForReport(state.currentReport);
+});
+
+elements.readingListRegenerate.addEventListener("click", () => {
+  generateReadingListForReport(state.currentReadingListReport || state.currentReport, { force: true });
+});
+
+elements.readingListCopy.addEventListener("click", copyReadingListMarkdown);
+
+elements.readingListClose.addEventListener("click", () => {
+  if (elements.readingListDialog.open) {
+    elements.readingListDialog.close();
+  }
+});
 
 elements.taskRefreshCandidates.addEventListener("click", () => {
   fetchCandidates({ forceRefresh: true });
