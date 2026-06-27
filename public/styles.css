@@ -228,10 +228,10 @@ button {
 .reading-list-progress {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
+  align-items: start;
   gap: 12px;
-  min-height: 56px;
-  padding: 10px 20px;
+  min-height: 98px;
+  padding: 12px 20px;
   background: var(--accent-soft);
   border-bottom: 1px solid rgba(23, 107, 135, 0.18);
 }
@@ -240,6 +240,19 @@ button {
   width: 26px;
   height: 26px;
   border-width: 3px;
+  margin-top: 2px;
+}
+
+.reading-list-progress-main {
+  min-width: 0;
+}
+
+.reading-list-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
 }
 
 .reading-list-progress strong {
@@ -249,6 +262,14 @@ button {
   font-size: 14px;
 }
 
+.reading-list-progress-meta,
+#readingListProgressMeta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .reading-list-progress p {
   margin: 0;
   color: var(--muted);
@@ -256,8 +277,64 @@ button {
   line-height: 1.45;
 }
 
+.reading-list-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reading-list-steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reading-list-steps span {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+  background: #ffffff;
+  border: 1px solid rgba(23, 107, 135, 0.18);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.reading-list-steps em {
+  min-width: 0;
+  overflow: hidden;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reading-list-steps li.done,
+.reading-list-steps li.active {
+  color: var(--accent-strong);
+}
+
+.reading-list-steps li.done span,
+.reading-list-steps li.active span {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.reading-list-steps li.active span {
+  box-shadow: 0 0 0 3px rgba(23, 107, 135, 0.16);
+}
+
 .reading-list-dialog.ready .reading-list-progress {
-  min-height: 44px;
+  min-height: 86px;
   padding-top: 8px;
   padding-bottom: 8px;
   background: var(--green-soft);
@@ -268,12 +345,23 @@ button {
   color: var(--green);
 }
 
+.reading-list-dialog.ready .reading-list-steps li.done,
+.reading-list-dialog.ready .reading-list-steps li.active {
+  color: var(--green);
+}
+
+.reading-list-dialog.ready .reading-list-steps li.done span,
+.reading-list-dialog.ready .reading-list-steps li.active span {
+  background: var(--green);
+  border-color: var(--green);
+}
+
 .reading-list-dialog.ready .reading-list-progress .spinner {
   display: none;
 }
 
 .reading-list-dialog.failed .reading-list-progress {
-  min-height: 44px;
+  min-height: 74px;
   padding-top: 8px;
   padding-bottom: 8px;
   background: var(--rose-soft);
@@ -282,6 +370,10 @@ button {
 
 .reading-list-dialog.failed .reading-list-progress strong {
   color: var(--rose);
+}
+
+.reading-list-dialog.failed .reading-list-steps {
+  display: none;
 }
 
 .reading-list-dialog.failed .reading-list-progress .spinner {
@@ -2324,6 +2416,24 @@ button:disabled {
 
   .task-steps {
     grid-template-columns: 1fr;
+  }
+
+  .reading-list-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .reading-list-progress .spinner {
+    display: none;
+  }
+
+  .reading-list-progress-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .reading-list-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .candidate-actions {

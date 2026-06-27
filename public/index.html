@@ -204,9 +204,19 @@
         </header>
         <section id="readingListProgress" class="reading-list-progress" aria-live="polite">
           <div class="spinner" aria-hidden="true"></div>
-          <div>
-            <strong id="readingListProgressTitle">等待生成</strong>
+          <div class="reading-list-progress-main">
+            <div class="reading-list-progress-heading">
+              <strong id="readingListProgressTitle">等待生成</strong>
+              <span id="readingListProgressMeta">未开始</span>
+            </div>
             <p id="readingListProgressDetail">点击“生成发布版周报”后会显示进度。</p>
+            <ol id="readingListSteps" class="reading-list-steps" aria-label="阅读清单生成阶段">
+              <li data-reading-step="collect"><span>1</span><em>整理论文</em></li>
+              <li data-reading-step="submit"><span>2</span><em>提交请求</em></li>
+              <li data-reading-step="trend"><span>3</span><em>趋势判断</em></li>
+              <li data-reading-step="insight"><span>4</span><em>逐篇洞察</em></li>
+              <li data-reading-step="polish"><span>5</span><em>发布整理</em></li>
+            </ol>
           </div>
         </section>
         <textarea id="readingListOutput" class="reading-list-output" spellcheck="false" readonly></textarea>

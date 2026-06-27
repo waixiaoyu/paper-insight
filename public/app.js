@@ -282,6 +282,8 @@ const elements = {
   readingListProgress: $("#readingListProgress"),
   readingListProgressTitle: $("#readingListProgressTitle"),
   readingListProgressDetail: $("#readingListProgressDetail"),
+  readingListProgressMeta: $("#readingListProgressMeta"),
+  readingListSteps: $("#readingListSteps"),
   readingListOutput: $("#readingListOutput"),
   readingListClose: $("#readingListClose"),
   readingListRegenerate: $("#readingListRegenerate"),
@@ -339,6 +341,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
+const readingListStepOrder = ["collect", "submit", "trend", "insight", "polish"];
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -1337,11 +1340,83 @@ function resetReadingListTimer() {
   }
 }
 
-function setReadingListProgress(type, title, detail) {
+function setReadingListStep(activeStep = "") {
+  const activeIndex = readingListStepOrder.indexOf(activeStep);
+  elements.readingListSteps?.querySelectorAll("li").forEach((item) => {
+    const itemIndex = readingListStepOrder.indexOf(item.dataset.readingStep);
+    item.classList.toggle("active", item.dataset.readingStep === activeStep);
+    item.classList.toggle("done", activeIndex >= 0 && itemIndex >= 0 && itemIndex < activeIndex);
+  });
+}
+
+function setReadingListProgress(type, title, detail, { step = "", meta = "" } = {}) {
   elements.readingListDialog.classList.toggle("ready", type === "ready");
   elements.readingListDialog.classList.toggle("failed", type === "failed");
   elements.readingListProgressTitle.textContent = title;
   elements.readingListProgressDetail.textContent = detail;
+  elements.readingListProgressMeta.textContent = meta;
+  setReadingListStep(step);
+}
+
+function readingListGenerationPhase(elapsed, paperCount, provider) {
+  const insightAt = Math.max(8, Math.min(14, 5 + Math.ceil(paperCount / 2)));
+  const polishAt = Math.max(18, Math.min(34, insightAt + 8 + Math.ceil(paperCount / 2)));
+  const phases = [
+    {
+      after: 0,
+      step: "collect",
+      title: "整理推荐论文",
+      status: "正在整理推荐论文...",
+      detail: `正在汇总 ${paperCount} 篇达标论文的标题、摘要、评分理由和已有分析。`
+    },
+    {
+      after: 1,
+      step: "submit",
+      title: "提交生成请求",
+      status: "正在提交给模型...",
+      detail: `正在把推荐列表上下文发送给 ${provider}，生成目标是可发布的 Markdown 周报。`
+    },
+    {
+      after: 5,
+      step: "trend",
+      title: "判断本周趋势",
+      status: "正在判断本周研究趋势...",
+      detail: "正在提炼本周值得关注的研究信号，并关联华为 ADN 的自智网络、网络数字孪生和网络 Agent 方向。"
+    },
+    {
+      after: insightAt,
+      step: "insight",
+      title: "逐篇生成洞察",
+      status: "正在逐篇生成洞察观点...",
+      detail: `正在为 ${paperCount} 篇论文补充“文章内容是什么”以及“洞察观点与 ADN 启发”。`
+    },
+    {
+      after: polishAt,
+      step: "polish",
+      title: "整理发布格式",
+      status: "正在整理发布版 Markdown...",
+      detail: "正在检查报告导读、趋势判断、论文顺序、标题层级和可复制到洞察网站的排版。"
+    },
+    {
+      after: 45,
+      step: "polish",
+      title: "继续等待模型返回",
+      status: "模型仍在生成长文...",
+      detail: "内容包含趋势判断和逐篇 ADN 启发，生成时间会受论文数量和模型响应速度影响；页面保持打开即可。"
+    }
+  ];
+
+  return phases.reduce((current, phase) => elapsed >= phase.after ? phase : current, phases[0]);
+}
+
+function refreshReadingListGenerationProgress(paperCount, provider) {
+  const elapsed = secondsSince(state.readingListStartedAt);
+  const phase = readingListGenerationPhase(elapsed, paperCount, provider);
+  setReadingListProgress("loading", phase.title, phase.detail, {
+    step: phase.step,
+    meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
+  });
+  elements.readingListStatus.textContent = `${phase.status} 已等待 ${elapsed} 秒。`;
 }
 
 function resetTaskModal() {
@@ -1950,7 +2025,13 @@ function openReadingListDialog(report = state.currentReport) {
   setReadingListProgress(
     report.readingList?.markdown ? "ready" : "idle",
     report.readingList?.markdown ? "已生成" : "等待生成",
-    report.readingList?.markdown ? "可以复制 Markdown，或点击“重新生成”刷新内容。" : "点击“生成发布版周报”后会显示进度。"
+    report.readingList?.markdown ? "可以复制 Markdown，或点击“重新生成”刷新内容。" : "点击“生成发布版周报”后会显示进度。",
+    {
+      step: report.readingList?.markdown ? "polish" : "",
+      meta: report.readingList?.markdown
+        ? `${report.readingList.paperCount || recommendedPapersForReadingList(report).length} 篇 · 已保存`
+        : "未开始"
+    }
   );
   setReadingListBusy(false);
 
@@ -1981,22 +2062,28 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   }
 
   const meta = readingListMetadata(report);
+  const provider = providerLabel();
   openReadingListDialog(report);
   elements.readingListTitle.textContent = meta.title;
   elements.readingListOutput.value = "";
   elements.readingListStatus.textContent = `准备生成 ${papers.length} 篇论文的发布版周报。`;
-  setReadingListProgress("loading", "整理推荐论文", `已收集当前列表中的 ${papers.length} 篇达标论文，正在准备提交给 ${providerLabel()}。`);
+  setReadingListProgress("loading", "整理推荐论文", `已收集当前列表中的 ${papers.length} 篇达标论文，正在准备上下文。`, {
+    step: "collect",
+    meta: `0 秒 · ${papers.length} 篇 · ${provider}`
+  });
   setReadingListBusy(true);
   state.readingListStartedAt = performance.now();
   resetReadingListTimer();
+  refreshReadingListGenerationProgress(papers.length, provider);
   state.readingListTimer = window.setInterval(() => {
-    const elapsed = secondsSince(state.readingListStartedAt);
-    setReadingListProgress("loading", `${providerLabel()} 正在生成`, `已等待 ${elapsed} 秒。模型正在组织报告导读、论文分层、文章内容和阅读顺序。`);
-    elements.readingListStatus.textContent = `生成中，已等待 ${elapsed} 秒...`;
+    refreshReadingListGenerationProgress(papers.length, provider);
   }, 1000);
 
   try {
-    setReadingListProgress("loading", "提交生成请求", `正在把 ${papers.length} 篇推荐论文和已有分析发送给 ${providerLabel()}。`);
+    setReadingListProgress("loading", "提交生成请求", `正在把 ${papers.length} 篇推荐论文和已有分析发送给 ${provider}。`, {
+      step: "submit",
+      meta: `0 秒 · ${papers.length} 篇 · ${provider}`
+    });
     const response = await fetch("/api/reading-list", {
       method: "POST",
       headers: {
@@ -2031,12 +2118,17 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     elements.readingListOutput.value = updatedReport.readingList.markdown;
     const charCount = updatedReport.readingList.markdown.length;
     elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown，约 ${charCount} 字符。`;
-    setReadingListProgress("ready", "生成完成", `已保存到当前推荐列表。可以复制 Markdown 到洞察网站，或点击“重新生成”。`);
+    setReadingListProgress("ready", "生成完成", `已保存到当前推荐列表。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
+      step: "polish",
+      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 完成`
+    });
     elements.generateReadingList.textContent = "查看发布版周报";
     showStatus("发布版阅读清单已生成，可以复制到洞察网站。", "warning");
   } catch (error) {
     elements.readingListStatus.textContent = `生成失败：${error.message}`;
-    setReadingListProgress("failed", "生成失败", error.message);
+    setReadingListProgress("failed", "生成失败", error.message, {
+      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${papers.length} 篇 · 失败`
+    });
     showStatus(`阅读清单生成失败：${error.message}`, "error");
   } finally {
     resetReadingListTimer();
