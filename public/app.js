@@ -341,7 +341,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
-const readingListStepOrder = ["collect", "submit", "trend", "insight", "polish"];
+const readingListStepOrder = ["collect", "generate", "save"];
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -1358,65 +1358,46 @@ function setReadingListProgress(type, title, detail, { step = "", meta = "" } = 
   setReadingListStep(step);
 }
 
-function readingListGenerationPhase(elapsed, paperCount, provider) {
-  const insightAt = Math.max(8, Math.min(14, 5 + Math.ceil(paperCount / 2)));
-  const polishAt = Math.max(18, Math.min(34, insightAt + 8 + Math.ceil(paperCount / 2)));
-  const phases = [
+function readingListGenerationFocus(elapsed, paperCount, provider) {
+  const focusItems = [
     {
       after: 0,
-      step: "collect",
-      title: "整理推荐论文",
-      status: "正在整理推荐论文...",
-      detail: `正在汇总 ${paperCount} 篇达标论文的标题、摘要、评分理由和已有分析。`
+      status: "等待模型生成...",
+      detail: `请求已提交给 ${provider}。正在等待模型返回完整 Markdown，当前会保持在“等待模型返回”。`
     },
     {
-      after: 1,
-      step: "submit",
-      title: "提交生成请求",
-      status: "正在提交给模型...",
-      detail: `正在把推荐列表上下文发送给 ${provider}，生成目标是可发布的 Markdown 周报。`
+      after: 6,
+      status: "等待模型生成趋势判断...",
+      detail: "模型需要先读完整列表，再提炼本周研究趋势；这只是生成关注点，不代表该部分已经完成。"
     },
     {
-      after: 5,
-      step: "trend",
-      title: "判断本周趋势",
-      status: "正在判断本周研究趋势...",
-      detail: "正在提炼本周值得关注的研究信号，并关联华为 ADN 的自智网络、网络数字孪生和网络 Agent 方向。"
+      after: 14,
+      status: "等待模型生成逐篇洞察...",
+      detail: `模型正在处理 ${paperCount} 篇论文的内容说明和“洞察观点与 ADN 启发”；真实进度仍以接口返回为准。`
     },
     {
-      after: insightAt,
-      step: "insight",
-      title: "逐篇生成洞察",
-      status: "正在逐篇生成洞察观点...",
-      detail: `正在为 ${paperCount} 篇论文补充“文章内容是什么”以及“洞察观点与 ADN 启发”。`
-    },
-    {
-      after: polishAt,
-      step: "polish",
-      title: "整理发布格式",
-      status: "正在整理发布版 Markdown...",
-      detail: "正在检查报告导读、趋势判断、论文顺序、标题层级和可复制到洞察网站的排版。"
+      after: 28,
+      status: "等待模型整理发布格式...",
+      detail: "模型可能正在整理报告导读、标题层级和可复制到洞察网站的 Markdown；返回前不会标记完成。"
     },
     {
       after: 45,
-      step: "polish",
-      title: "继续等待模型返回",
       status: "模型仍在生成长文...",
-      detail: "内容包含趋势判断和逐篇 ADN 启发，生成时间会受论文数量和模型响应速度影响；页面保持打开即可。"
+      detail: "长报告会受论文数量、趋势判断和逐篇 ADN 启发影响。页面没有卡死，正在等待服务端返回结果。"
     }
   ];
 
-  return phases.reduce((current, phase) => elapsed >= phase.after ? phase : current, phases[0]);
+  return focusItems.reduce((current, item) => elapsed >= item.after ? item : current, focusItems[0]);
 }
 
 function refreshReadingListGenerationProgress(paperCount, provider) {
   const elapsed = secondsSince(state.readingListStartedAt);
-  const phase = readingListGenerationPhase(elapsed, paperCount, provider);
-  setReadingListProgress("loading", phase.title, phase.detail, {
-    step: phase.step,
+  const focus = readingListGenerationFocus(elapsed, paperCount, provider);
+  setReadingListProgress("loading", "等待模型返回", focus.detail, {
+    step: "generate",
     meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
   });
-  elements.readingListStatus.textContent = `${phase.status} 已等待 ${elapsed} 秒。`;
+  elements.readingListStatus.textContent = `${focus.status} 已等待 ${elapsed} 秒。`;
 }
 
 function resetTaskModal() {
@@ -2027,7 +2008,7 @@ function openReadingListDialog(report = state.currentReport) {
     report.readingList?.markdown ? "已生成" : "等待生成",
     report.readingList?.markdown ? "可以复制 Markdown，或点击“重新生成”刷新内容。" : "点击“生成发布版周报”后会显示进度。",
     {
-      step: report.readingList?.markdown ? "polish" : "",
+      step: report.readingList?.markdown ? "save" : "",
       meta: report.readingList?.markdown
         ? `${report.readingList.paperCount || recommendedPapersForReadingList(report).length} 篇 · 已保存`
         : "未开始"
@@ -2080,8 +2061,8 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   }, 1000);
 
   try {
-    setReadingListProgress("loading", "提交生成请求", `正在把 ${papers.length} 篇推荐论文和已有分析发送给 ${provider}。`, {
-      step: "submit",
+    setReadingListProgress("loading", "等待模型返回", `已把 ${papers.length} 篇推荐论文和已有分析发送给 ${provider}，正在等待完整 Markdown 返回。`, {
+      step: "generate",
       meta: `0 秒 · ${papers.length} 篇 · ${provider}`
     });
     const response = await fetch("/api/reading-list", {
@@ -2119,7 +2100,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     const charCount = updatedReport.readingList.markdown.length;
     elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown，约 ${charCount} 字符。`;
     setReadingListProgress("ready", "生成完成", `已保存到当前推荐列表。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
-      step: "polish",
+      step: "save",
       meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 完成`
     });
     elements.generateReadingList.textContent = "查看发布版周报";
