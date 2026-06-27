@@ -197,7 +197,7 @@ button {
 
 .reading-list-shell {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   height: 100%;
 }
 
@@ -230,8 +230,8 @@ button {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
-  min-height: 70px;
-  padding: 14px 20px;
+  min-height: 56px;
+  padding: 10px 20px;
   background: var(--accent-soft);
   border-bottom: 1px solid rgba(23, 107, 135, 0.18);
 }
@@ -257,6 +257,9 @@ button {
 }
 
 .reading-list-dialog.ready .reading-list-progress {
+  min-height: 44px;
+  padding-top: 8px;
+  padding-bottom: 8px;
   background: var(--green-soft);
   border-bottom-color: rgba(47, 125, 87, 0.18);
 }
@@ -270,6 +273,9 @@ button {
 }
 
 .reading-list-dialog.failed .reading-list-progress {
+  min-height: 44px;
+  padding-top: 8px;
+  padding-bottom: 8px;
   background: var(--rose-soft);
   border-bottom-color: rgba(163, 65, 85, 0.2);
 }
