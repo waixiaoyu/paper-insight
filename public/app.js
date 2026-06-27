@@ -341,7 +341,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
-const readingListStepOrder = ["collect", "generate", "save"];
+const readingListStepOrder = ["collect", "submit", "generate", "receive", "save"];
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -1358,6 +1358,12 @@ function setReadingListProgress(type, title, detail, { step = "", meta = "" } = 
   setReadingListStep(step);
 }
 
+function waitForReadingListStep(ms = 240) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 function readingListGenerationFocus(elapsed, paperCount, provider) {
   const focusItems = [
     {
@@ -1393,7 +1399,7 @@ function readingListGenerationFocus(elapsed, paperCount, provider) {
 function refreshReadingListGenerationProgress(paperCount, provider) {
   const elapsed = secondsSince(state.readingListStartedAt);
   const focus = readingListGenerationFocus(elapsed, paperCount, provider);
-  setReadingListProgress("loading", "等待模型返回", focus.detail, {
+  setReadingListProgress("loading", "模型生成中", focus.detail, {
     step: "generate",
     meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
   });
@@ -2075,17 +2081,16 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   setReadingListBusy(true);
   state.readingListStartedAt = performance.now();
   resetReadingListTimer();
-  refreshReadingListGenerationProgress(papers.length, provider);
   state.readingListTimer = window.setInterval(() => {
     refreshReadingListGenerationProgress(papers.length, provider);
   }, 1000);
 
   try {
-    setReadingListProgress("loading", "等待模型返回", `已把 ${papers.length} 篇推荐论文和已有分析发送给 ${provider}，正在等待完整 Markdown 返回。`, {
-      step: "generate",
+    setReadingListProgress("loading", "发送生成请求", `正在把 ${papers.length} 篇推荐论文、评分理由和已有分析发送给 ${provider}。`, {
+      step: "submit",
       meta: `0 秒 · ${papers.length} 篇 · ${provider}`
     });
-    const response = await fetch("/api/reading-list", {
+    const responsePromise = fetch("/api/reading-list", {
       method: "POST",
       headers: {
         "content-type": "application/json"
@@ -2098,11 +2103,25 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         ...llmPayload()
       })
     });
+    await waitForReadingListStep(260);
+    refreshReadingListGenerationProgress(papers.length, provider);
+    const response = await responsePromise;
+    resetReadingListTimer();
+    setReadingListProgress("loading", "接收模型结果", "模型已经返回响应，正在解析生成的 Markdown 内容。", {
+      step: "receive",
+      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${papers.length} 篇 · ${provider}`
+    });
     const data = await response.json();
 
     if (!response.ok) {
       throw new Error(data.detail || data.message || "阅读清单生成失败。");
     }
+
+    setReadingListProgress("loading", "保存生成结果", "正在保存到当前推荐列表，并准备 Markdown 预览。", {
+      step: "save",
+      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${data.paperCount || papers.length} 篇 · 保存中`
+    });
+    await waitForReadingListStep(180);
 
     const updatedReport = replaceStoredReport({
       ...report,
