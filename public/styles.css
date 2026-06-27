@@ -180,7 +180,7 @@ button {
 
 .reading-list-dialog {
   width: min(1080px, calc(100vw - 32px));
-  height: min(860px, calc(100dvh - 40px));
+  height: auto;
   max-height: calc(100dvh - 40px);
   padding: 0;
   overflow: hidden;
@@ -197,8 +197,8 @@ button {
 
 .reading-list-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  height: 100%;
+  grid-template-rows: auto auto auto auto;
+  max-height: calc(100dvh - 40px);
 }
 
 .reading-list-header,
@@ -334,6 +334,7 @@ button {
 }
 
 .reading-list-dialog.ready .reading-list-progress {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 98px;
   padding-top: 12px;
   padding-bottom: 12px;
@@ -357,10 +358,11 @@ button {
 }
 
 .reading-list-dialog.ready .reading-list-progress .spinner {
-  visibility: hidden;
+  display: none;
 }
 
 .reading-list-dialog.failed .reading-list-progress {
+  grid-template-columns: minmax(0, 1fr);
   min-height: 98px;
   padding-top: 12px;
   padding-bottom: 12px;
@@ -377,12 +379,14 @@ button {
 }
 
 .reading-list-dialog.failed .reading-list-progress .spinner {
-  visibility: hidden;
+  display: none;
 }
 
 .reading-list-output {
   width: 100%;
+  height: clamp(280px, 46dvh, 520px);
   min-height: 0;
+  max-height: calc(100dvh - 310px);
   padding: 18px 20px;
   overflow: auto;
   color: var(--ink);
@@ -393,6 +397,10 @@ button {
   font-size: 13px;
   line-height: 1.65;
   resize: none;
+}
+
+.reading-list-dialog.ready .reading-list-output {
+  height: clamp(300px, 44dvh, 500px);
 }
 
 .reading-list-footer {
