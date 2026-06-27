@@ -2098,7 +2098,6 @@ async function generateReadingListForReport(report = state.currentReport, { forc
       body: JSON.stringify({
         ...meta,
         sourceReport: reportDisplayTitle(report),
-        threshold: thresholdFor(report),
         papers: papers.map(readingListPaperPayload),
         ...llmPayload()
       })

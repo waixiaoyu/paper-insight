@@ -66,7 +66,7 @@ const dimensions = [
     key: "practicalValue",
     label: "框架系统价值",
     weight: 0.25,
-    description: "是否提出可复用的端到端框架、系统架构、智能体协同机制或闭环自治流程。"
+    description: "是否提出可复用的系统架构、工程化集成方案、智能体协同机制或闭环自治流程。"
   },
   {
     key: "evidence",
@@ -1678,7 +1678,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
           content: [
             "你是一名面向科研读者和技术负责人的论文周报编辑。",
             "请基于输入中的高价值论文列表，生成一篇适合发布到洞察网站的中文 Markdown 阅读清单。",
-            "读者重点关注大模型、智能体、网络自治、网络数字孪生、端到端 Agent 框架技术，以及华为 ADN（Autonomous Driving Network，自智网络/自动驾驶网络）相关研究。",
+            "读者重点关注大模型、智能体、网络自治、网络数字孪生、系统架构与工程化集成，以及华为 ADN（Autonomous Driving Network，自智网络/自动驾驶网络）相关研究。",
             "这份清单要帮助读者快速判断：本周哪些论文值得读、每篇文章做了什么、为什么值得读、它对 ADN 网络研究有什么启发、应该按什么顺序读。",
             "输出必须是 Markdown 正文，不要使用代码围栏，不要输出额外解释。"
           ].join("\n")
@@ -1692,23 +1692,23 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               month: report.month,
               weekOfMonth: report.weekOfMonth,
               sourceReport: report.sourceReport,
-              threshold: report.threshold,
               paperCount: papers.length,
-              tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "端到端框架", "华为 ADN"]
+              tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"]
             },
             instruction: [
               `请生成「${title}」。`,
               "标题格式固定为：{year} 年 {month} 月第 {weekOfMonth} 周高价值论文阅读清单。",
               "输出必须包含 YAML front matter 和正文标题。",
-              "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、对 ADN 网络研究最有价值的方向、以及时间有限时的阅读建议。",
+              "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、以及对 ADN 网络研究最有价值的研究信号。不要在导读里再写一组独立的阅读建议，避免和后面的阅读顺序重复。",
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
+              "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
               "每篇论文都要重点介绍文章内容：研究问题、方法或系统设计、实验/验证方式、主要结论。不要只写推荐理由。",
               "每篇论文都必须补充「洞察观点与 ADN 启发」小节。这个小节要从华为 ADN 网络研究视角提炼观点，说明它对网络自治分级、意图理解、闭环控制、数字孪生环境、智能体编排、故障自愈、体验保障、可观测性、可评估性或落地架构的启发。不要泛泛而谈，要指出可借鉴的机制、可验证的假设或需要规避的风险。",
               "论文条目按照「本周必读」「值得跟进」「快速扫读」分层组织。输入论文数量少时可以减少层级，但完整论文清单必须覆盖全部论文。",
-              "「如果只读三篇」从输入论文里选最值得优先读的 3 篇；不足 3 篇就按实际数量输出。",
               "「本周趋势判断」必须综合多篇论文，不能只是单篇论文摘要。可以包含研究机会、工程落地约束和下一步值得跟踪的问题。",
-              "「推荐阅读顺序」要给出实际阅读路线和原因。",
-              "完整论文清单放在最后，表格列为：分数、论文、方向、阅读级别、链接。"
+              "「推荐阅读顺序」要给出实际阅读路线和原因，只保留这一处阅读优先级建议，不要再新增独立的精简阅读、优先三篇或快速取舍章节。",
+              "不要在发布内容中体现内部筛选阈值、推荐阈值或具体推荐分数。可以表达阅读级别和推荐原因，但不要输出分数列、推荐分字段或阈值说明。",
+              "完整论文清单放在最后，表格列为：论文、一句话介绍、阅读级别、链接。不要在完整论文清单里放方向、主问题域、关键支撑技术或分数字段；一句话介绍要概括文章做了什么或为什么值得关注。"
             ].join("\n"),
             outputTemplate: [
               "---",
@@ -1722,7 +1722,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "  - 智能体",
               "  - 网络自治",
               "  - 网络数字孪生",
-              "  - 端到端框架",
+              "  - 系统架构",
               "  - 华为 ADN",
               `paper_count: ${papers.length}`,
               "---",
@@ -1733,14 +1733,12 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "## 本周趋势判断",
               "",
-              "## 如果只读三篇",
-              "",
               "## 本周必读",
               "",
               "### 1. 论文标题",
               "",
-              "- 推荐分：",
-              "- 方向：",
+              "- 主问题域：",
+              "- 关键支撑技术：",
               "- 链接：",
               "",
               "**文章内容**",
@@ -1761,7 +1759,10 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "## 推荐阅读顺序",
               "",
-              "## 完整论文清单"
+              "## 完整论文清单",
+              "",
+              "| 论文 | 一句话介绍 | 阅读级别 | 链接 |",
+              "| --- | --- | --- | --- |"
             ].join("\n"),
             papers
           })
@@ -2362,8 +2363,7 @@ const handleReadingListRequest = async (request, response) => {
       date: String(payload.date || new Date().toISOString().slice(0, 10)),
       month: truncate(payload.month, 16),
       weekOfMonth: Math.min(Math.max(Number(payload.weekOfMonth || 1), 1), 6),
-      sourceReport: truncate(payload.sourceReport, 240),
-      threshold: clamp(payload.threshold ?? 70)
+      sourceReport: truncate(payload.sourceReport, 240)
     };
 
     const requestLlm = {
