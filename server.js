@@ -1,5 +1,7 @@
 ﻿import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
+import tls from "node:tls";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -23,6 +25,8 @@ const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 6
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
 const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
 const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
+const readingListEmailTo = String(process.env.READING_LIST_EMAIL_TO || "yaoyayu@huawei.com").trim();
+const smtpTimeoutMs = Number(process.env.SMTP_TIMEOUT_MS || 30 * 1000);
 const arxivAutoSyncEnabled = !/^(0|false|no)$/i.test(String(process.env.ARXIV_AUTO_SYNC || "1"));
 const arxivAutoSyncInitialDelayMs = Number(process.env.ARXIV_AUTO_SYNC_INITIAL_DELAY_MS || 30 * 1000);
 const arxivAutoSyncRetryMs = Number(process.env.ARXIV_AUTO_SYNC_RETRY_MS || 60 * 60 * 1000);
@@ -1194,6 +1198,318 @@ const readJsonBody = async (request) => {
 
   const raw = Buffer.concat(chunks).toString("utf8");
   return raw ? JSON.parse(raw) : {};
+};
+
+const booleanEnv = (value, fallback = false) => {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  return /^(1|true|yes|on)$/i.test(String(value));
+};
+
+const stripHeaderValue = (value) => String(value || "").replace(/[\r\n]+/g, " ").trim();
+
+const extractEmailAddress = (value) => {
+  const text = stripHeaderValue(value);
+  const match = text.match(/<([^>]+)>/);
+  return (match ? match[1] : text).trim();
+};
+
+const normalizeEmailAddress = (value) => {
+  const email = extractEmailAddress(value);
+
+  if (!/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(email)) {
+    const error = new Error(`Invalid email address: ${email || "(empty)"}`);
+    error.code = "INVALID_EMAIL";
+    throw error;
+  }
+
+  return email;
+};
+
+const getSmtpConfig = () => {
+  const host = String(process.env.SMTP_HOST || "").trim();
+  const user = String(process.env.SMTP_USER || "").trim();
+  const pass = String(process.env.SMTP_PASS || "");
+  const fromRaw = String(process.env.SMTP_FROM || user || "").trim();
+
+  if (!host || !fromRaw) {
+    return null;
+  }
+
+  const secureFallback = Number(process.env.SMTP_PORT || 0) === 465;
+  const secure = booleanEnv(process.env.SMTP_SECURE, secureFallback);
+  const port = Number(process.env.SMTP_PORT || (secure ? 465 : 587));
+
+  return {
+    host,
+    port,
+    secure,
+    startTls: !secure && booleanEnv(process.env.SMTP_STARTTLS, port === 587),
+    rejectUnauthorized: !/^(0|false|no)$/i.test(String(process.env.SMTP_TLS_REJECT_UNAUTHORIZED || "1")),
+    user,
+    pass,
+    from: normalizeEmailAddress(fromRaw),
+    to: normalizeEmailAddress(readingListEmailTo)
+  };
+};
+
+const encodeMailHeader = (value) => {
+  const text = stripHeaderValue(value);
+  return /^[\x20-\x7e]*$/.test(text)
+    ? text
+    : `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
+};
+
+const wrapBase64 = (value) => String(value || "").replace(/.{1,76}/g, "$&\r\n").trimEnd();
+
+const dotStuffSmtpData = (value) => String(value || "")
+  .replace(/\r?\n/g, "\r\n")
+  .replace(/^\./gm, "..");
+
+const createSmtpSession = (socket) => {
+  socket.setEncoding("utf8");
+  socket.setTimeout(smtpTimeoutMs);
+
+  let buffer = "";
+  let pending = null;
+
+  const parseResponse = () => {
+    const lines = [];
+    let consumed = 0;
+
+    while (true) {
+      const lineEnd = buffer.indexOf("\n", consumed);
+
+      if (lineEnd < 0) {
+        return null;
+      }
+
+      const line = buffer.slice(consumed, lineEnd).replace(/\r$/, "");
+      lines.push(line);
+      consumed = lineEnd + 1;
+
+      if (/^\d{3} /.test(line)) {
+        const code = Number(line.slice(0, 3));
+        const rest = buffer.slice(consumed);
+        buffer = rest;
+        return { code, lines, message: lines.join("\n") };
+      }
+    }
+  };
+
+  const flush = () => {
+    if (!pending) {
+      return;
+    }
+
+    const response = parseResponse();
+    if (response) {
+      const { resolve } = pending;
+      pending = null;
+      resolve(response);
+    }
+  };
+
+  const fail = (error) => {
+    if (pending) {
+      const { reject } = pending;
+      pending = null;
+      reject(error);
+    }
+  };
+
+  socket.on("data", (chunk) => {
+    buffer += chunk;
+    flush();
+  });
+
+  socket.on("timeout", () => {
+    socket.destroy(new Error("SMTP connection timed out."));
+  });
+
+  socket.on("error", fail);
+  socket.on("close", () => {
+    fail(new Error("SMTP connection closed before response."));
+  });
+
+  return {
+    socket,
+    readResponse: () => new Promise((resolve, reject) => {
+      pending = { resolve, reject };
+      flush();
+    }),
+    writeLine: (line) => {
+      socket.write(`${line}\r\n`);
+    },
+    detach: () => {
+      socket.removeAllListeners("data");
+      socket.removeAllListeners("timeout");
+      socket.removeAllListeners("error");
+      socket.removeAllListeners("close");
+    }
+  };
+};
+
+const openSmtpSocket = (config) => new Promise((resolve, reject) => {
+  const socket = config.secure
+    ? tls.connect({
+      host: config.host,
+      port: config.port,
+      servername: config.host,
+      rejectUnauthorized: config.rejectUnauthorized
+    })
+    : net.createConnection({ host: config.host, port: config.port });
+  const eventName = config.secure ? "secureConnect" : "connect";
+
+  const cleanup = () => {
+    socket.removeListener(eventName, handleConnect);
+    socket.removeListener("error", handleError);
+  };
+  const handleConnect = () => {
+    cleanup();
+    resolve(socket);
+  };
+  const handleError = (error) => {
+    cleanup();
+    reject(error);
+  };
+
+  socket.once(eventName, handleConnect);
+  socket.once("error", handleError);
+  socket.setTimeout(smtpTimeoutMs, () => {
+    socket.destroy(new Error("SMTP connection timed out."));
+  });
+});
+
+const smtpCommand = async (session, command, expectedCodes, context = command) => {
+  if (command) {
+    session.writeLine(command);
+  }
+
+  const response = await session.readResponse();
+
+  if (!expectedCodes.includes(response.code)) {
+    const error = new Error(`SMTP ${context} failed: ${response.message}`);
+    error.code = "SMTP_COMMAND_FAILED";
+    error.smtpCode = response.code;
+    throw error;
+  }
+
+  return response;
+};
+
+const smtpEhlo = async (session) => {
+  try {
+    return await smtpCommand(session, "EHLO paper-insight.local", [250], "EHLO");
+  } catch {
+    return smtpCommand(session, "HELO paper-insight.local", [250], "HELO");
+  }
+};
+
+const upgradeSmtpStartTls = (session, config) => new Promise((resolve, reject) => {
+  session.detach();
+  const tlsSocket = tls.connect({
+    socket: session.socket,
+    servername: config.host,
+    rejectUnauthorized: config.rejectUnauthorized
+  });
+
+  tlsSocket.once("secureConnect", () => resolve(createSmtpSession(tlsSocket)));
+  tlsSocket.once("error", reject);
+});
+
+const smtpAuthenticate = async (session, config) => {
+  if (!config.user || !config.pass) {
+    return;
+  }
+
+  const authPlain = Buffer.from(`\0${config.user}\0${config.pass}`, "utf8").toString("base64");
+
+  try {
+    await smtpCommand(session, `AUTH PLAIN ${authPlain}`, [235, 503], "AUTH PLAIN");
+    return;
+  } catch (error) {
+    if (![500, 502, 504].includes(error.smtpCode)) {
+      throw error;
+    }
+  }
+
+  await smtpCommand(session, "AUTH LOGIN", [334], "AUTH LOGIN");
+  await smtpCommand(session, Buffer.from(config.user, "utf8").toString("base64"), [334], "AUTH LOGIN username");
+  await smtpCommand(session, Buffer.from(config.pass, "utf8").toString("base64"), [235, 503], "AUTH LOGIN password");
+};
+
+const buildReadingListEmailMessage = ({ from, to, title, markdown }) => {
+  const subject = `[Paper Insight] ${title || "每周高价值论文阅读清单"}`;
+  const messageIdSeed = createHash("sha1").update(`${Date.now()}:${to}:${subject}`).digest("hex").slice(0, 24);
+  const body = [
+    "以下内容由 Paper Insight 生成。",
+    "",
+    String(markdown || "").trim(),
+    ""
+  ].join("\n");
+
+  return [
+    `From: <${from}>`,
+    `To: <${to}>`,
+    `Subject: ${encodeMailHeader(subject)}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${messageIdSeed}@paper-insight.local>`,
+    "MIME-Version: 1.0",
+    'Content-Type: text/markdown; charset="UTF-8"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(body, "utf8").toString("base64"))
+  ].join("\r\n");
+};
+
+const sendSmtpMail = async ({ title, markdown }) => {
+  const config = getSmtpConfig();
+
+  if (!config) {
+    const error = new Error("邮件服务未配置。请在服务端设置 SMTP_HOST、SMTP_FROM，并按需设置 SMTP_USER/SMTP_PASS。");
+    error.code = "SMTP_NOT_CONFIGURED";
+    throw error;
+  }
+
+  let session = createSmtpSession(await openSmtpSocket(config));
+
+  try {
+    await smtpCommand(session, "", [220], "greeting");
+    await smtpEhlo(session);
+
+    if (config.startTls) {
+      await smtpCommand(session, "STARTTLS", [220], "STARTTLS");
+      session = await upgradeSmtpStartTls(session, config);
+      await smtpEhlo(session);
+    }
+
+    await smtpAuthenticate(session, config);
+    await smtpCommand(session, `MAIL FROM:<${config.from}>`, [250], "MAIL FROM");
+    await smtpCommand(session, `RCPT TO:<${config.to}>`, [250, 251], "RCPT TO");
+    await smtpCommand(session, "DATA", [354], "DATA");
+
+    const message = buildReadingListEmailMessage({
+      from: config.from,
+      to: config.to,
+      title,
+      markdown
+    });
+    session.socket.write(`${dotStuffSmtpData(message)}\r\n.\r\n`);
+    await smtpCommand(session, "", [250], "message body");
+
+    try {
+      await smtpCommand(session, "QUIT", [221], "QUIT");
+    } catch {
+      // The message has already been accepted by the SMTP server.
+    }
+
+    return { to: config.to };
+  } finally {
+    session.socket.end();
+  }
 };
 
 const sanitizePaper = (paper) => ({
@@ -2398,6 +2714,50 @@ const handleReadingListRequest = async (request, response) => {
   }
 };
 
+const handleReadingListEmailRequest = async (request, response) => {
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+    return;
+  }
+
+  try {
+    const payload = await readJsonBody(request);
+    const title = truncate(payload.title, 160) || "每周高价值论文阅读清单";
+    const markdown = String(payload.markdown || "").trim();
+
+    if (!markdown) {
+      sendJson(response, 400, { error: "NO_MARKDOWN", message: "No reading list Markdown was provided." });
+      return;
+    }
+
+    if (markdown.length > llmResponseMaxChars) {
+      sendJson(response, 400, { error: "MARKDOWN_TOO_LARGE", message: "The reading list Markdown is too large to email." });
+      return;
+    }
+
+    const result = await sendSmtpMail({ title, markdown });
+
+    sendJson(response, 200, {
+      message: "SENT",
+      to: result.to,
+      sentAt: new Date().toISOString()
+    });
+  } catch (error) {
+    const status = error.code === "SMTP_NOT_CONFIGURED"
+      ? 503
+      : error.code === "INVALID_EMAIL"
+        ? 500
+        : 502;
+    sendJson(response, status, {
+      error: error.code || "EMAIL_SEND_FAILED",
+      message: error.code === "SMTP_NOT_CONFIGURED"
+        ? "邮件服务未配置。请在服务端设置 SMTP_HOST、SMTP_FROM，并按需设置 SMTP_USER/SMTP_PASS。"
+        : "邮件发送失败。",
+      detail: truncate(redactSensitive(error.message), 500)
+    });
+  }
+};
+
 const serveStatic = async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const requestedPath = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
@@ -2455,6 +2815,11 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === "/api/reading-list") {
     await handleReadingListRequest(request, response);
+    return;
+  }
+
+  if (url.pathname === "/api/reading-list-email") {
+    await handleReadingListEmailRequest(request, response);
     return;
   }
 
