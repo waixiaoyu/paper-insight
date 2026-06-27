@@ -285,6 +285,7 @@ const elements = {
   readingListOutput: $("#readingListOutput"),
   readingListClose: $("#readingListClose"),
   readingListRegenerate: $("#readingListRegenerate"),
+  readingListDownload: $("#readingListDownload"),
   readingListCopy: $("#readingListCopy"),
   generateReadingList: $("#generateReadingList"),
   breadcrumb: $("#breadcrumb"),
@@ -1926,9 +1927,11 @@ function readingListMetadata(report = state.currentReport) {
 }
 
 function setReadingListBusy(busy) {
+  const hasMarkdown = Boolean(elements.readingListOutput.value.trim());
   elements.generateReadingList.disabled = busy;
   elements.readingListRegenerate.disabled = busy;
-  elements.readingListCopy.disabled = busy || !elements.readingListOutput.value.trim();
+  elements.readingListDownload.disabled = busy || !hasMarkdown;
+  elements.readingListCopy.disabled = busy || !hasMarkdown;
   elements.readingListClose.disabled = false;
 }
 
@@ -2064,6 +2067,34 @@ async function copyReadingListMarkdown() {
     elements.readingListOutput.select();
     elements.readingListStatus.textContent = "复制失败，请手动全选复制。";
   }
+}
+
+function markdownDownloadName() {
+  const title = (elements.readingListTitle.textContent || "每周高价值论文阅读清单")
+    .replace(/[\\/:*?"<>|]+/g, "")
+    .replace(/\s+/g, "-")
+    .trim();
+  return `${title || "weekly-reading-list"}.md`;
+}
+
+function downloadReadingListMarkdown() {
+  const markdown = elements.readingListOutput.value.trim();
+
+  if (!markdown) {
+    elements.readingListStatus.textContent = "还没有可下载的 Markdown。";
+    return;
+  }
+
+  const blob = new Blob([`${markdown}\n`], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = markdownDownloadName();
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  elements.readingListStatus.textContent = `Markdown 已下载：${link.download}`;
 }
 
 function text(node, selector) {
@@ -3237,6 +3268,8 @@ elements.generateReadingList.addEventListener("click", () => {
 elements.readingListRegenerate.addEventListener("click", () => {
   generateReadingListForReport(state.currentReadingListReport || state.currentReport, { force: true });
 });
+
+elements.readingListDownload.addEventListener("click", downloadReadingListMarkdown);
 
 elements.readingListCopy.addEventListener("click", copyReadingListMarkdown);
 
