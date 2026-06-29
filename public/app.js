@@ -998,7 +998,6 @@ function readingListPaperPayload(paper) {
     id: paper.id,
     title: paper.title,
     authors: paper.authors,
-    affiliations: Array.isArray(paper.affiliations) ? paper.affiliations : [],
     published: paper.published,
     updated: paper.updated,
     primaryCategory: paper.primaryCategory,
@@ -2245,16 +2244,11 @@ function parsePapers(xmlText) {
         .getElementsByTagNameNS("http://arxiv.org/schemas/atom", "primary_category")[0]
         ?.getAttribute("term");
       const authors = [...entry.querySelectorAll("author name")].map((author) => author.textContent.trim());
-      const affiliations = [
-        ...[...entry.getElementsByTagNameNS("http://arxiv.org/schemas/atom", "affiliation")].map((item) => item.textContent.trim()),
-        ...[...entry.getElementsByTagNameNS("https://paper-insight.local/ns", "affiliation")].map((item) => item.textContent.trim())
-      ].filter(Boolean);
 
       return {
         id,
         title: text(entry, "title").replace(/\s+/g, " "),
         authors,
-        affiliations: [...new Set(affiliations)].slice(0, 12),
         summary: text(entry, "summary").replace(/\s+/g, " "),
         published: text(entry, "published"),
         updated: text(entry, "updated"),
