@@ -984,11 +984,21 @@ function readingListDirection(paper) {
 
 function readingListPaperPayload(paper) {
   const analysis = paper.analysis || {};
+  const dimensionDetails = Object.entries(dimensionLabels).map(([key, label]) => ({
+    key,
+    label,
+    score: dimensionScore(paper, key)
+  }));
+  const matchedDimensions = dimensionDetails
+    .filter((item) => item.score >= 70)
+    .sort((a, b) => b.score - a.score)
+    .map((item) => `${item.label} ${item.score}`);
 
   return {
     id: paper.id,
     title: paper.title,
     authors: paper.authors,
+    affiliations: Array.isArray(paper.affiliations) ? paper.affiliations : [],
     published: paper.published,
     updated: paper.updated,
     primaryCategory: paper.primaryCategory,
@@ -999,6 +1009,9 @@ function readingListPaperPayload(paper) {
     direction: readingListDirection(paper),
     analysis: {
       score: paperScore(paper),
+      scores: Object.fromEntries(dimensionDetails.map((item) => [item.key, item.score])),
+      dimensionDetails,
+      matchedDimensions,
       tldr: analysis.tldr || "",
       problem: analysis.problem || "",
       background: analysis.background || "",
@@ -2232,11 +2245,16 @@ function parsePapers(xmlText) {
         .getElementsByTagNameNS("http://arxiv.org/schemas/atom", "primary_category")[0]
         ?.getAttribute("term");
       const authors = [...entry.querySelectorAll("author name")].map((author) => author.textContent.trim());
+      const affiliations = [
+        ...[...entry.getElementsByTagNameNS("http://arxiv.org/schemas/atom", "affiliation")].map((item) => item.textContent.trim()),
+        ...[...entry.getElementsByTagNameNS("https://paper-insight.local/ns", "affiliation")].map((item) => item.textContent.trim())
+      ].filter(Boolean);
 
       return {
         id,
         title: text(entry, "title").replace(/\s+/g, " "),
         authors,
+        affiliations: [...new Set(affiliations)].slice(0, 12),
         summary: text(entry, "summary").replace(/\s+/g, " "),
         published: text(entry, "published"),
         updated: text(entry, "updated"),

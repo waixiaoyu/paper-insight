@@ -304,6 +304,9 @@ const normalizeStoredArxivPaper = (paper) => {
     arxivId: id,
     title: truncate(paper.title, 500),
     authors: Array.isArray(paper.authors) ? paper.authors.slice(0, 30).map((author) => String(author)) : [],
+    affiliations: Array.isArray(paper.affiliations)
+      ? [...new Set(paper.affiliations.map((item) => truncate(item, 200)).filter(Boolean))].slice(0, 12)
+      : [],
     summary: truncate(paper.summary, 5000),
     published: String(paper.published || paper.updated || ""),
     updated: String(paper.updated || paper.published || ""),
@@ -621,6 +624,7 @@ const atomFeedFromPapers = ({ papers, query, source }) => {
     const categories = Array.isArray(paper.categories) && paper.categories.length ? paper.categories : [source];
     const primaryCategory = paper.primaryCategory || categories[0] || source;
     const authors = Array.isArray(paper.authors) && paper.authors.length ? paper.authors : ["Unknown authors"];
+    const affiliations = Array.isArray(paper.affiliations) ? paper.affiliations.filter(Boolean) : [];
     const links = [
       `<link href="${escapeXml(paper.absLink || paper.id)}" rel="alternate" type="text/html"/>`
     ];
@@ -637,6 +641,7 @@ const atomFeedFromPapers = ({ papers, query, source }) => {
       `<title>${escapeXml(paper.title)}</title>`,
       `<summary>${escapeXml(paper.summary)}</summary>`,
       ...authors.slice(0, 12).map((author) => `<author><name>${escapeXml(author)}</name></author>`),
+      ...affiliations.slice(0, 12).map((affiliation) => `<paper-insight:affiliation>${escapeXml(affiliation)}</paper-insight:affiliation>`),
       ...links,
       `<arxiv:primary_category term="${escapeXml(primaryCategory)}" scheme="http://arxiv.org/schemas/atom"/>`,
       ...categories.slice(0, 12).map((category) => `<category term="${escapeXml(category)}" scheme="${escapeXml(source)}"/>`),
@@ -646,7 +651,7 @@ const atomFeedFromPapers = ({ papers, query, source }) => {
 
   return [
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-    "<feed xmlns=\"http://www.w3.org/2005/Atom\" xmlns:arxiv=\"http://arxiv.org/schemas/atom\">",
+    "<feed xmlns=\"http://www.w3.org/2005/Atom\" xmlns:arxiv=\"http://arxiv.org/schemas/atom\" xmlns:paper-insight=\"https://paper-insight.local/ns\">",
     `<id>paper-insight:${escapeXml(source)}:${escapeXml(query)}</id>`,
     `<title>Paper Insight ${escapeXml(source)} results</title>`,
     `<updated>${updated}</updated>`,
@@ -814,6 +819,16 @@ const parseArxivRssPapers = (xml) => [...String(xml || "").matchAll(/<entry\b[\s
       .map((item) => xmlTagText(item[0], "name"))
       .filter(Boolean);
     const authors = creatorAuthors.length ? creatorAuthors : atomAuthors;
+    const authorAffiliations = [...entry.matchAll(/<author\b[\s\S]*?<\/author>/gi)]
+      .flatMap((item) => [
+        xmlTagText(item[0], "arxiv:affiliation"),
+        xmlTagText(item[0], "affiliation")
+      ])
+      .filter(Boolean);
+    const customAffiliations = [...entry.matchAll(/<paper-insight:affiliation\b[\s\S]*?<\/paper-insight:affiliation>/gi)]
+      .map((item) => xmlTagText(item[0], "paper-insight:affiliation"))
+      .filter(Boolean);
+    const affiliations = [...new Set([...authorAffiliations, ...customAffiliations])].slice(0, 12);
     const summary = xmlTagText(entry, "summary")
       .replace(/^arXiv:\s*\S+\s+Announce Type:\s*\S+\s+Abstract:\s*/i, "")
       .trim();
@@ -822,6 +837,7 @@ const parseArxivRssPapers = (xml) => [...String(xml || "").matchAll(/<entry\b[\s
       id: absLink || rawId,
       title: xmlTagText(entry, "title"),
       authors,
+      affiliations,
       summary,
       published: xmlTagText(entry, "published"),
       updated: xmlTagText(entry, "updated"),
@@ -1200,6 +1216,9 @@ const sanitizePaper = (paper) => ({
   id: String(paper.id || ""),
   title: truncate(paper.title, 320),
   authors: Array.isArray(paper.authors) ? paper.authors.slice(0, 12).map((author) => String(author)) : [],
+  affiliations: Array.isArray(paper.affiliations)
+    ? [...new Set(paper.affiliations.map((item) => truncate(item, 200)).filter(Boolean))].slice(0, 12)
+    : [],
   summary: truncate(paper.summary, 2400),
   published: String(paper.published || ""),
   updated: String(paper.updated || ""),
@@ -1221,6 +1240,24 @@ const sanitizeReadingListPaper = (paper) => {
     ...sanitized,
     analysis: {
       score: Math.round(clamp(analysis.score ?? 0)),
+      scores: Object.fromEntries(
+        dimensions.map((dimension) => [dimension.key, clamp(analysis.scores?.[dimension.key] ?? 0)])
+      ),
+      dimensionDetails: dimensions.map((dimension) => ({
+        key: dimension.key,
+        label: dimension.label,
+        score: Math.round(clamp(analysis.scores?.[dimension.key] ?? 0))
+      })),
+      matchedDimensions: Array.isArray(analysis.matchedDimensions)
+        ? analysis.matchedDimensions.slice(0, 6).map((item) => truncate(item, 80)).filter(Boolean)
+        : dimensions
+          .map((dimension) => ({ label: dimension.label, score: Math.round(clamp(analysis.scores?.[dimension.key] ?? 0)) }))
+          .filter((item) => item.score >= 70)
+          .sort((a, b) => b.score - a.score)
+          .map((item) => `${item.label} ${item.score}`),
+      institutions: Array.isArray(analysis.institutions)
+        ? [...new Set(analysis.institutions.map((item) => truncate(item, 200)).filter(Boolean))].slice(0, 12)
+        : [],
       tldr: truncate(analysis.tldr, 420),
       problem: truncate(analysis.problem, 900),
       background: truncate(analysis.background, 900),
@@ -1528,6 +1565,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
                   recommendedReadingPath: "建议快速阅读这篇论文时按什么顺序读，每部分重点看什么，如何判断是否值得深入复现，至少 240 字",
                   readingGuide: ["快速阅读建议1", "快速阅读建议2", "快速阅读建议3", "快速阅读建议4", "快速阅读建议5", "快速阅读建议6"],
                   matchedKeywords: ["命中的关键词"],
+                  institutions: ["作者单位/学校/公司；如果公开元数据无法确认则留空"],
                   whyRecommend: "为什么进入或接近推荐列表，包含分数解释和适合/不适合推荐的理由，至少 220 字"
                 }
               ]
@@ -1693,7 +1731,12 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               weekOfMonth: report.weekOfMonth,
               sourceReport: report.sourceReport,
               paperCount: papers.length,
-              tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"]
+              tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"],
+              scoringDimensions: dimensions.map((dimension) => ({
+                key: dimension.key,
+                label: dimension.label,
+                description: dimension.description
+              }))
             },
             instruction: [
               `请生成「${title}」。`,
@@ -1702,13 +1745,15 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、以及对 ADN 网络研究最有价值的研究信号。不要在导读里再写一组独立的阅读建议，避免和后面的阅读顺序重复。",
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
               "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
+              "每篇入选论文都必须写清楚作者单位或来源机构：优先使用输入中的 affiliations、analysis.institutions 或论文公开页面可核对到的学校/公司/研究机构；如果输入和可用公开信息都没有标注，必须写「单位：元数据未标注，需查原文或作者主页确认」，不能编造单位。",
+              "每篇入选论文都必须展示推荐分，并说明分别符合哪些评分维度。评分维度来自输入 analysis.dimensionDetails / analysis.scores，包括研究问题价值、方法新意、框架系统价值、证据强度；写出高匹配维度及其分项分，必要时指出较弱维度。",
               "每篇论文都要重点介绍文章内容：研究问题、方法或系统设计、实验/验证方式、主要结论。不要只写推荐理由。",
               "每篇论文都必须补充「洞察观点与 ADN 启发」小节。这个小节要从华为 ADN 网络研究视角提炼观点，说明它对网络自治分级、意图理解、闭环控制、数字孪生环境、智能体编排、故障自愈、体验保障、可观测性、可评估性或落地架构的启发。不要泛泛而谈，要指出可借鉴的机制、可验证的假设或需要规避的风险。",
               "论文条目按照「本周必读」「值得跟进」「快速扫读」分层组织。输入论文数量少时可以减少层级，但完整论文清单必须覆盖全部论文。",
               "「本周趋势判断」必须综合多篇论文，不能只是单篇论文摘要。可以包含研究机会、工程落地约束和下一步值得跟踪的问题。",
               "「推荐阅读顺序」要给出实际阅读路线和原因，只保留这一处阅读优先级建议，不要再新增独立的精简阅读、优先三篇或快速取舍章节。",
-              "不要在发布内容中体现内部筛选阈值、推荐阈值或具体推荐分数。可以表达阅读级别和推荐原因，但不要输出分数列、推荐分字段或阈值说明。",
-              "完整论文清单放在最后，表格列为：论文、一句话介绍、阅读级别、链接。不要在完整论文清单里放方向、主问题域、关键支撑技术或分数字段；一句话介绍要概括文章做了什么或为什么值得关注。"
+              "不要在发布内容中体现内部筛选阈值或推荐阈值；但每篇入选论文必须展示自己的推荐分和符合的评分维度。",
+              "完整论文清单放在最后，表格列为：论文、单位、一句话介绍、推荐分、符合维度、阅读级别、链接。不要在完整论文清单里放方向列；一句话介绍要概括文章做了什么或为什么值得关注。"
             ].join("\n"),
             outputTemplate: [
               "---",
@@ -1737,6 +1782,9 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "### 1. 论文标题",
               "",
+              "- 单位：",
+              "- 推荐分：",
+              "- 符合维度：",
               "- 主问题域：",
               "- 关键支撑技术：",
               "- 链接：",
@@ -1761,8 +1809,8 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "## 完整论文清单",
               "",
-              "| 论文 | 一句话介绍 | 阅读级别 | 链接 |",
-              "| --- | --- | --- | --- |"
+              "| 论文 | 单位 | 一句话介绍 | 推荐分 | 符合维度 | 阅读级别 | 链接 |",
+              "| --- | --- | --- | --- | --- | --- | --- |"
             ].join("\n"),
             papers
           })
@@ -1830,6 +1878,9 @@ const normalizeAnalysis = (paper, analysis) => {
     readingGuide: analysis.readingGuide.map((item) => normalizeText(item)).filter(Boolean),
     matchedKeywords: Array.isArray(analysis.matchedKeywords)
       ? analysis.matchedKeywords.map((item) => normalizeText(item)).filter(Boolean)
+      : [],
+    institutions: Array.isArray(analysis.institutions)
+      ? [...new Set(analysis.institutions.map((item) => normalizeText(item)).filter(Boolean))].slice(0, 12)
       : [],
     whyRecommend: normalizeText(analysis.whyRecommend)
   };
