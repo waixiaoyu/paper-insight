@@ -170,7 +170,7 @@ node server.js
 
 ```text
 DeepSeek: https://api.deepseek.com/chat/completions
-GLM: https://open.bigmodel.cn/api/paas/v4/chat/completions
+GLM: https://open.bigmodel.cn/api/paas/v4/
 GLM Coding Plan (OpenAI): https://open.bigmodel.cn/api/coding/paas/v4/chat/completions
 GLM Coding Plan (Anthropic): https://open.bigmodel.cn/api/anthropic/v1/messages
 ```

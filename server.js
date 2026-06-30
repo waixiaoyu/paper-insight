@@ -1619,7 +1619,7 @@ const llmProviderDefaults = {
     mode: "glm",
     protocol: "openai",
     model: "glm-5.1",
-    endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    endpoint: "https://open.bigmodel.cn/api/paas/v4/",
     apiKey: () => process.env.GLM_API_KEY,
     modelEnv: () => process.env.GLM_MODEL,
     endpointEnv: () => process.env.GLM_API_URL,
@@ -1722,7 +1722,7 @@ const getLlmConfig = (overrides = {}) => {
   let endpoint = rawEndpoint;
   if (defaults.protocol === "anthropic" && !/\/v1\/messages\/?$/i.test(rawEndpoint)) {
     endpoint = `${rawEndpoint.replace(/\/+$/, "")}/v1/messages`;
-  } else if (defaults.protocol === "openai" && !/\/chat\/completions\/?$/i.test(rawEndpoint)) {
+  } else if (defaults.protocol === "openai" && provider !== "glm" && !/\/chat\/completions\/?$/i.test(rawEndpoint)) {
     endpoint = `${rawEndpoint.replace(/\/+$/, "")}/chat/completions`;
   }
 
