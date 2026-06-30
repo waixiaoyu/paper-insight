@@ -187,8 +187,8 @@ GLM Coding Plan: glm-5.1
 
 ```powershell
 $env:DEEPSEEK_MODEL="deepseek-v4-pro"
-$env:GLM_MODEL="glm-5-turbo"
-$env:GLM_CODING_MODEL="glm-5.1"
+$env:GLM_MODEL="glm-5.2"
+$env:GLM_CODING_MODEL="glm-5.2"
 node server.js
 ```
 

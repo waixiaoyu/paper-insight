@@ -176,6 +176,7 @@ const llmProviders = {
     defaultModel: "glm-5.1",
     keyPlaceholder: "请输入 GLM API Key",
     models: [
+      "glm-5.2",
       "glm-5.1",
       "glm-5-turbo",
       "glm-5",
@@ -190,6 +191,7 @@ const llmProviders = {
     defaultModel: "glm-5.1",
     keyPlaceholder: "请输入 GLM Coding Plan API Key",
     models: [
+      "glm-5.2",
       "glm-5.1",
       "glm-5",
       "glm-4.7",
@@ -203,6 +205,7 @@ const llmProviders = {
     defaultModel: "glm-5.1",
     keyPlaceholder: "请输入 GLM Coding Plan API Key",
     models: [
+      "glm-5.2",
       "glm-5.1",
       "glm-5",
       "glm-4.7",
