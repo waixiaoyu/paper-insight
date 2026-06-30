@@ -1722,7 +1722,7 @@ const getLlmConfig = (overrides = {}) => {
   let endpoint = rawEndpoint;
   if (defaults.protocol === "anthropic" && !/\/v1\/messages\/?$/i.test(rawEndpoint)) {
     endpoint = `${rawEndpoint.replace(/\/+$/, "")}/v1/messages`;
-  } else if (provider === "glm-coding" && !/\/chat\/completions\/?$/i.test(rawEndpoint)) {
+  } else if (defaults.protocol === "openai" && !/\/chat\/completions\/?$/i.test(rawEndpoint)) {
     endpoint = `${rawEndpoint.replace(/\/+$/, "")}/chat/completions`;
   }
 

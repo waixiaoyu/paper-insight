@@ -196,7 +196,7 @@ node server.js
 
 ```powershell
 $env:DEEPSEEK_API_URL="https://api.deepseek.com/chat/completions"
-$env:GLM_API_URL="https://open.bigmodel.cn/api/paas/v4/chat/completions"
+$env:GLM_API_URL="https://open.bigmodel.cn/api/paas/v4"
 $env:GLM_CODING_OPENAI_API_URL="https://open.bigmodel.cn/api/coding/paas/v4"
 $env:GLM_CODING_ANTHROPIC_API_URL="https://open.bigmodel.cn/api/anthropic"
 node server.js
