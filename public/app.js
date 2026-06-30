@@ -1391,7 +1391,7 @@ function readingListGenerationFocus(elapsed, paperCount, provider) {
     {
       after: 14,
       status: "等待模型生成逐篇洞察...",
-      detail: `模型正在处理 ${paperCount} 篇论文的内容说明和“洞察观点与 ADN 启发”；真实进度仍以接口返回为准。`
+      detail: `模型正在处理 ${paperCount} 篇论文的内容、方法、结果和 ADN 启发；真实进度仍以接口返回为准。`
     },
     {
       after: 28,
