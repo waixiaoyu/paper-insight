@@ -13,6 +13,7 @@ const arxivCacheDir = join(__dirname, ".cache", "arxiv");
 const arxivCooldownPath = join(__dirname, ".cache", "arxiv-cooldown.json");
 const arxivPaperLibraryPath = join(__dirname, ".cache", "arxiv-papers.json");
 const arxivSyncHistoryPath = join(__dirname, ".cache", "arxiv-sync-history.json");
+const paperOriginalTextCacheDir = join(__dirname, ".cache", "paper-original-text");
 const arxivMinIntervalMs = Number(process.env.ARXIV_MIN_INTERVAL_MS || 3500);
 const arxivFreshCacheMs = Number(process.env.ARXIV_CACHE_TTL_MS || 30 * 60 * 1000);
 const arxivStaleCacheMs = Number(process.env.ARXIV_STALE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
@@ -20,6 +21,12 @@ const arxivDailySyncMs = Number(process.env.ARXIV_DAILY_SYNC_MS || 20 * 60 * 60 
 const arxivSyncHistoryLimit = Math.min(Math.max(Number(process.env.ARXIV_SYNC_HISTORY_LIMIT || 100), 20), 500);
 const arxivCooldownMs = Number(process.env.ARXIV_429_COOLDOWN_MS || 30 * 60 * 1000);
 const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 60 * 60 * 1000);
+const paperOriginalTextCacheTtlMs = Number(process.env.PAPER_ORIGINAL_TEXT_CACHE_TTL_MS || 7 * 24 * 60 * 60 * 1000);
+const paperOriginalTextFetchTimeoutMs = Number(process.env.PAPER_ORIGINAL_TEXT_FETCH_TIMEOUT_MS || 30000);
+const paperOriginalTextStoredMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_STORED_MAX_CHARS || 50000), 8000), 150000);
+const paperOriginalTextMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_MAX_CHARS || 9000), 2500), 20000);
+const paperOriginalTextTotalMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_TOTAL_MAX_CHARS || 120000), 20000), 500000);
+const paperOriginalTextConcurrency = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_CONCURRENCY || 2), 1), 5);
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
 const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
 const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
@@ -32,6 +39,8 @@ const arxivRssCategories = String(process.env.ARXIV_RSS_CATEGORIES || "cs.NI,cs.
   .filter(Boolean);
 const arxivMemoryCache = new Map();
 const arxivInflight = new Map();
+const paperOriginalTextMemoryCache = new Map();
+const paperOriginalTextInflight = new Map();
 const paperRequestStatuses = new Map();
 let arxivPaperLibraryMemory = null;
 let arxivSyncHistoryMemory = null;
@@ -211,6 +220,8 @@ const arxivCacheKey = (value) => createHash("sha256").update(String(value)).dige
 
 const arxivCachePath = (key) => join(arxivCacheDir, `${key}.json`);
 
+const paperOriginalTextCachePath = (key) => join(paperOriginalTextCacheDir, `${key}.json`);
+
 const emptyArxivSyncHistory = () => ({
   version: 1,
   updatedAt: "",
@@ -284,14 +295,24 @@ const appendUniquePapers = (target, seen, papers, maxResults) => {
   }
 };
 
+const arxivPaperRawId = (paper) => {
+  const value = [
+    paper?.absLink,
+    paper?.id,
+    paper?.link
+  ].map((item) => String(item || "")).filter(Boolean).join(" ");
+  const match = value.match(/(?:arxiv\.org\/abs\/|arxiv:|oai:arXiv\.org:)?([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)/i);
+  return match ? match[1] : "";
+};
+
 const arxivPaperId = (paper) => {
   const value = [
     paper?.absLink,
     paper?.id,
     paper?.link
   ].map((item) => String(item || "")).find(Boolean) || "";
-  const match = value.match(/(?:arxiv\.org\/abs\/|arxiv:|oai:arXiv\.org:)?([0-9]{4}\.[0-9]{4,5}(?:v\d+)?)/i);
-  return match ? match[1].replace(/v\d+$/i, "") : normalizePaperKey(value);
+  const rawId = arxivPaperRawId(paper);
+  return rawId ? rawId.replace(/v\d+$/i, "") : normalizePaperKey(value);
 };
 
 const normalizeStoredArxivPaper = (paper) => {
@@ -519,6 +540,165 @@ const writeArxivCache = async (key, entry) => {
 
 const arxivCacheAgeSeconds = (entry) => Math.max(0, Math.round((Date.now() - Number(entry.fetchedAt)) / 1000));
 
+const paperOriginalTextCacheAgeMs = (entry) => Math.max(0, Date.now() - Number(entry?.fetchedAt || 0));
+
+const paperOriginalTextResult = (entry, maxChars) => ({
+  status: "available",
+  source: entry.source || "arxiv-html",
+  url: entry.url || "",
+  fetchedAt: entry.fetchedAt ? new Date(entry.fetchedAt).toISOString() : "",
+  chars: Math.max(0, Number(entry.textChars) || String(entry.text || "").length),
+  excerpt: paperOriginalTextExcerpt(entry.text, maxChars)
+});
+
+const readPaperOriginalTextCache = async (key, maxChars) => {
+  const memoryEntry = paperOriginalTextMemoryCache.get(key);
+
+  if (memoryEntry && paperOriginalTextCacheAgeMs(memoryEntry) < paperOriginalTextCacheTtlMs) {
+    return paperOriginalTextResult(memoryEntry, maxChars);
+  }
+
+  try {
+    const entry = JSON.parse(await readFile(paperOriginalTextCachePath(key), "utf8"));
+
+    if (entry?.text && Number.isFinite(Number(entry.fetchedAt)) && paperOriginalTextCacheAgeMs(entry) < paperOriginalTextCacheTtlMs) {
+      paperOriginalTextMemoryCache.set(key, entry);
+      return paperOriginalTextResult(entry, maxChars);
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+};
+
+const writePaperOriginalTextCache = async (key, entry) => {
+  paperOriginalTextMemoryCache.set(key, entry);
+
+  try {
+    await mkdir(paperOriginalTextCacheDir, { recursive: true });
+    await writeFile(paperOriginalTextCachePath(key), JSON.stringify(entry), "utf8");
+  } catch (error) {
+    console.warn(`Could not write paper original text cache: ${error.message}`);
+  }
+};
+
+const unavailablePaperOriginalText = (message) => ({
+  status: "unavailable",
+  source: "",
+  url: "",
+  fetchedAt: "",
+  chars: 0,
+  excerpt: "",
+  message: truncate(message, 240)
+});
+
+const fetchPaperOriginalText = async (paper, maxChars) => {
+  const rawId = arxivPaperRawId(paper);
+  const arxivId = rawId.replace(/v\d+$/i, "");
+
+  if (!arxivId || !/^\d{4}\.\d{4,5}$/i.test(arxivId)) {
+    return unavailablePaperOriginalText("未找到可用于抓取原文的 arXiv ID。");
+  }
+
+  const cacheKey = arxivCacheKey(`paper-original-text:${arxivId}`);
+  const cached = await readPaperOriginalTextCache(cacheKey, maxChars);
+
+  if (cached) {
+    return { ...cached, cached: true };
+  }
+
+  if (paperOriginalTextInflight.has(cacheKey)) {
+    const entry = await paperOriginalTextInflight.get(cacheKey);
+    return paperOriginalTextResult(entry, maxChars);
+  }
+
+  const run = async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), paperOriginalTextFetchTimeoutMs);
+    const htmlId = rawId || arxivId;
+    const url = `https://arxiv.org/html/${encodeURIComponent(htmlId)}`;
+
+    try {
+      const response = await fetchArxivQueued(url, controller.signal, "text/html, application/xhtml+xml;q=0.9, */*;q=0.8");
+
+      if (!response.ok) {
+        throw new Error(`arXiv HTML 返回 ${response.status} ${response.statusText || ""}`.trim());
+      }
+
+      const html = await response.text();
+      const text = stripHtmlToText(html);
+
+      if (text.length < 800) {
+        throw new Error("arXiv HTML 原文内容过短，可能尚未生成 HTML 版本。");
+      }
+
+      const storedText = text.length > paperOriginalTextStoredMaxChars
+        ? `${text.slice(0, paperOriginalTextStoredMaxChars)}...`
+        : text;
+      const entry = {
+        version: 1,
+        source: "arxiv-html",
+        url,
+        fetchedAt: Date.now(),
+        textChars: text.length,
+        text: storedText
+      };
+      await writePaperOriginalTextCache(cacheKey, entry);
+      return entry;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const request = run().finally(() => {
+    paperOriginalTextInflight.delete(cacheKey);
+  });
+  paperOriginalTextInflight.set(cacheKey, request);
+
+  try {
+    const entry = await request;
+    return paperOriginalTextResult(entry, maxChars);
+  } catch (error) {
+    return unavailablePaperOriginalText(error.name === "AbortError"
+      ? "抓取 arXiv HTML 原文超时。"
+      : error.message);
+  }
+};
+
+const enrichPapersWithOriginalText = async (papers) => {
+  const perPaperBudget = Math.max(
+    2500,
+    Math.min(paperOriginalTextMaxChars, Math.floor(paperOriginalTextTotalMaxChars / Math.max(1, papers.length)))
+  );
+  const results = new Array(papers.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (cursor < papers.length) {
+      const index = cursor;
+      cursor += 1;
+      const paper = papers[index];
+      results[index] = {
+        ...paper,
+        originalText: await fetchPaperOriginalText(paper, perPaperBudget)
+      };
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(paperOriginalTextConcurrency, papers.length) }, worker)
+  );
+
+  const fullTextCount = results.filter((paper) => paper.originalText?.status === "available").length;
+  return {
+    papers: results,
+    fullTextCount,
+    unavailableCount: results.length - fullTextCount,
+    perPaperBudget
+  };
+};
+
 const atomEntryCount = (xml) => (String(xml || "").match(/<entry\b/gi) || []).length;
 
 const readArxivCooldown = async () => {
@@ -670,7 +850,7 @@ const parseRetryAfter = (value) => {
   return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : 0;
 };
 
-const fetchArxivQueued = async (arxivUrl, signal) => {
+const fetchArxivQueued = async (arxivUrl, signal, accept = "application/atom+xml, application/xml;q=0.9, */*;q=0.8") => {
   const run = async () => {
     const waitMs = Math.max(0, arxivMinIntervalMs - (Date.now() - arxivLastRequestAt));
 
@@ -682,7 +862,7 @@ const fetchArxivQueued = async (arxivUrl, signal) => {
     return fetch(arxivUrl, {
       signal,
       headers: {
-        "accept": "application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+        accept,
         "user-agent": "paper-insight/0.1 (local research discovery app; contact: local-user)"
       }
     });
@@ -702,6 +882,115 @@ const decodeXml = (value) => String(value || "")
   .replace(/&lt;/g, "<")
   .replace(/&gt;/g, ">")
   .replace(/&amp;/g, "&");
+
+const decodeHtml = (value) => decodeXml(value)
+  .replace(/&nbsp;/gi, " ")
+  .replace(/&ndash;/gi, "-")
+  .replace(/&mdash;/gi, "-")
+  .replace(/&lsquo;|&rsquo;/gi, "'")
+  .replace(/&ldquo;|&rdquo;/gi, "\"")
+  .replace(/&[a-z][a-z0-9]+;/gi, " ");
+
+const stripHtmlToText = (html) => decodeHtml(String(html || "")
+  .replace(/<script[\s\S]*?<\/script>/gi, " ")
+  .replace(/<style[\s\S]*?<\/style>/gi, " ")
+  .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
+  .replace(/<header[\s\S]*?<\/header>/gi, " ")
+  .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+  .replace(/<figcaption[\s\S]*?<\/figcaption>/gi, " ")
+  .replace(/<(?:h[1-6]|title)[^>]*>/gi, "\n\n")
+  .replace(/<\/(?:h[1-6]|title)>/gi, "\n\n")
+  .replace(/<\/(?:p|li|section|article|div|tr)>/gi, "\n\n")
+  .replace(/<br\s*\/?>/gi, "\n")
+  .replace(/<[^>]+>/g, " "))
+  .replace(/\u00a0/g, " ")
+  .replace(/[ \t]+/g, " ")
+  .replace(/\n[ \t]+/g, "\n")
+  .replace(/[ \t]+\n/g, "\n")
+  .replace(/\n{3,}/g, "\n\n")
+  .trim();
+
+const paperOriginalTextExcerpt = (text, maxChars = paperOriginalTextMaxChars) => {
+  const budget = Math.max(1200, Number(maxChars) || paperOriginalTextMaxChars);
+  const clean = String(text || "")
+    .replace(/\n\s*(references|bibliography)\s*\n[\s\S]*$/i, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (clean.length <= budget) {
+    return clean;
+  }
+
+  const paragraphs = clean
+    .split(/\n{2,}/)
+    .map((item) => item.replace(/\s+/g, " ").trim())
+    .filter((item) => item.length >= 40);
+  const selected = new Map();
+  let used = 0;
+  const addParagraph = (index) => {
+    if (index < 0 || index >= paragraphs.length || selected.has(index)) {
+      return;
+    }
+
+    const paragraph = paragraphs[index];
+    if (used + paragraph.length > budget && selected.size > 0) {
+      return;
+    }
+
+    selected.set(index, paragraph);
+    used += paragraph.length + 2;
+  };
+
+  for (let index = 0; index < paragraphs.length && used < budget * 0.35; index += 1) {
+    addParagraph(index);
+  }
+
+  const sectionKeywords = [
+    "abstract",
+    "introduction",
+    "method",
+    "approach",
+    "framework",
+    "architecture",
+    "system",
+    "design",
+    "model",
+    "agent",
+    "experiment",
+    "evaluation",
+    "benchmark",
+    "dataset",
+    "result",
+    "ablation",
+    "discussion",
+    "limitation",
+    "conclusion"
+  ];
+  const scored = paragraphs
+    .map((paragraph, index) => {
+      const lower = paragraph.toLowerCase();
+      const keywordScore = sectionKeywords.reduce((score, keyword) => score + (lower.includes(keyword) ? 1 : 0), 0);
+      const headingScore = paragraph.length < 160 && /^[0-9ivx. ]*[a-z][a-z0-9 ,:()/&-]+$/i.test(paragraph) ? 1 : 0;
+      return { index, score: keywordScore * 2 + headingScore };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  for (const item of scored) {
+    if (used >= budget) {
+      break;
+    }
+
+    addParagraph(item.index);
+    addParagraph(item.index + 1);
+  }
+
+  const excerpt = [...selected.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, paragraph]) => paragraph)
+    .join("\n\n");
+  return excerpt.length > budget ? `${excerpt.slice(0, budget)}...` : excerpt;
+};
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -1708,6 +1997,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               weekOfMonth: report.weekOfMonth,
               sourceReport: report.sourceReport,
               paperCount: papers.length,
+              originalTextCount: papers.filter((paper) => paper.originalText?.status === "available").length,
               tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"],
               scoringDimensions: dimensions.map((dimension) => ({
                 key: dimension.key,
@@ -1723,7 +2013,8 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
               "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
               "每篇入选论文都必须展示推荐分，并说明分别符合哪些评分维度。评分维度来自输入 analysis.dimensionDetails / analysis.scores，包括研究问题价值、方法新意、框架系统价值、证据强度；写出高匹配维度及其分项分，必要时指出较弱维度。",
-              "每篇论文的正文优先使用输入中的 analysis.problem、analysis.method、analysis.technicalDetails、analysis.experiment、analysis.limitations、analysis.networkUseCase 和论文摘要，不要只改写 tldr 或 whyRecommend。",
+              "每篇论文如果带有 originalText.status=available 和 originalText.excerpt，必须优先基于 originalText.excerpt 进行解读；analysis 字段只作为评分、维度和补充参考。不要只改写上一步的 tldr、whyRecommend 或 summary。",
+              "如果 originalText 不可用，再使用 analysis.problem、analysis.method、analysis.technicalDetails、analysis.experiment、analysis.limitations、analysis.networkUseCase 和论文摘要，并明确这是基于摘要和已有分析的判断。",
               "每篇论文必须包含「内容、方法与结果」小节，写清楚：论文具体解决什么问题；核心方法、模型、系统或框架怎么做；实验/验证如何支撑结论；主要结果或结论是什么。结果不需要堆复杂数据，但要说明验证结论和可信度线索。",
               "每篇论文必须包含「ADN 启发与阅读价值」小节，把阅读价值、关注重点和适合读者合并表达，最多 3 条要点。不要写成三段读者画像，不要重复前文摘要；重点指出对华为 ADN 网络研究可借鉴的机制、可验证的假设、可迁移的系统设计或需要规避的风险。",
               "每篇论文必须包含「局限与适用约束」小节，至少 2 条要点。不要只写一句泛泛的局限，要结合数据集/场景假设、评估方式、部署成本、泛化边界、安全可靠、网络真实闭环适配等维度说明。",
@@ -2391,9 +2682,17 @@ const handleReadingListRequest = async (request, response) => {
       provider: payload.llmProvider,
       model: payload.llmModel
     };
+
+    if (!getLlmConfig(requestLlm)) {
+      const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
+      error.code = "LLM_NOT_CONFIGURED";
+      throw error;
+    }
+
+    const originalTextContext = await enrichPapersWithOriginalText(papers);
     const markdown = await callLlmReadingList({
       report,
-      papers,
+      papers: originalTextContext.papers,
       llm: requestLlm
     });
 
@@ -2401,6 +2700,8 @@ const handleReadingListRequest = async (request, response) => {
       markdown,
       mode: llmProviderDefaults[inferLlmProvider(requestLlm)]?.mode || "llm",
       paperCount: papers.length,
+      originalTextCount: originalTextContext.fullTextCount,
+      originalTextUnavailableCount: originalTextContext.unavailableCount,
       title: report.title
     });
   } catch (error) {

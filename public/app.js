@@ -341,7 +341,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
-const readingListStepOrder = ["collect", "submit", "generate", "receive", "save"];
+const readingListStepOrder = ["collect", "submit", "source", "generate", "receive", "save"];
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -1380,26 +1380,37 @@ function readingListGenerationFocus(elapsed, paperCount, provider) {
   const focusItems = [
     {
       after: 0,
-      status: "等待模型生成...",
-      detail: `请求已提交给 ${provider}。正在等待模型返回完整 Markdown，当前会保持在“等待模型返回”。`
+      step: "source",
+      status: "服务端正在抓取论文原文...",
+      detail: `请求已提交给 ${provider}。服务端会先尝试抓取 ${paperCount} 篇论文的 arXiv HTML 原文，再送入模型。`
     },
     {
-      after: 6,
+      after: 10,
+      step: "source",
+      status: "仍在整理原文上下文...",
+      detail: "部分论文可能没有 arXiv HTML 版本，服务端会自动降级为摘要和已有分析，不会因为单篇失败中断。"
+    },
+    {
+      after: 18,
+      step: "generate",
       status: "等待模型生成趋势判断...",
       detail: "模型需要先读完整列表，再提炼本周研究趋势；这只是生成关注点，不代表该部分已经完成。"
     },
     {
-      after: 14,
+      after: 30,
+      step: "generate",
       status: "等待模型生成逐篇洞察...",
       detail: `模型正在处理 ${paperCount} 篇论文的内容、方法、结果和 ADN 启发；真实进度仍以接口返回为准。`
     },
     {
-      after: 28,
+      after: 48,
+      step: "generate",
       status: "等待模型整理发布格式...",
       detail: "模型可能正在整理报告导读、标题层级和可复制到洞察网站的 Markdown；返回前不会标记完成。"
     },
     {
-      after: 45,
+      after: 75,
+      step: "generate",
       status: "模型仍在生成长文...",
       detail: "长报告会受论文数量、趋势判断和逐篇 ADN 启发影响。页面没有卡死，正在等待服务端返回结果。"
     }
@@ -1412,7 +1423,7 @@ function refreshReadingListGenerationProgress(paperCount, provider) {
   const elapsed = secondsSince(state.readingListStartedAt);
   const focus = readingListGenerationFocus(elapsed, paperCount, provider);
   setReadingListProgress("loading", "模型生成中", focus.detail, {
-    step: "generate",
+    step: focus.step || "generate",
     meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
   });
   elements.readingListStatus.textContent = `${focus.status} 已等待 ${elapsed} 秒。`;
@@ -2035,8 +2046,12 @@ function openReadingListDialog(report = state.currentReport) {
   state.currentReadingListReport = report;
   elements.readingListTitle.textContent = report.readingList?.title || meta.title;
   elements.readingListOutput.value = report.readingList?.markdown || "";
+  const originalTextCount = report.readingList?.originalTextCount || 0;
+  const generatedStatus = originalTextCount
+    ? `已生成 ${report.readingList?.paperCount || recommendedPapersForReadingList(report).length} 篇论文的发布版 Markdown，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文。`
+    : `已生成 ${report.readingList?.paperCount || recommendedPapersForReadingList(report).length} 篇论文的发布版 Markdown，可复制到洞察网站。`;
   elements.readingListStatus.textContent = report.readingList?.generatedAt
-    ? `已生成 ${report.readingList.paperCount || recommendedPapersForReadingList(report).length} 篇论文的发布版 Markdown，可复制到洞察网站。`
+    ? generatedStatus
     : "基于当前推荐列表生成 Markdown。";
   setReadingListProgress(
     report.readingList?.markdown ? "ready" : "idle",
@@ -2098,7 +2113,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   }, 1000);
 
   try {
-    setReadingListProgress("loading", "发送生成请求", `正在把 ${papers.length} 篇推荐论文、评分理由和已有分析发送给 ${provider}。`, {
+    setReadingListProgress("loading", "发送生成请求", `正在提交 ${papers.length} 篇推荐论文；服务端会先抓取 arXiv HTML 原文，再生成发布版周报。`, {
       step: "submit",
       meta: `0 秒 · ${papers.length} 篇 · ${provider}`
     });
@@ -2141,15 +2156,21 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         markdown: data.markdown || "",
         generatedAt: new Date().toISOString(),
         mode: modeLabel(data.mode),
-        paperCount: data.paperCount || papers.length
+        paperCount: data.paperCount || papers.length,
+        originalTextCount: data.originalTextCount || 0,
+        originalTextUnavailableCount: data.originalTextUnavailableCount || 0
       }
     });
 
     elements.readingListTitle.textContent = updatedReport.readingList.title;
     elements.readingListOutput.value = updatedReport.readingList.markdown;
     const charCount = updatedReport.readingList.markdown.length;
-    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown，约 ${charCount} 字符。`;
-    setReadingListProgress("ready", "生成完成", `已保存到当前推荐列表。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
+    const originalTextCount = updatedReport.readingList.originalTextCount || 0;
+    const originalTextMeta = originalTextCount
+      ? `，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文`
+      : "，本次未获取到可用 arXiv HTML 原文";
+    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${originalTextMeta}，约 ${charCount} 字符。`;
+    setReadingListProgress("ready", "生成完成", `已保存到当前推荐列表${originalTextMeta}。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
       step: "save",
       meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 完成`
     });
