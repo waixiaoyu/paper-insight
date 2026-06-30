@@ -170,7 +170,7 @@ node server.js
 
 ```text
 DeepSeek: https://api.deepseek.com/chat/completions
-GLM: https://open.bigmodel.cn/api/paas/v4/
+GLM: https://open.bigmodel.cn/api/paas/v4/chat/completions
 GLM Coding Plan (OpenAI): https://open.bigmodel.cn/api/coding/paas/v4/chat/completions
 GLM Coding Plan (Anthropic): https://open.bigmodel.cn/api/anthropic/v1/messages
 ```
@@ -201,6 +201,8 @@ $env:GLM_CODING_OPENAI_API_URL="https://open.bigmodel.cn/api/coding/paas/v4"
 $env:GLM_CODING_ANTHROPIC_API_URL="https://open.bigmodel.cn/api/anthropic"
 node server.js
 ```
+
+`GLM_API_URL` 可以填写 BigModel base URL `https://open.bigmodel.cn/api/paas/v4`，服务端会自动补全为 `/chat/completions` 后再用 `fetch()` 调用。
 
 也支持 OpenAI 兼容配置：
 
