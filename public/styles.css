@@ -420,6 +420,104 @@ button {
   box-shadow: 0 0 0 3px rgba(23, 107, 135, 0.16);
 }
 
+.reading-list-source-panel {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(23, 107, 135, 0.14);
+  border-radius: 8px;
+}
+
+.reading-list-source-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.reading-list-source-heading strong {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.reading-list-source-heading span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.reading-list-source-list {
+  display: grid;
+  gap: 6px;
+  max-height: 150px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.reading-list-source-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 8px;
+  background: #fff;
+  border: 1px solid rgba(23, 107, 135, 0.1);
+  border-radius: 8px;
+}
+
+.reading-list-source-list .source-badge {
+  min-width: 48px;
+  padding: 2px 6px;
+  color: var(--muted);
+  background: #eef2f6;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.reading-list-source-list .source-title {
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reading-list-source-list .source-detail {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.reading-list-source-list li.running {
+  border-color: rgba(23, 107, 135, 0.36);
+}
+
+.reading-list-source-list li.running .source-badge {
+  color: #fff;
+  background: var(--accent);
+}
+
+.reading-list-source-list li.available .source-badge {
+  color: #fff;
+  background: var(--green);
+}
+
+.reading-list-source-list li.unavailable .source-badge {
+  color: var(--rose);
+  background: var(--rose-soft);
+}
+
 .reading-list-dialog.ready .reading-list-progress {
   grid-template-columns: minmax(0, 1fr);
   min-height: 0;

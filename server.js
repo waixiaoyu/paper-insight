@@ -666,23 +666,84 @@ const fetchPaperOriginalText = async (paper, maxChars) => {
   }
 };
 
-const enrichPapersWithOriginalText = async (papers) => {
+const readingListStatusTitle = (paper, index) => truncate(paper?.title || `论文 ${index + 1}`, 120);
+
+const originalTextProgressSummary = (items) => ({
+  total: items.length,
+  pending: items.filter((item) => item.state === "pending").length,
+  running: items.filter((item) => item.state === "running").length,
+  available: items.filter((item) => item.state === "available").length,
+  unavailable: items.filter((item) => item.state === "unavailable").length
+});
+
+const publishOriginalTextProgress = (requestId, items, message, stage = "original-text") => {
+  if (!requestId) {
+    return;
+  }
+
+  const summary = originalTextProgressSummary(items);
+  const running = items.find((item) => item.state === "running");
+
+  setPaperRequestStatus(requestId, "reading-list", message, "running", {
+    stage,
+    currentIndex: running ? running.index : -1,
+    currentTitle: running ? running.title : "",
+    originalTextSummary: summary,
+    originalTextItems: items.map((item) => ({
+      index: item.index,
+      title: item.title,
+      state: item.state,
+      source: item.source || "",
+      chars: Math.max(0, Number(item.chars) || 0),
+      cached: Boolean(item.cached),
+      message: truncate(item.message, 220)
+    }))
+  });
+};
+
+const enrichPapersWithOriginalText = async (papers, { requestId = "" } = {}) => {
   const perPaperBudget = Math.max(
     2500,
     Math.min(paperOriginalTextMaxChars, Math.floor(paperOriginalTextTotalMaxChars / Math.max(1, papers.length)))
   );
   const results = new Array(papers.length);
+  const progressItems = papers.map((paper, index) => ({
+    index,
+    title: readingListStatusTitle(paper, index),
+    state: "pending",
+    source: "",
+    chars: 0,
+    cached: false,
+    message: "等待抓取"
+  }));
   let cursor = 0;
+
+  publishOriginalTextProgress(requestId, progressItems, `准备抓取 ${papers.length} 篇论文的 arXiv HTML 原文。`);
 
   const worker = async () => {
     while (cursor < papers.length) {
       const index = cursor;
       cursor += 1;
       const paper = papers[index];
+      const item = progressItems[index];
+      item.state = "running";
+      item.message = "正在连接 arXiv HTML 原文";
+      publishOriginalTextProgress(requestId, progressItems, `正在抓取第 ${index + 1}/${papers.length} 篇：${item.title}`);
+
+      const originalText = await fetchPaperOriginalText(paper, perPaperBudget);
+
+      item.state = originalText.status === "available" ? "available" : "unavailable";
+      item.source = originalText.source || "";
+      item.chars = originalText.chars || 0;
+      item.cached = Boolean(originalText.cached);
+      item.message = originalText.status === "available"
+        ? `${originalText.cached ? "命中缓存" : "已获取"} ${originalText.source || "原文"}，约 ${originalText.chars || 0} 字符`
+        : originalText.message || "未获取到可用原文";
       results[index] = {
         ...paper,
-        originalText: await fetchPaperOriginalText(paper, perPaperBudget)
+        originalText
       };
+      publishOriginalTextProgress(requestId, progressItems, `${item.state === "available" ? "已获取原文" : "未获取原文"}：${item.title}`);
     }
   };
 
@@ -691,6 +752,13 @@ const enrichPapersWithOriginalText = async (papers) => {
   );
 
   const fullTextCount = results.filter((paper) => paper.originalText?.status === "available").length;
+  publishOriginalTextProgress(
+    requestId,
+    progressItems,
+    `原文抓取完成：成功 ${fullTextCount} 篇，未获取 ${results.length - fullTextCount} 篇，正在提交给模型生成周报。`,
+    "generate"
+  );
+
   return {
     papers: results,
     fullTextCount,
@@ -2590,8 +2658,11 @@ const handleReadingListRequest = async (request, response) => {
     return;
   }
 
+  let requestId = "";
+
   try {
     const payload = await readJsonBody(request);
+    requestId = truncate(payload.requestId, 100);
     const papers = Array.isArray(payload.papers)
       ? payload.papers.slice(0, 40).map(sanitizeReadingListPaper)
       : [];
@@ -2622,18 +2693,71 @@ const handleReadingListRequest = async (request, response) => {
       throw error;
     }
 
+    setPaperRequestStatus(
+      requestId,
+      "reading-list",
+      report.useOriginalText ? "准备抓取论文原文。" : "已关闭原文分析，正在基于摘要和已有分析生成周报。",
+      "running",
+      {
+        stage: report.useOriginalText ? "original-text" : "generate",
+        originalTextSummary: {
+          total: papers.length,
+          pending: report.useOriginalText ? papers.length : 0,
+          running: 0,
+          available: 0,
+          unavailable: 0
+        },
+        originalTextItems: report.useOriginalText
+          ? papers.map((paper, index) => ({
+            index,
+            title: readingListStatusTitle(paper, index),
+            state: "pending",
+            source: "",
+            chars: 0,
+            cached: false,
+            message: "等待抓取"
+          }))
+          : []
+      }
+    );
+
     const originalTextContext = report.useOriginalText
-      ? await enrichPapersWithOriginalText(papers)
+      ? await enrichPapersWithOriginalText(papers, { requestId })
       : {
         papers,
         fullTextCount: 0,
         unavailableCount: 0,
         perPaperBudget: 0
       };
+    if (!report.useOriginalText) {
+      setPaperRequestStatus(requestId, "reading-list", "已跳过论文原文抓取，正在提交给模型生成周报。", "running", {
+        stage: "generate",
+        originalTextSummary: {
+          total: papers.length,
+          pending: 0,
+          running: 0,
+          available: 0,
+          unavailable: 0
+        },
+        originalTextItems: []
+      });
+    }
     const markdown = await callLlmReadingList({
       report,
       papers: originalTextContext.papers,
       llm: requestLlm
+    });
+    const latestReadingListStatus = paperRequestStatuses.get(requestId);
+    setPaperRequestStatus(requestId, "reading-list", "周报生成完成。", "done", {
+      stage: "done",
+      originalTextSummary: latestReadingListStatus?.originalTextSummary || {
+        total: papers.length,
+        pending: 0,
+        running: 0,
+        available: originalTextContext.fullTextCount,
+        unavailable: originalTextContext.unavailableCount
+      },
+      originalTextItems: latestReadingListStatus?.originalTextItems || []
     });
 
     sendJson(response, 200, {
@@ -2651,6 +2775,12 @@ const handleReadingListRequest = async (request, response) => {
       : error.code === "LLM_READING_LIST_TIMEOUT"
         ? 504
         : 500;
+    const latestReadingListStatus = paperRequestStatuses.get(requestId);
+    setPaperRequestStatus(requestId, "reading-list", `周报生成失败：${error.message}`, "error", {
+      stage: "error",
+      originalTextSummary: latestReadingListStatus?.originalTextSummary,
+      originalTextItems: latestReadingListStatus?.originalTextItems || []
+    });
     sendJson(response, status, {
       error: error.code || "READING_LIST_FAILED",
       message: "Could not generate the weekly reading list.",

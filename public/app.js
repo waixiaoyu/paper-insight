@@ -253,6 +253,9 @@ const elements = {
   readingListProgressDetail: $("#readingListProgressDetail"),
   readingListProgressMeta: $("#readingListProgressMeta"),
   readingListSteps: $("#readingListSteps"),
+  readingListSourcePanel: $("#readingListSourcePanel"),
+  readingListSourceSummary: $("#readingListSourceSummary"),
+  readingListSourceList: $("#readingListSourceList"),
   readingListOutput: $("#readingListOutput"),
   readingListClose: $("#readingListClose"),
   readingListRegenerate: $("#readingListRegenerate"),
@@ -372,7 +375,9 @@ const state = {
   sourceStatusTimer: 0,
   syncStatusTimer: 0,
   readingListTimer: 0,
+  readingListStatusTimer: 0,
   readingListStartedAt: 0,
+  readingListLiveStatus: null,
   progressState: null,
   taskLocked: false,
   taskCloseTimer: 0
@@ -1305,6 +1310,13 @@ function resetReadingListTimer() {
   }
 }
 
+function resetReadingListStatusTimer() {
+  if (state.readingListStatusTimer) {
+    window.clearInterval(state.readingListStatusTimer);
+    state.readingListStatusTimer = 0;
+  }
+}
+
 function setReadingListStep(activeStep = "") {
   const activeIndex = readingListStepOrder.indexOf(activeStep);
   elements.readingListSteps?.querySelectorAll("li").forEach((item) => {
@@ -1321,6 +1333,121 @@ function setReadingListProgress(type, title, detail, { step = "", meta = "" } = 
   elements.readingListProgressDetail.textContent = detail;
   elements.readingListProgressMeta.textContent = meta;
   setReadingListStep(step);
+}
+
+function clearReadingListSourceStatus() {
+  state.readingListLiveStatus = null;
+
+  if (elements.readingListSourcePanel) {
+    elements.readingListSourcePanel.hidden = true;
+  }
+
+  if (elements.readingListSourceSummary) {
+    elements.readingListSourceSummary.textContent = "等待开始";
+  }
+
+  if (elements.readingListSourceList) {
+    elements.readingListSourceList.textContent = "";
+  }
+}
+
+function readingListSourceBadge(stateName) {
+  const labels = {
+    pending: "等待",
+    running: "抓取中",
+    available: "已获取",
+    unavailable: "未获取"
+  };
+
+  return labels[stateName] || "未知";
+}
+
+function renderReadingListSourceStatus(data) {
+  const items = Array.isArray(data?.originalTextItems) ? data.originalTextItems : [];
+
+  if (!items.length || !elements.readingListSourcePanel || !elements.readingListSourceList) {
+    if (elements.readingListSourcePanel) {
+      elements.readingListSourcePanel.hidden = true;
+    }
+    return;
+  }
+
+  const summary = data.originalTextSummary || {};
+  const total = Number(summary.total || items.length);
+  const available = Number(summary.available || 0);
+  const unavailable = Number(summary.unavailable || 0);
+  const running = Number(summary.running || 0);
+  const pending = Number(summary.pending || 0);
+  elements.readingListSourcePanel.hidden = false;
+  elements.readingListSourceSummary.textContent = `成功 ${available} · 未获取 ${unavailable} · 进行中 ${running} · 等待 ${pending} / ${total}`;
+  elements.readingListSourceList.textContent = "";
+
+  items.forEach((item) => {
+    const row = document.createElement("li");
+    row.className = item.state || "pending";
+
+    const badge = document.createElement("span");
+    badge.className = "source-badge";
+    badge.textContent = readingListSourceBadge(item.state);
+
+    const body = document.createElement("div");
+
+    const title = document.createElement("span");
+    title.className = "source-title";
+    title.textContent = item.title || `论文 ${Number(item.index || 0) + 1}`;
+
+    const detail = document.createElement("span");
+    detail.className = "source-detail";
+    const sourceText = item.source ? `${item.source}${item.cached ? " · 缓存" : ""}` : "";
+    const charText = item.chars ? `约 ${item.chars} 字符` : "";
+    detail.textContent = [item.message, sourceText, charText].filter(Boolean).join(" · ") || "等待服务端更新";
+
+    body.append(title, detail);
+    row.append(badge, body);
+    elements.readingListSourceList.append(row);
+  });
+}
+
+function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
+  if (!data || data.source !== "reading-list" || data.state === "idle") {
+    return false;
+  }
+
+  renderReadingListSourceStatus(data);
+
+  const elapsed = secondsSince(state.readingListStartedAt);
+  const meta = `已等待 ${elapsed} 秒 · ${paperCount || data.originalTextSummary?.total || 0} 篇 · ${provider || providerLabel()}`;
+  const stage = data.stage || "";
+
+  if (stage === "original-text") {
+    setReadingListProgress("loading", "抓取论文原文", data.message || "正在抓取论文原文。", {
+      step: "source",
+      meta
+    });
+    elements.readingListStatus.textContent = data.currentTitle
+      ? `正在抓取：${data.currentTitle}`
+      : `${data.message || "正在抓取论文原文。"} 已等待 ${elapsed} 秒。`;
+    return true;
+  }
+
+  if (stage === "generate") {
+    setReadingListProgress("loading", "模型生成中", data.message || "原文上下文已准备，正在等待模型生成周报。", {
+      step: "generate",
+      meta
+    });
+    elements.readingListStatus.textContent = `${data.message || "模型生成中。"} 已等待 ${elapsed} 秒。`;
+    return true;
+  }
+
+  if (data.state === "error") {
+    setReadingListProgress("failed", "生成失败", data.message || "周报生成失败。", {
+      meta
+    });
+    elements.readingListStatus.textContent = data.message || "周报生成失败。";
+    return true;
+  }
+
+  return false;
 }
 
 function setReadingListSourceStepLabel(useOriginalText = true) {
@@ -1418,6 +1545,10 @@ function readingListGenerationFocus(elapsed, paperCount, provider, useOriginalTe
 }
 
 function refreshReadingListGenerationProgress(paperCount, provider, useOriginalText = true) {
+  if (renderReadingListLiveStatus(state.readingListLiveStatus, { paperCount, provider })) {
+    return;
+  }
+
   const elapsed = secondsSince(state.readingListStartedAt);
   const focus = readingListGenerationFocus(elapsed, paperCount, provider, useOriginalText);
   setReadingListProgress("loading", "模型生成中", focus.detail, {
@@ -1850,6 +1981,35 @@ function startSyncStatusPolling(requestId) {
   }, 500);
 }
 
+function startReadingListStatusPolling(requestId, { paperCount, provider } = {}) {
+  resetReadingListStatusTimer();
+  state.readingListLiveStatus = null;
+  state.readingListStatusTimer = window.setInterval(async () => {
+    try {
+      const response = await fetch(`/api/papers/status?requestId=${encodeURIComponent(requestId)}`);
+
+      if (!response.ok) {
+        return;
+      }
+
+      const data = await response.json();
+
+      if (!data.message || data.state === "idle" || data.source !== "reading-list") {
+        return;
+      }
+
+      state.readingListLiveStatus = data;
+      renderReadingListLiveStatus(data, { paperCount, provider });
+
+      if (data.state === "done" || data.state === "error") {
+        resetReadingListStatusTimer();
+      }
+    } catch {
+      // Reading list status polling is only for display; the main request still owns errors.
+    }
+  }, 850);
+}
+
 function setMetrics({ candidates = 0, recommended = 0, hidden = 0, mode = "-" } = {}) {
   elements.candidateCount.textContent = String(candidates);
   elements.recommendedCount.textContent = String(recommended);
@@ -2092,6 +2252,7 @@ function openReadingListDialog(report = state.currentReport) {
   const meta = readingListMetadata(report);
   const useOriginalText = report.readingList?.useOriginalText ?? true;
   state.currentReadingListReport = report;
+  clearReadingListSourceStatus();
   setReadingListUseOriginalText(useOriginalText);
   elements.readingListTitle.textContent = report.readingList?.title || meta.title;
   elements.readingListOutput.value = report.readingList?.markdown || "";
@@ -2144,12 +2305,14 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   const meta = readingListMetadata(report);
   const provider = providerLabel();
   const useOriginalText = readingListUseOriginalText();
+  const requestId = `reading-list-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextModeText = useOriginalText
     ? "准备抓取 arXiv HTML 原文。"
     : "将基于摘要、评分维度和已有分析生成。";
   setReadingListSourceStepLabel(useOriginalText);
   openReadingListDialog(report);
   setReadingListUseOriginalText(useOriginalText);
+  clearReadingListSourceStatus();
   elements.readingListTitle.textContent = meta.title;
   elements.readingListOutput.value = "";
   elements.readingListOutput.style.height = "";
@@ -2164,6 +2327,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   state.readingListTimer = window.setInterval(() => {
     refreshReadingListGenerationProgress(papers.length, provider, useOriginalText);
   }, 1000);
+  startReadingListStatusPolling(requestId, { paperCount: papers.length, provider });
 
   try {
     const submitDetail = useOriginalText
@@ -2179,6 +2343,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         "content-type": "application/json"
       },
       body: JSON.stringify({
+        requestId,
         ...meta,
         sourceReport: reportDisplayTitle(report),
         useOriginalText,
@@ -2245,6 +2410,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     showStatus(`阅读清单生成失败：${error.message}`, "error");
   } finally {
     resetReadingListTimer();
+    resetReadingListStatusTimer();
     setReadingListBusy(false);
   }
 }
@@ -3489,6 +3655,7 @@ elements.readingListInlineUseOriginalText?.addEventListener("change", () => {
 
 elements.readingListClose.addEventListener("click", () => {
   resetReadingListTimer();
+  resetReadingListStatusTimer();
   if (elements.readingListDialog.open) {
     elements.readingListDialog.close();
   }
@@ -3496,6 +3663,7 @@ elements.readingListClose.addEventListener("click", () => {
 
 elements.readingListDialog.addEventListener("cancel", () => {
   resetReadingListTimer();
+  resetReadingListStatusTimer();
 });
 
 window.addEventListener("resize", () => {
