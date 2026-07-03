@@ -197,7 +197,7 @@ button {
 
 .reading-list-shell {
   display: grid;
-  grid-template-rows: auto auto auto auto;
+  grid-template-rows: auto auto auto auto auto;
   max-height: calc(100dvh - 40px);
 }
 
@@ -223,6 +223,93 @@ button {
   margin: 0;
   color: var(--muted);
   line-height: 1.5;
+}
+
+.reading-list-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+}
+
+.reading-list-toggle {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.reading-list-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+}
+
+.reading-list-toggle-switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  background: #d8e1ea;
+  border: 1px solid #c7d2df;
+  border-radius: 999px;
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.reading-list-toggle-switch::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  content: "";
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(33, 45, 62, 0.2);
+  transition: transform 160ms ease;
+}
+
+.reading-list-toggle input:checked + .reading-list-toggle-switch {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.reading-list-toggle input:checked + .reading-list-toggle-switch::after {
+  transform: translateX(18px);
+}
+
+.reading-list-toggle input:focus-visible + .reading-list-toggle-switch {
+  outline: 3px solid rgba(23, 107, 135, 0.2);
+  outline-offset: 2px;
+}
+
+.reading-list-toggle input:disabled + .reading-list-toggle-switch,
+.reading-list-toggle input:disabled ~ .reading-list-toggle-copy {
+  opacity: 0.62;
+}
+
+.reading-list-toggle-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.reading-list-toggle-copy strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.reading-list-toggle-copy em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
 }
 
 .reading-list-progress {
@@ -279,7 +366,7 @@ button {
 
 .reading-list-steps {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
   margin: 10px 0 0;
   padding: 0;
@@ -1439,6 +1526,32 @@ button:disabled {
   line-height: 1.5;
 }
 
+.reading-list-card-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.reading-list-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.reading-list-inline-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .reading-list-action {
   flex: 0 0 auto;
   min-height: 44px;
@@ -2397,6 +2510,15 @@ button:disabled {
   .reading-list-card {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .reading-list-card-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reading-list-inline-toggle {
+    justify-content: flex-start;
   }
 
   .view-tools {

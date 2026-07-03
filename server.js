@@ -1485,6 +1485,14 @@ const readJsonBody = async (request) => {
   return raw ? JSON.parse(raw) : {};
 };
 
+const booleanOption = (value, defaultValue = true) => {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+
+  return !/^(0|false|no|off)$/i.test(String(value).trim());
+};
+
 const sanitizePaper = (paper) => ({
   id: String(paper.id || ""),
   title: truncate(paper.title, 320),
@@ -1888,6 +1896,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
 
   try {
     const title = truncate(report.title, 120) || "每周高价值论文阅读清单";
+    const useOriginalText = report.useOriginalText !== false;
     const payload = {
       model,
       temperature: 0.25,
@@ -1913,6 +1922,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               weekOfMonth: report.weekOfMonth,
               sourceReport: report.sourceReport,
               paperCount: papers.length,
+              useOriginalText,
               originalTextCount: papers.filter((paper) => paper.originalText?.status === "available").length,
               tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"],
               scoringDimensions: dimensions.map((dimension) => ({
@@ -1929,8 +1939,14 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
               "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
               "每篇入选论文都必须展示推荐分，并说明分别符合哪些评分维度。评分维度来自输入 analysis.dimensionDetails / analysis.scores，包括研究问题价值、方法新意、框架系统价值、证据强度；写出高匹配维度及其分项分，必要时指出较弱维度。",
-              "每篇论文如果带有 originalText.status=available 和 originalText.excerpt，必须优先基于 originalText.excerpt 进行解读；analysis 字段只作为评分、维度和补充参考。不要只改写上一步的 tldr、whyRecommend 或 summary。",
-              "如果 originalText 不可用，再使用 analysis.problem、analysis.method、analysis.technicalDetails、analysis.experiment、analysis.limitations、analysis.networkUseCase 和论文摘要，并明确这是基于摘要和已有分析的判断。",
+              ...(useOriginalText
+                ? [
+                  "每篇论文如果带有 originalText.status=available 和 originalText.excerpt，必须优先基于 originalText.excerpt 进行解读；analysis 字段只作为评分、维度和补充参考。不要只改写上一步的 tldr、whyRecommend 或 summary。",
+                  "如果 originalText 不可用，再使用 analysis.problem、analysis.method、analysis.technicalDetails、analysis.experiment、analysis.limitations、analysis.networkUseCase 和论文摘要，并明确这是基于摘要和已有分析的判断。"
+                ]
+                : [
+                  "本次未启用论文原文抓取，只能基于论文摘要、评分维度和已有分析生成。每篇论文涉及内容、方法、结果和局限时，都要用「基于摘要和已有分析看」标明依据，不要声称读过原文或全文。"
+                ]),
               "每篇论文必须包含「内容、方法与结果」小节，写清楚：论文具体解决什么问题；核心方法、模型、系统或框架怎么做；实验/验证如何支撑结论；主要结果或结论是什么。结果不需要堆复杂数据，但要说明验证结论和可信度线索。",
               "每篇论文必须包含「ADN 启发与阅读价值」小节，把阅读价值、关注重点和适合读者合并表达，最多 3 条要点。不要写成三段读者画像，不要重复前文摘要；重点指出对华为 ADN 网络研究可借鉴的机制、可验证的假设、可迁移的系统设计或需要规避的风险。",
               "每篇论文必须包含「局限与适用约束」小节，至少 2 条要点。不要只写一句泛泛的局限，要结合数据集/场景假设、评估方式、部署成本、泛化边界、安全可靠、网络真实闭环适配等维度说明。",
@@ -2590,7 +2606,8 @@ const handleReadingListRequest = async (request, response) => {
       date: String(payload.date || new Date().toISOString().slice(0, 10)),
       month: truncate(payload.month, 16),
       weekOfMonth: Math.min(Math.max(Number(payload.weekOfMonth || 1), 1), 6),
-      sourceReport: truncate(payload.sourceReport, 240)
+      sourceReport: truncate(payload.sourceReport, 240),
+      useOriginalText: booleanOption(payload.useOriginalText, true)
     };
 
     const requestLlm = {
@@ -2605,7 +2622,14 @@ const handleReadingListRequest = async (request, response) => {
       throw error;
     }
 
-    const originalTextContext = await enrichPapersWithOriginalText(papers);
+    const originalTextContext = report.useOriginalText
+      ? await enrichPapersWithOriginalText(papers)
+      : {
+        papers,
+        fullTextCount: 0,
+        unavailableCount: 0,
+        perPaperBudget: 0
+      };
     const markdown = await callLlmReadingList({
       report,
       papers: originalTextContext.papers,
@@ -2616,6 +2640,7 @@ const handleReadingListRequest = async (request, response) => {
       markdown,
       mode: llmProviderDefaults[inferLlmProvider(requestLlm)]?.mode || "llm",
       paperCount: papers.length,
+      useOriginalText: report.useOriginalText,
       originalTextCount: originalTextContext.fullTextCount,
       originalTextUnavailableCount: originalTextContext.unavailableCount,
       title: report.title

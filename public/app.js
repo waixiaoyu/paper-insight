@@ -246,6 +246,8 @@ const elements = {
   readingListDialog: $("#readingListDialog"),
   readingListTitle: $("#readingListTitle"),
   readingListStatus: $("#readingListStatus"),
+  readingListUseOriginalText: $("#readingListUseOriginalText"),
+  readingListInlineUseOriginalText: $("#readingListInlineUseOriginalText"),
   readingListProgress: $("#readingListProgress"),
   readingListProgressTitle: $("#readingListProgressTitle"),
   readingListProgressDetail: $("#readingListProgressDetail"),
@@ -1321,13 +1323,58 @@ function setReadingListProgress(type, title, detail, { step = "", meta = "" } = 
   setReadingListStep(step);
 }
 
+function setReadingListSourceStepLabel(useOriginalText = true) {
+  const sourceLabel = elements.readingListSteps?.querySelector('[data-reading-step="source"] em');
+
+  if (sourceLabel) {
+    sourceLabel.textContent = useOriginalText ? "抓取原文" : "整理摘要";
+  }
+}
+
 function waitForReadingListStep(ms = 240) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
 }
 
-function readingListGenerationFocus(elapsed, paperCount, provider) {
+function readingListGenerationFocus(elapsed, paperCount, provider, useOriginalText = true) {
+  if (!useOriginalText) {
+    const summaryFocusItems = [
+      {
+        after: 0,
+        step: "generate",
+        status: "服务端正在整理摘要和评分上下文...",
+        detail: `请求已提交给 ${provider}。本次未启用原文抓取，将基于摘要、评分维度和已有分析生成周报。`
+      },
+      {
+        after: 10,
+        step: "generate",
+        status: "等待模型生成趋势判断...",
+        detail: "模型需要先读完整推荐列表，再提炼本周研究趋势；真实进度仍以接口返回为准。"
+      },
+      {
+        after: 24,
+        step: "generate",
+        status: "等待模型生成逐篇洞察...",
+        detail: `模型正在处理 ${paperCount} 篇论文的内容、方法、结果和 ADN 启发。`
+      },
+      {
+        after: 45,
+        step: "generate",
+        status: "等待模型整理发布格式...",
+        detail: "模型可能正在整理报告导读、标题层级和可复制到洞察网站的 Markdown；返回前不会标记完成。"
+      },
+      {
+        after: 70,
+        step: "generate",
+        status: "模型仍在生成长文...",
+        detail: "长报告会受论文数量、趋势判断和逐篇 ADN 启发影响。页面没有卡死，正在等待服务端返回结果。"
+      }
+    ];
+
+    return summaryFocusItems.reduce((current, item) => elapsed >= item.after ? item : current, summaryFocusItems[0]);
+  }
+
   const focusItems = [
     {
       after: 0,
@@ -1370,9 +1417,9 @@ function readingListGenerationFocus(elapsed, paperCount, provider) {
   return focusItems.reduce((current, item) => elapsed >= item.after ? item : current, focusItems[0]);
 }
 
-function refreshReadingListGenerationProgress(paperCount, provider) {
+function refreshReadingListGenerationProgress(paperCount, provider, useOriginalText = true) {
   const elapsed = secondsSince(state.readingListStartedAt);
-  const focus = readingListGenerationFocus(elapsed, paperCount, provider);
+  const focus = readingListGenerationFocus(elapsed, paperCount, provider, useOriginalText);
   setReadingListProgress("loading", "模型生成中", focus.detail, {
     step: focus.step || "generate",
     meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
@@ -1962,12 +2009,61 @@ function readingListMetadata(report = state.currentReport) {
   };
 }
 
+function readingListUseOriginalText() {
+  if (elements.readingListDialog?.open && elements.readingListUseOriginalText) {
+    return elements.readingListUseOriginalText.checked;
+  }
+
+  if (elements.readingListInlineUseOriginalText) {
+    return elements.readingListInlineUseOriginalText.checked;
+  }
+
+  return elements.readingListUseOriginalText ? elements.readingListUseOriginalText.checked : true;
+}
+
+function setReadingListUseOriginalText(useOriginalText = true) {
+  if (elements.readingListUseOriginalText) {
+    elements.readingListUseOriginalText.checked = useOriginalText !== false;
+  }
+
+  if (elements.readingListInlineUseOriginalText) {
+    elements.readingListInlineUseOriginalText.checked = useOriginalText !== false;
+  }
+
+  setReadingListSourceStepLabel(useOriginalText !== false);
+}
+
+function readingListGeneratedStatus(readingList, paperCount) {
+  const count = readingList?.paperCount || paperCount;
+
+  if (!readingList) {
+    return `基于当前推荐列表生成 ${count} 篇论文的 Markdown。`;
+  }
+
+  if (!readingList?.useOriginalText) {
+    return `已生成 ${count} 篇论文的发布版 Markdown，未启用论文原文分析。`;
+  }
+
+  const originalTextCount = readingList?.originalTextCount || 0;
+  if (originalTextCount) {
+    return `已生成 ${count} 篇论文的发布版 Markdown，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文。`;
+  }
+
+  return `已生成 ${count} 篇论文的发布版 Markdown，本次未获取到可用 arXiv HTML 原文。`;
+}
+
 function setReadingListBusy(busy) {
   const hasMarkdown = Boolean(elements.readingListOutput.value.trim());
   elements.generateReadingList.disabled = busy;
   elements.readingListRegenerate.disabled = busy;
   elements.readingListDownload.disabled = busy || !hasMarkdown;
   elements.readingListCopy.disabled = busy || !hasMarkdown;
+  if (elements.readingListUseOriginalText) {
+    elements.readingListUseOriginalText.disabled = busy;
+  }
+  if (elements.readingListInlineUseOriginalText) {
+    elements.readingListInlineUseOriginalText.disabled = busy;
+  }
   elements.readingListClose.disabled = false;
 }
 
@@ -1994,13 +2090,13 @@ function openReadingListDialog(report = state.currentReport) {
   }
 
   const meta = readingListMetadata(report);
+  const useOriginalText = report.readingList?.useOriginalText ?? true;
   state.currentReadingListReport = report;
+  setReadingListUseOriginalText(useOriginalText);
   elements.readingListTitle.textContent = report.readingList?.title || meta.title;
   elements.readingListOutput.value = report.readingList?.markdown || "";
-  const originalTextCount = report.readingList?.originalTextCount || 0;
-  const generatedStatus = originalTextCount
-    ? `已生成 ${report.readingList?.paperCount || recommendedPapersForReadingList(report).length} 篇论文的发布版 Markdown，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文。`
-    : `已生成 ${report.readingList?.paperCount || recommendedPapersForReadingList(report).length} 篇论文的发布版 Markdown，可复制到洞察网站。`;
+  const paperCount = recommendedPapersForReadingList(report).length;
+  const generatedStatus = readingListGeneratedStatus(report.readingList, paperCount);
   elements.readingListStatus.textContent = report.readingList?.generatedAt
     ? generatedStatus
     : "基于当前推荐列表生成 Markdown。";
@@ -2047,12 +2143,18 @@ async function generateReadingListForReport(report = state.currentReport, { forc
 
   const meta = readingListMetadata(report);
   const provider = providerLabel();
+  const useOriginalText = readingListUseOriginalText();
+  const contextModeText = useOriginalText
+    ? "准备抓取 arXiv HTML 原文。"
+    : "将基于摘要、评分维度和已有分析生成。";
+  setReadingListSourceStepLabel(useOriginalText);
   openReadingListDialog(report);
+  setReadingListUseOriginalText(useOriginalText);
   elements.readingListTitle.textContent = meta.title;
   elements.readingListOutput.value = "";
   elements.readingListOutput.style.height = "";
   elements.readingListStatus.textContent = `准备生成 ${papers.length} 篇论文的发布版周报。`;
-  setReadingListProgress("loading", "整理推荐论文", `已收集当前列表中的 ${papers.length} 篇达标论文，正在准备上下文。`, {
+  setReadingListProgress("loading", "整理推荐论文", `已收集当前列表中的 ${papers.length} 篇达标论文，${contextModeText}`, {
     step: "collect",
     meta: `0 秒 · ${papers.length} 篇 · ${provider}`
   });
@@ -2060,11 +2162,14 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   state.readingListStartedAt = performance.now();
   resetReadingListTimer();
   state.readingListTimer = window.setInterval(() => {
-    refreshReadingListGenerationProgress(papers.length, provider);
+    refreshReadingListGenerationProgress(papers.length, provider, useOriginalText);
   }, 1000);
 
   try {
-    setReadingListProgress("loading", "发送生成请求", `正在提交 ${papers.length} 篇推荐论文；服务端会先抓取 arXiv HTML 原文，再生成发布版周报。`, {
+    const submitDetail = useOriginalText
+      ? `正在提交 ${papers.length} 篇推荐论文；服务端会先抓取 arXiv HTML 原文，再生成发布版周报。`
+      : `正在提交 ${papers.length} 篇推荐论文；本次跳过原文抓取，直接生成发布版周报。`;
+    setReadingListProgress("loading", "发送生成请求", submitDetail, {
       step: "submit",
       meta: `0 秒 · ${papers.length} 篇 · ${provider}`
     });
@@ -2076,12 +2181,13 @@ async function generateReadingListForReport(report = state.currentReport, { forc
       body: JSON.stringify({
         ...meta,
         sourceReport: reportDisplayTitle(report),
+        useOriginalText,
         papers: papers.map(readingListPaperPayload),
         ...llmPayload()
       })
     });
     await waitForReadingListStep(260);
-    refreshReadingListGenerationProgress(papers.length, provider);
+    refreshReadingListGenerationProgress(papers.length, provider, useOriginalText);
     const response = await responsePromise;
     resetReadingListTimer();
     setReadingListProgress("loading", "接收模型结果", "模型已经返回响应，正在解析生成的 Markdown 内容。", {
@@ -2108,6 +2214,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         generatedAt: new Date().toISOString(),
         mode: modeLabel(data.mode),
         paperCount: data.paperCount || papers.length,
+        useOriginalText: data.useOriginalText ?? useOriginalText,
         originalTextCount: data.originalTextCount || 0,
         originalTextUnavailableCount: data.originalTextUnavailableCount || 0
       }
@@ -2117,7 +2224,9 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     elements.readingListOutput.value = updatedReport.readingList.markdown;
     const charCount = updatedReport.readingList.markdown.length;
     const originalTextCount = updatedReport.readingList.originalTextCount || 0;
-    const originalTextMeta = originalTextCount
+    const originalTextMeta = !updatedReport.readingList.useOriginalText
+      ? "，未启用论文原文分析"
+      : originalTextCount
       ? `，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文`
       : "，本次未获取到可用 arXiv HTML 原文";
     elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${originalTextMeta}，约 ${charCount} 字符。`;
@@ -3066,6 +3175,7 @@ function openReport(report, options = {}) {
   const rangeLabel = counts.recommended.length ? "推荐论文时间范围" : "候选论文时间范围";
   elements.generateReadingList.disabled = !counts.recommended.length || state.taskLocked;
   elements.generateReadingList.textContent = report.readingList?.markdown ? "查看发布版周报" : "生成发布版周报";
+  setReadingListUseOriginalText(report.readingList?.useOriginalText ?? true);
 
   setHeader({
     eyebrow: "推荐报告",
@@ -3368,6 +3478,14 @@ elements.readingListRegenerate.addEventListener("click", () => {
 elements.readingListDownload.addEventListener("click", downloadReadingListMarkdown);
 
 elements.readingListCopy.addEventListener("click", copyReadingListMarkdown);
+
+elements.readingListUseOriginalText?.addEventListener("change", () => {
+  setReadingListUseOriginalText(elements.readingListUseOriginalText.checked);
+});
+
+elements.readingListInlineUseOriginalText?.addEventListener("change", () => {
+  setReadingListUseOriginalText(elements.readingListInlineUseOriginalText.checked);
+});
 
 elements.readingListClose.addEventListener("click", () => {
   resetReadingListTimer();

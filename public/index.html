@@ -199,6 +199,16 @@
           </div>
           <button id="readingListClose" class="ghost-button" type="button">关闭</button>
         </header>
+        <section class="reading-list-options" aria-label="周报生成选项">
+          <label class="reading-list-toggle">
+            <input id="readingListUseOriginalText" type="checkbox" checked>
+            <span class="reading-list-toggle-switch" aria-hidden="true"></span>
+            <span class="reading-list-toggle-copy">
+              <strong>基于论文原文分析</strong>
+              <em>抓取 arXiv HTML 原文</em>
+            </span>
+          </label>
+        </section>
         <section id="readingListProgress" class="reading-list-progress" aria-live="polite">
           <div class="spinner" aria-hidden="true"></div>
           <div class="reading-list-progress-main">
@@ -372,7 +382,13 @@
               <strong>高价值论文阅读清单</strong>
               <p>基于当前推荐列表里的达标论文生成 Markdown，可复制到你的洞察网站。</p>
             </div>
-            <button id="generateReadingList" class="reading-list-action" type="button">生成发布版周报</button>
+            <div class="reading-list-card-actions">
+              <label class="reading-list-inline-toggle">
+                <input id="readingListInlineUseOriginalText" type="checkbox" checked>
+                <span>基于论文原文</span>
+              </label>
+              <button id="generateReadingList" class="reading-list-action" type="button">生成发布版周报</button>
+            </div>
           </section>
 
           <div class="report-toolbar">
