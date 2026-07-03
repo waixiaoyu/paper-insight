@@ -1,6 +1,6 @@
 ﻿# Paper Insight
 
-Paper Insight 是一个本地优先的论文推荐 Web 应用，用来持续同步 arXiv 最新论文，并通过 BigModel GLM-5.2 Anthropic 兼容接口或 DeepSeek 对候选论文做分析、打分和总结。
+Paper Insight 是一个本地优先的论文推荐 Web 应用，用来持续同步 arXiv 最新论文，并通过 BigModel GLM-5.2 Anthropic 兼容接口对候选论文做分析、打分和总结。
 
 默认主题聚焦“大模型/智能体 + 网络自治/网络数字孪生/系统架构”的研究方向，包括网络自治、自智网络、零接触网络、网络数字孪生、意图网络、LLM Agent、多智能体协同、Agent 工程化集成、闭环自治和面向网络的智能体系统。`5G/6G`、无线网络、网络通信、异常检测、流量预测、根因分析等更具体的领域或业务/运维场景仍可在查询构建器里手动勾选，但不再作为默认强制条件。
 
@@ -73,7 +73,7 @@ cs.NI, cs.AI, cs.LG, cs.MA, cs.DC, cs.IT, eess.SP, eess.SY
 
 ## 大模型分析
 
-论文推荐必须使用 BigModel GLM-5.2 Anthropic 兼容接口、DeepSeek 或其他兼容 API。应用不会使用本地关键词规则兜底。
+论文推荐必须使用 BigModel GLM-5.2 Anthropic 兼容接口。应用不会使用本地关键词规则兜底。
 
 推荐分析阶段的大模型输入包括论文标题、作者、分类、日期、arXiv 链接和摘要。生成发布版阅读清单时，服务端会优先抓取 arXiv HTML 原文，清洗并截取摘要、方法、系统、实验、结果、局限和结论等关键段落，再交给大模型生成周报；如果某篇论文没有可用 HTML 原文，会自动降级为摘要和已有分析，不会中断整份周报。
 
@@ -134,29 +134,13 @@ YYYY 年 M 月第 N 周高价值论文阅读清单
 
 ## API Key
 
-API Key 可以在页面左上角齿轮设置里输入。默认使用 BigModel GLM-5.2 的 Anthropic Messages 兼容接口，DeepSeek 仅作为备用选项。Key 只保存在当前浏览器会话的 `sessionStorage`，不会写入项目文件。
+API Key 可以在页面左上角齿轮设置里输入。应用固定使用 BigModel GLM-5.2 的 Anthropic Messages 兼容接口。Key 只保存在当前浏览器会话的 `sessionStorage`，不会写入项目文件。
 
 也可以通过环境变量提供 API Key：
 
 ```powershell
-$env:DEEPSEEK_API_KEY="your-api-key"
-node server.js
-```
-
-推荐使用 BigModel GLM-5.2 Anthropic 兼容模式：
-
-```powershell
-$env:LLM_PROVIDER="glm-coding-anthropic"
 $env:GLM_CODING_API_KEY="your-api-key"
 $env:GLM_CODING_MODEL="glm-5.2"
-node server.js
-```
-
-如果需要保留旧的 OpenAI Chat Completions 协议：
-
-```powershell
-$env:LLM_PROVIDER="glm-coding"
-$env:GLM_CODING_API_KEY="your-api-key"
 node server.js
 ```
 
@@ -164,13 +148,11 @@ node server.js
 
 ```text
 BigModel GLM-5.2 (Anthropic): https://open.bigmodel.cn/api/anthropic/v1/messages
-DeepSeek: https://api.deepseek.com/chat/completions
 ```
 
 默认模型：
 
 ```text
-DeepSeek: deepseek-v4-flash
 BigModel GLM-5.2 (Anthropic): glm-5.2
 ```
 
@@ -178,7 +160,6 @@ BigModel GLM-5.2 (Anthropic): glm-5.2
 
 ```powershell
 $env:GLM_CODING_MODEL="glm-5.2"
-$env:DEEPSEEK_MODEL="deepseek-v4-pro"
 node server.js
 ```
 
@@ -186,7 +167,6 @@ node server.js
 
 ```powershell
 $env:GLM_CODING_ANTHROPIC_API_URL="https://open.bigmodel.cn/api/anthropic"
-$env:DEEPSEEK_API_URL="https://api.deepseek.com/chat/completions"
 node server.js
 ```
 
@@ -195,18 +175,13 @@ node server.js
 也支持通用环境变量配置：
 
 - `LLM_API_KEY`
-- `LLM_PROVIDER`：可选 `deepseek`、`glm`、`glm-coding`、`glm-coding-anthropic` 或 `openai`
 - `LLM_MODEL`
 - `LLM_API_URL`
 - `GLM_CODING_API_KEY`
 - `GLM_CODING_MODEL`
-- `GLM_CODING_API_URL`
-- `GLM_CODING_OPENAI_API_URL`
 - `GLM_CODING_ANTHROPIC_API_URL`
 - `ANTHROPIC_AUTH_TOKEN`
 - `ANTHROPIC_BASE_URL`
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
 - `LLM_MAX_OUTPUT_TOKENS`：默认 `12000`，控制 LLM 单次分析的最大输出 token。
 - `LLM_RESPONSE_MAX_CHARS`：默认 `500000`，只做超大响应保护；不会把模型返回内容截断成短文本。
 - `LLM_REQUEST_TIMEOUT_MS`：默认 `600000`，控制 LLM 分析请求超时时间。

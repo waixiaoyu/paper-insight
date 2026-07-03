@@ -169,15 +169,6 @@ const llmProviders = {
     models: [
       "glm-5.2"
     ]
-  },
-  deepseek: {
-    label: "DeepSeek",
-    defaultModel: "deepseek-v4-flash",
-    keyPlaceholder: "sk-...",
-    models: [
-      "deepseek-v4-flash",
-      "deepseek-v4-pro"
-    ]
   }
 };
 
@@ -1077,27 +1068,11 @@ function filteredExplorePapers() {
 }
 
 function modeLabel(mode) {
-  if (mode === "deepseek") {
-    return "DeepSeek";
-  }
-
-  if (mode === "glm") {
-    return "GLM";
-  }
-
-  if (mode === "glm-coding") {
-    return "GLM (OpenAI legacy)";
-  }
-
   if (mode === "glm-coding-anthropic") {
     return "GLM-5.2 (Anthropic)";
   }
 
-  if (mode === "llm") {
-    return "LLM";
-  }
-
-  return mode || "-";
+  return "GLM-5.2 (Anthropic)";
 }
 
 function weekStart(date = new Date()) {

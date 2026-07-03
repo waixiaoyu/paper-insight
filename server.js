@@ -1605,36 +1605,6 @@ const validateAnalysis = (paper, analysis) => {
 };
 
 const llmProviderDefaults = {
-  deepseek: {
-    mode: "deepseek",
-    protocol: "openai",
-    model: "deepseek-v4-flash",
-    endpoint: "https://api.deepseek.com/chat/completions",
-    apiKey: () => process.env.DEEPSEEK_API_KEY,
-    modelEnv: () => process.env.DEEPSEEK_MODEL,
-    endpointEnv: () => process.env.DEEPSEEK_API_URL,
-    disableThinking: true
-  },
-  glm: {
-    mode: "glm",
-    protocol: "openai",
-    model: "glm-5.1",
-    endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-    apiKey: () => process.env.GLM_API_KEY,
-    modelEnv: () => process.env.GLM_MODEL,
-    endpointEnv: () => process.env.GLM_API_URL,
-    disableThinking: true
-  },
-  "glm-coding": {
-    mode: "glm-coding",
-    protocol: "openai",
-    model: "glm-5.1",
-    endpoint: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
-    apiKey: () => process.env.GLM_CODING_API_KEY,
-    modelEnv: () => process.env.GLM_CODING_MODEL,
-    endpointEnv: () => process.env.GLM_CODING_OPENAI_API_URL || process.env.GLM_CODING_API_URL,
-    disableThinking: true
-  },
   "glm-coding-anthropic": {
     mode: "glm-coding-anthropic",
     protocol: "anthropic",
@@ -1644,57 +1614,12 @@ const llmProviderDefaults = {
     modelEnv: () => process.env.GLM_CODING_MODEL || process.env.ANTHROPIC_MODEL,
     endpointEnv: () => process.env.GLM_CODING_ANTHROPIC_API_URL || process.env.ANTHROPIC_BASE_URL || process.env.GLM_CODING_API_URL,
     disableThinking: false
-  },
-  openai: {
-    mode: "llm",
-    protocol: "openai",
-    model: "gpt-4o-mini",
-    endpoint: "https://api.openai.com/v1/chat/completions",
-    apiKey: () => process.env.OPENAI_API_KEY,
-    modelEnv: () => process.env.OPENAI_MODEL,
-    endpointEnv: () => process.env.OPENAI_API_URL,
-    disableThinking: false
   }
 };
 
-const normalizeLlmProvider = (provider) => {
-  const value = String(provider || "").toLowerCase().trim();
-  if (["glm-coding", "glm_coding", "glm-coding-openai", "coding", "coding-plan", "coding_plan", "coding-openai", "coding-plan-openai"].includes(value)) {
-    return "glm-coding";
-  }
-  if (["glm-coding-anthropic", "glm_coding_anthropic", "coding-anthropic", "coding-plan-anthropic", "anthropic-glm"].includes(value)) {
-    return "glm-coding-anthropic";
-  }
-  if (["zhipu", "zhipuai", "bigmodel"].includes(value)) {
-    return "glm";
-  }
-  if (["deepseek", "glm", "openai"].includes(value)) {
-    return value;
-  }
-  return "";
-};
+const normalizeLlmProvider = () => "glm-coding-anthropic";
 
-const inferLlmProvider = (overrides = {}) => {
-  const requested = normalizeLlmProvider(overrides.provider || process.env.LLM_PROVIDER);
-
-  if (requested) {
-    return requested;
-  }
-
-  if (process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_BASE_URL) {
-    return "glm-coding-anthropic";
-  }
-
-  if (process.env.GLM_CODING_API_KEY || process.env.GLM_API_KEY) {
-    return "glm-coding-anthropic";
-  }
-
-  if (process.env.DEEPSEEK_API_KEY) {
-    return "deepseek";
-  }
-
-  return "openai";
-};
+const inferLlmProvider = () => normalizeLlmProvider();
 
 const getLlmConfig = (overrides = {}) => {
   const provider = inferLlmProvider(overrides);
@@ -1702,24 +1627,19 @@ const getLlmConfig = (overrides = {}) => {
   const apiKey = String(overrides.apiKey || "").trim()
     || process.env.LLM_API_KEY
     || defaults.apiKey()
-    || process.env.OPENAI_API_KEY
-    || process.env.DEEPSEEK_API_KEY
     || process.env.GLM_API_KEY
-    || process.env.GLM_CODING_API_KEY
     || process.env.ANTHROPIC_AUTH_TOKEN;
   const model = String(overrides.model || "").trim()
     || process.env.LLM_MODEL
     || defaults.modelEnv()
     || defaults.model;
   const rawEndpoint = String(overrides.endpoint || "").trim()
-    || process.env.LLM_API_URL
     || defaults.endpointEnv()
+    || process.env.LLM_API_URL
     || defaults.endpoint;
   let endpoint = rawEndpoint;
   if (defaults.protocol === "anthropic" && !/\/v1\/messages\/?$/i.test(rawEndpoint)) {
     endpoint = `${rawEndpoint.replace(/\/+$/, "")}/v1/messages`;
-  } else if (defaults.protocol === "openai" && !/\/chat\/completions\/?$/i.test(rawEndpoint)) {
-    endpoint = `${rawEndpoint.replace(/\/+$/, "")}/chat/completions`;
   }
 
   if (!apiKey) {
@@ -1770,7 +1690,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
+    const error = new Error("未配置 BigModel GLM-5.2 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
@@ -1894,7 +1814,7 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
+    const error = new Error("未配置 BigModel GLM-5.2 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
@@ -1957,7 +1877,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
+    const error = new Error("未配置 BigModel GLM-5.2 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
@@ -2680,7 +2600,7 @@ const handleReadingListRequest = async (request, response) => {
     };
 
     if (!getLlmConfig(requestLlm)) {
-      const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
+      const error = new Error("未配置 BigModel GLM-5.2 API key。");
       error.code = "LLM_NOT_CONFIGURED";
       throw error;
     }
