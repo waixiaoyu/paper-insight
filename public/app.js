@@ -255,6 +255,7 @@ const elements = {
   readingListSteps: $("#readingListSteps"),
   readingListSourcePanel: $("#readingListSourcePanel"),
   readingListSourceSummary: $("#readingListSourceSummary"),
+  readingListSourceToggle: $("#readingListSourceToggle"),
   readingListSourceList: $("#readingListSourceList"),
   readingListOutput: $("#readingListOutput"),
   readingListClose: $("#readingListClose"),
@@ -378,6 +379,7 @@ const state = {
   readingListStatusTimer: 0,
   readingListStartedAt: 0,
   readingListLiveStatus: null,
+  readingListSourceExpanded: false,
   progressState: null,
   taskLocked: false,
   taskCloseTimer: 0
@@ -1337,17 +1339,42 @@ function setReadingListProgress(type, title, detail, { step = "", meta = "" } = 
 
 function clearReadingListSourceStatus() {
   state.readingListLiveStatus = null;
+  state.readingListSourceExpanded = false;
 
   if (elements.readingListSourcePanel) {
     elements.readingListSourcePanel.hidden = true;
+    elements.readingListSourcePanel.classList.add("collapsed");
   }
 
   if (elements.readingListSourceSummary) {
     elements.readingListSourceSummary.textContent = "等待开始";
   }
 
+  if (elements.readingListSourceToggle) {
+    elements.readingListSourceToggle.textContent = "展开";
+    elements.readingListSourceToggle.setAttribute("aria-expanded", "false");
+  }
+
   if (elements.readingListSourceList) {
     elements.readingListSourceList.textContent = "";
+    elements.readingListSourceList.hidden = true;
+  }
+}
+
+function setReadingListSourceExpanded(expanded) {
+  state.readingListSourceExpanded = Boolean(expanded);
+
+  if (elements.readingListSourcePanel) {
+    elements.readingListSourcePanel.classList.toggle("collapsed", !state.readingListSourceExpanded);
+  }
+
+  if (elements.readingListSourceToggle) {
+    elements.readingListSourceToggle.textContent = state.readingListSourceExpanded ? "收起" : "展开";
+    elements.readingListSourceToggle.setAttribute("aria-expanded", String(state.readingListSourceExpanded));
+  }
+
+  if (elements.readingListSourceList) {
+    elements.readingListSourceList.hidden = !state.readingListSourceExpanded;
   }
 }
 
@@ -1380,6 +1407,12 @@ function renderReadingListSourceStatus(data) {
   const pending = Number(summary.pending || 0);
   elements.readingListSourcePanel.hidden = false;
   elements.readingListSourceSummary.textContent = `成功 ${available} · 未获取 ${unavailable} · 进行中 ${running} · 等待 ${pending} / ${total}`;
+  setReadingListSourceExpanded(state.readingListSourceExpanded);
+
+  if (!state.readingListSourceExpanded) {
+    return;
+  }
+
   elements.readingListSourceList.textContent = "";
 
   items.forEach((item) => {
@@ -3644,6 +3677,11 @@ elements.readingListRegenerate.addEventListener("click", () => {
 elements.readingListDownload.addEventListener("click", downloadReadingListMarkdown);
 
 elements.readingListCopy.addEventListener("click", copyReadingListMarkdown);
+
+elements.readingListSourceToggle?.addEventListener("click", () => {
+  setReadingListSourceExpanded(!state.readingListSourceExpanded);
+  renderReadingListSourceStatus(state.readingListLiveStatus);
+});
 
 elements.readingListUseOriginalText?.addEventListener("change", () => {
   setReadingListUseOriginalText(elements.readingListUseOriginalText.checked);

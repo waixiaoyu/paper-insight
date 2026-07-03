@@ -438,26 +438,58 @@ button {
   margin-bottom: 8px;
 }
 
+.reading-list-source-panel.collapsed .reading-list-source-heading {
+  margin-bottom: 0;
+}
+
 .reading-list-source-heading strong {
   margin: 0;
   color: var(--ink);
   font-size: 13px;
 }
 
-.reading-list-source-heading span {
+.reading-list-source-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.reading-list-source-actions span {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
 }
 
+.reading-list-source-toggle {
+  min-height: 26px;
+  padding: 0 9px;
+  color: var(--accent-strong);
+  background: #fff;
+  border: 1px solid rgba(23, 107, 135, 0.2);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.reading-list-source-toggle:hover {
+  background: var(--accent-soft);
+}
+
 .reading-list-source-list {
   display: grid;
   gap: 6px;
-  max-height: 150px;
+  max-height: min(150px, 22dvh);
   margin: 0;
   padding: 0;
   overflow: auto;
   list-style: none;
+}
+
+.reading-list-source-list[hidden] {
+  display: none;
 }
 
 .reading-list-source-list li {
