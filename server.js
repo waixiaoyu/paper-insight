@@ -1638,7 +1638,7 @@ const llmProviderDefaults = {
   "glm-coding-anthropic": {
     mode: "glm-coding-anthropic",
     protocol: "anthropic",
-    model: "glm-5.1",
+    model: "glm-5.2",
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages",
     apiKey: () => process.env.GLM_CODING_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
     modelEnv: () => process.env.GLM_CODING_MODEL || process.env.ANTHROPIC_MODEL,
@@ -1685,12 +1685,8 @@ const inferLlmProvider = (overrides = {}) => {
     return "glm-coding-anthropic";
   }
 
-  if (process.env.GLM_CODING_API_KEY) {
-    return "glm-coding";
-  }
-
-  if (process.env.GLM_API_KEY) {
-    return "glm";
+  if (process.env.GLM_CODING_API_KEY || process.env.GLM_API_KEY) {
+    return "glm-coding-anthropic";
   }
 
   if (process.env.DEEPSEEK_API_KEY) {
@@ -1774,7 +1770,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
+    const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
@@ -1898,7 +1894,7 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
+    const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
@@ -1961,7 +1957,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
+    const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
@@ -2684,7 +2680,7 @@ const handleReadingListRequest = async (request, response) => {
     };
 
     if (!getLlmConfig(requestLlm)) {
-      const error = new Error("未配置 DeepSeek、GLM、GLM Coding Plan 或 OpenAI 兼容 API key。");
+      const error = new Error("未配置 BigModel GLM-5.2、DeepSeek 或兼容 API key。");
       error.code = "LLM_NOT_CONFIGURED";
       throw error;
     }

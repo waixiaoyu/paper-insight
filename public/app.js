@@ -162,6 +162,14 @@ const storageKeys = {
 };
 
 const llmProviders = {
+  "glm-coding-anthropic": {
+    label: "GLM-5.2 (Anthropic)",
+    defaultModel: "glm-5.2",
+    keyPlaceholder: "请输入 BigModel API Key",
+    models: [
+      "glm-5.2"
+    ]
+  },
   deepseek: {
     label: "DeepSeek",
     defaultModel: "deepseek-v4-flash",
@@ -170,53 +178,18 @@ const llmProviders = {
       "deepseek-v4-flash",
       "deepseek-v4-pro"
     ]
-  },
-  glm: {
-    label: "GLM",
-    defaultModel: "glm-5.1",
-    keyPlaceholder: "请输入 GLM API Key",
-    models: [
-      "glm-5.2",
-      "glm-5.1",
-      "glm-5-turbo",
-      "glm-5",
-      "glm-4.7",
-      "glm-4.7-flash",
-      "glm-4.6",
-      "glm-4.5-flash"
-    ]
-  },
-  "glm-coding": {
-    label: "GLM Coding Plan (OpenAI)",
-    defaultModel: "glm-5.1",
-    keyPlaceholder: "请输入 GLM Coding Plan API Key",
-    models: [
-      "glm-5.2",
-      "glm-5.1",
-      "glm-5",
-      "glm-4.7",
-      "glm-4.6",
-      "glm-4.5-air",
-      "glm-4.5"
-    ]
-  },
-  "glm-coding-anthropic": {
-    label: "GLM Coding Plan (Anthropic)",
-    defaultModel: "glm-5.1",
-    keyPlaceholder: "请输入 GLM Coding Plan API Key",
-    models: [
-      "glm-5.2",
-      "glm-5.1",
-      "glm-5",
-      "glm-4.7",
-      "glm-4.6",
-      "glm-4.5-air",
-      "glm-4.5"
-    ]
   }
 };
 
-const normalizeProviderKey = (provider) => llmProviders[provider] ? provider : "deepseek";
+const normalizeProviderKey = (provider) => {
+  const key = String(provider || "").trim();
+
+  if (key === "glm" || key === "glm-coding") {
+    return "glm-coding-anthropic";
+  }
+
+  return llmProviders[key] ? key : "glm-coding-anthropic";
+};
 const providerLabel = (provider = state.runtimeProvider) => llmProviders[normalizeProviderKey(provider)].label;
 const providerDefaultModel = (provider) => llmProviders[normalizeProviderKey(provider)].defaultModel;
 const providerModelStorageKey = (provider) => `${storageKeys.model}:${normalizeProviderKey(provider)}`;
@@ -374,7 +347,7 @@ migrateStoredQueryDefaults();
 
 const savedQuery = localStorage.getItem(storageKeys.query);
 const savedQueryMode = localStorage.getItem(storageKeys.queryMode);
-const savedProvider = normalizeProviderKey(sessionStorage.getItem(storageKeys.provider) || "deepseek");
+const savedProvider = normalizeProviderKey(sessionStorage.getItem(storageKeys.provider) || "glm-coding-anthropic");
 
 const state = {
   reports: loadReports(),
@@ -1113,11 +1086,11 @@ function modeLabel(mode) {
   }
 
   if (mode === "glm-coding") {
-    return "GLM Coding Plan (OpenAI)";
+    return "GLM (OpenAI legacy)";
   }
 
   if (mode === "glm-coding-anthropic") {
-    return "GLM Coding Plan (Anthropic)";
+    return "GLM-5.2 (Anthropic)";
   }
 
   if (mode === "llm") {
