@@ -27,9 +27,22 @@ const defaultQuery = `("large language model" OR "LLM" OR "foundation model" OR 
 const dimensionLabels = {
   scenarioProblemValue: "研究问题价值",
   methodNovelty: "方法新意",
-  practicalValue: "框架系统价值",
+  practicalValue: "系统价值",
   evidence: "证据强度"
 };
+
+const dimensionWeights = {
+  scenarioProblemValue: 0.2,
+  methodNovelty: 0.3,
+  practicalValue: 0.2,
+  evidence: 0.3
+};
+
+const strictIctPattern = /\b(ICT|telecom|telecommunications?|5G|6G|O-RAN|RAN|radio access network|cellular network|mobile network|wireless network|wireless communications?|core network|edge network|network slicing|SDN|NFV|QoS|routing|spectrum|handover|service assurance|fault diagnosis|alarm correlation|optical network|satellite network)\b|通信网络|电信|无线通信|蜂窝|移动网络|无线接入|网络切片/i;
+const candidateBatchMax = 100;
+const recommendationTargetMax = 100;
+const extraBatchMax = 10;
+const readingListTitlePrefix = "【精选论文】";
 
 const dimensionFallbacks = {
   scenarioProblemValue: ["scenarioProblemValue", "taskFit"],
@@ -150,6 +163,7 @@ const queryKeywordGroups = [
 
 const storageKeys = {
   reports: "paper-insight:weekly",
+  scoringRulesVersion: "paper-insight:scoring-rules-version",
   query: "paper-insight:query",
   queryMode: "paper-insight:query-mode",
   querySelection: "paper-insight:query-selection",
@@ -248,6 +262,12 @@ const elements = {
   readingListStatus: $("#readingListStatus"),
   readingListUseOriginalText: $("#readingListUseOriginalText"),
   readingListInlineUseOriginalText: $("#readingListInlineUseOriginalText"),
+  readingListCandidateFloor: $("#readingListCandidateFloor"),
+  readingListCandidateFloorValue: $("#readingListCandidateFloorValue"),
+  readingListReviewThreshold: $("#readingListReviewThreshold"),
+  readingListReviewThresholdValue: $("#readingListReviewThresholdValue"),
+  readingListMinSelected: $("#readingListMinSelected"),
+  readingListReviewPreview: $("#readingListReviewPreview"),
   readingListProgress: $("#readingListProgress"),
   readingListProgressTitle: $("#readingListProgressTitle"),
   readingListProgressDetail: $("#readingListProgressDetail"),
@@ -314,7 +334,8 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
-const readingListStepOrder = ["collect", "submit", "source", "generate", "receive", "save"];
+const scoringRulesVersion = "research-quality-rubric-specific-lowreason-v2026-07-10";
+const readingListStepOrder = ["collect", "submit", "source", "review", "generate", "receive", "save"];
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -340,7 +361,17 @@ function migrateStoredQueryDefaults() {
   localStorage.setItem(storageKeys.queryDefaultsVersion, queryDefaultsVersion);
 }
 
+function migrateStoredReportsForScoringRules() {
+  if (localStorage.getItem(storageKeys.scoringRulesVersion) === scoringRulesVersion) {
+    return;
+  }
+
+  localStorage.removeItem(storageKeys.reports);
+  localStorage.setItem(storageKeys.scoringRulesVersion, scoringRulesVersion);
+}
+
 migrateStoredQueryDefaults();
+migrateStoredReportsForScoringRules();
 
 const savedQuery = localStorage.getItem(storageKeys.query);
 const savedQueryMode = localStorage.getItem(storageKeys.queryMode);
@@ -723,11 +754,11 @@ function clamp(value, min = 0, max = 100) {
 }
 
 function candidateLimitValue() {
-  return Math.max(5, Math.min(30, Number(elements.limitInput.value) || 10));
+  return Math.max(5, Math.min(candidateBatchMax, Number(elements.limitInput.value) || 10));
 }
 
 function minRecommendedValue() {
-  return Math.max(0, Math.min(30, Number(elements.minRecommendedInput?.value) || 0));
+  return Math.max(0, Math.min(recommendationTargetMax, Number(elements.minRecommendedInput?.value) || 0));
 }
 
 function secondsSince(start) {
@@ -856,18 +887,51 @@ function thresholdFor(report = state.currentReport) {
 }
 
 function recommendationTargetFor(report = state.currentReport) {
-  return Math.max(0, Math.min(30, Number(report?.recommendedTarget ?? report?.minRecommended ?? 0) || 0));
+  return Math.max(0, Math.min(recommendationTargetMax, Number(report?.recommendedTarget ?? report?.minRecommended ?? 0) || 0));
 }
 
-function paperScore(paper) {
-  return clamp(paper?.analysis?.score ?? 0);
-}
-
-function dimensionScore(paper, key) {
+function rawDimensionScore(paper, key) {
   const scores = paper?.analysis?.scores || {};
   const candidates = dimensionFallbacks[key] || [key];
   const value = candidates.map((candidate) => scores[candidate]).find((score) => Number.isFinite(Number(score)));
-  return clamp(value ?? 0);
+  return Number.isFinite(Number(value)) ? clamp(value) : null;
+}
+
+function dimensionScore(paper, key) {
+  return rawDimensionScore(paper, key) ?? 0;
+}
+
+function weightedPaperScore(paper) {
+  let weighted = 0;
+  let totalWeight = 0;
+
+  Object.entries(dimensionWeights).forEach(([key, weight]) => {
+    const value = rawDimensionScore(paper, key);
+    if (value === null) {
+      return;
+    }
+
+    weighted += value * weight;
+    totalWeight += weight;
+  });
+
+  if (!totalWeight) {
+    return null;
+  }
+
+  const base = weighted / totalWeight;
+  const method = rawDimensionScore(paper, "methodNovelty") ?? 0;
+  const evidence = rawDimensionScore(paper, "evidence") ?? 0;
+  const weakestResearchSignal = Math.min(method, evidence);
+  const balancePenalty = Math.max(0, base - weakestResearchSignal) * 0.12;
+  const weakEvidencePenalty = Math.max(0, 70 - evidence) * 0.2;
+
+  return Math.round(clamp(base * 1.2 - 22 - balancePenalty - weakEvidencePenalty));
+}
+
+function paperScore(paper) {
+  const weighted = weightedPaperScore(paper);
+  return weighted ?? clamp(paper?.analysis?.score ?? 0);
 }
 
 const scoreTierClasses = [
@@ -885,7 +949,7 @@ function scoreTier(score) {
     return {
       label: "优先阅读",
       className: "score-tier-priority",
-      description: "主题高度匹配，适合直接读正文。"
+      description: "研究贡献、方法和证据都较强，适合直接读正文。"
     };
   }
 
@@ -893,7 +957,7 @@ function scoreTier(score) {
     return {
       label: "重点关注",
       className: "score-tier-focus",
-      description: "相关性较强，适合加入本周阅读。"
+      description: "有明确研究价值，适合加入本周阅读。"
     };
   }
 
@@ -958,6 +1022,32 @@ function readingListDirection(paper) {
   return candidates.slice(0, 4).join(" / ") || "相关研究";
 }
 
+function industryTagsForPaper(paper) {
+  const explicit = Array.isArray(paper?.analysis?.industryTags) ? paper.analysis.industryTags : [];
+  const tags = explicit.map((item) => String(item || "").trim()).filter(Boolean);
+  const text = [
+    paper?.title,
+    paper?.summary,
+    ...(Array.isArray(paper?.analysis?.matchedKeywords) ? paper.analysis.matchedKeywords : [])
+  ].filter(Boolean).join(" ");
+  const hasStrictIctSignal = strictIctPattern.test(text);
+  const normalized = tags
+    .map((tag) => (/^ICT$/i.test(tag) ? "ICT" : tag))
+    .filter((tag) => !/\bICT\b/i.test(tag) || hasStrictIctSignal);
+
+  return [...new Set(normalized)].slice(0, 4);
+}
+
+function appendIndustryTagPills(meta, paper) {
+  industryTagsForPaper(paper).forEach((tag) => {
+    const pill = document.createElement("span");
+    pill.className = "industry-pill";
+    pill.textContent = tag;
+    pill.title = "产业/方向匹配标签，不参与推荐分计算。";
+    meta.append(pill);
+  });
+}
+
 function readingListPaperPayload(paper) {
   const analysis = paper.analysis || {};
   const dimensionDetails = Object.entries(dimensionLabels).map(([key, label]) => ({
@@ -988,6 +1078,7 @@ function readingListPaperPayload(paper) {
       dimensionDetails,
       matchedDimensions,
       tldr: analysis.tldr || "",
+      valueHighlight: highValueSignalForPaper(paper),
       problem: analysis.problem || "",
       background: analysis.background || "",
       method: analysis.method || "",
@@ -998,7 +1089,9 @@ function readingListPaperPayload(paper) {
       limitations: analysis.limitations || "",
       recommendedReadingPath: analysis.recommendedReadingPath || "",
       whyRecommend: analysis.whyRecommend || "",
+      notRecommendReason: notRecommendReasonForPaper(paper),
       readingGuide: Array.isArray(analysis.readingGuide) ? analysis.readingGuide : [],
+      industryTags: industryTagsForPaper(paper),
       matchedKeywords: Array.isArray(analysis.matchedKeywords) ? analysis.matchedKeywords : []
     }
   };
@@ -1114,7 +1207,7 @@ function reportTitle() {
 function readingListTitle(report = state.currentReport) {
   const date = new Date(report?.createdAt || new Date());
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
-  return `${safeDate.getFullYear()} 年 ${safeDate.getMonth() + 1} 月第 ${weekOfMonth(safeDate)} 周高价值论文阅读清单`;
+  return `${readingListTitlePrefix}${safeDate.getFullYear()}年${safeDate.getMonth() + 1}月第${weekOfMonth(safeDate)}月精选论文阅读清单`;
 }
 
 function setActiveView(name) {
@@ -1219,7 +1312,7 @@ function setTaskLocked(locked) {
   elements.taskForceArxiv.disabled = locked;
   elements.candidateForceArxiv.disabled = locked;
   elements.syncArxiv.disabled = locked;
-  elements.generateReadingList.disabled = locked || !recommendedPapersForReadingList(state.currentReport).length;
+  elements.generateReadingList.disabled = locked || !reportPapers(state.currentReport).length;
 }
 
 function setTaskStep(step) {
@@ -1472,6 +1565,15 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
     return true;
   }
 
+  if (stage === "review") {
+    setReadingListProgress("loading", "周报复评中", data.message || "正在基于原文重新给出周报四维分数。", {
+      step: "review",
+      meta
+    });
+    elements.readingListStatus.textContent = `${data.message || "周报复评中。"} 已等待 ${elapsed} 秒。`;
+    return true;
+  }
+
   if (data.state === "error") {
     setReadingListProgress("failed", "生成失败", data.message || "周报生成失败。", {
       meta
@@ -1502,21 +1604,21 @@ function readingListGenerationFocus(elapsed, paperCount, provider, useOriginalTe
     const summaryFocusItems = [
       {
         after: 0,
-        step: "generate",
-        status: "服务端正在整理摘要和评分上下文...",
-        detail: `请求已提交给 ${provider}。本次未启用原文抓取，将基于摘要、评分维度和已有分析生成周报。`
+        step: "review",
+        status: "服务端正在做周报复评...",
+        detail: `请求已提交给 ${provider}。本次未启用原文抓取，将基于摘要和已有分析重新给四维分数。`
       },
       {
         after: 10,
-        step: "generate",
-        status: "等待模型生成趋势判断...",
-        detail: "模型需要先读完整推荐列表，再提炼本周研究趋势；真实进度仍以接口返回为准。"
+        step: "review",
+        status: "等待模型完成候选评分...",
+        detail: "模型需要先给候选论文重新评分和排序，达到周报入选线后才会进入正文生成。"
       },
       {
         after: 24,
         step: "generate",
-        status: "等待模型生成逐篇洞察...",
-        detail: `模型正在处理 ${paperCount} 篇论文的内容、方法、结果和 ADN 启发。`
+        status: "等待模型生成周报正文...",
+        detail: "复评完成后，模型会围绕入选论文生成趋势判断、逐篇洞察和 ADN 启发。"
       },
       {
         after: 45,
@@ -1540,25 +1642,25 @@ function readingListGenerationFocus(elapsed, paperCount, provider, useOriginalTe
       after: 0,
       step: "source",
       status: "服务端正在抓取论文原文...",
-      detail: `请求已提交给 ${provider}。服务端会先尝试抓取 ${paperCount} 篇论文的 arXiv HTML 原文，再送入模型。`
+      detail: `请求已提交给 ${provider}。服务端会先尝试抓取 ${paperCount} 篇论文的 arXiv HTML 原文，再做周报复评。`
     },
     {
       after: 10,
       step: "source",
       status: "仍在整理原文上下文...",
-      detail: "部分论文可能没有 arXiv HTML 版本，服务端会自动降级为摘要和已有分析，不会因为单篇失败中断。"
+      detail: "部分论文可能没有 arXiv HTML 版本，服务端会自动降级为摘要和已有分析，然后继续做周报复评。"
     },
     {
       after: 18,
-      step: "generate",
-      status: "等待模型生成趋势判断...",
-      detail: "模型需要先读完整列表，再提炼本周研究趋势；这只是生成关注点，不代表该部分已经完成。"
+      step: "review",
+      status: "等待模型完成全文复评...",
+      detail: "原文上下文准备后，模型会先重新给候选论文打四维分数，再按周报阈值筛选入选论文。"
     },
     {
       after: 30,
       step: "generate",
       status: "等待模型生成逐篇洞察...",
-      detail: `模型正在处理 ${paperCount} 篇论文的内容、方法、结果和 ADN 启发；真实进度仍以接口返回为准。`
+      detail: "复评完成后，模型正在处理入选论文的内容、方法、结果和 ADN 启发；真实进度仍以接口返回为准。"
     },
     {
       after: 48,
@@ -1584,7 +1686,7 @@ function refreshReadingListGenerationProgress(paperCount, provider, useOriginalT
 
   const elapsed = secondsSince(state.readingListStartedAt);
   const focus = readingListGenerationFocus(elapsed, paperCount, provider, useOriginalText);
-  setReadingListProgress("loading", "模型生成中", focus.detail, {
+  setReadingListProgress("loading", focus.step === "review" ? "周报复评中" : "模型生成中", focus.detail, {
     step: focus.step || "generate",
     meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
   });
@@ -2202,6 +2304,109 @@ function readingListMetadata(report = state.currentReport) {
   };
 }
 
+function roundedScoreStep(value, fallback = 70) {
+  const numeric = Number.isFinite(Number(value)) ? Number(value) : fallback;
+  return Math.max(0, Math.min(95, Math.round(numeric / 5) * 5));
+}
+
+function defaultReadingListCandidateFloor(report = state.currentReport) {
+  const saved = report?.readingList?.candidateFloor;
+
+  if (Number.isFinite(Number(saved))) {
+    return roundedScoreStep(saved, 60);
+  }
+
+  return roundedScoreStep(Math.max(0, thresholdFor(report) - 10), 60);
+}
+
+function defaultReadingListReviewThreshold(report = state.currentReport) {
+  const saved = report?.readingList?.reviewScoreThreshold;
+
+  if (Number.isFinite(Number(saved))) {
+    return roundedScoreStep(saved, thresholdFor(report));
+  }
+
+  return roundedScoreStep(thresholdFor(report), 70);
+}
+
+function defaultReadingListMinSelected(report = state.currentReport) {
+  const saved = report?.readingList?.minSelectedCount;
+
+  if (Number.isFinite(Number(saved))) {
+    return Math.max(1, Math.min(20, Math.round(Number(saved))));
+  }
+
+  return 3;
+}
+
+function readingListCandidateFloor() {
+  return roundedScoreStep(elements.readingListCandidateFloor?.value, 60);
+}
+
+function readingListReviewThreshold() {
+  return Math.max(40, roundedScoreStep(elements.readingListReviewThreshold?.value, 70));
+}
+
+function readingListMinSelectedCount() {
+  return Math.max(1, Math.min(20, Math.round(Number(elements.readingListMinSelected?.value) || 3)));
+}
+
+function readingListCandidatePapers(report = state.currentReport) {
+  const floor = readingListCandidateFloor();
+
+  return reportPapers(report)
+    .filter((paper) => paperScore(paper) >= floor)
+    .sort((a, b) => (
+      paperScore(b) - paperScore(a)
+      || new Date(b.published || b.updated) - new Date(a.published || a.updated)
+    ));
+}
+
+function setReadingListReviewControls(report = state.currentReport) {
+  const floor = defaultReadingListCandidateFloor(report);
+  const threshold = defaultReadingListReviewThreshold(report);
+  const minSelected = defaultReadingListMinSelected(report);
+
+  if (elements.readingListCandidateFloor) {
+    elements.readingListCandidateFloor.value = String(floor);
+  }
+
+  if (elements.readingListReviewThreshold) {
+    elements.readingListReviewThreshold.value = String(threshold);
+  }
+
+  if (elements.readingListMinSelected) {
+    elements.readingListMinSelected.value = String(minSelected);
+  }
+
+  updateReadingListReviewPreview(report);
+}
+
+function updateReadingListReviewPreview(report = state.currentReadingListReport || state.currentReport) {
+  const floor = readingListCandidateFloor();
+  const threshold = readingListReviewThreshold();
+  const minSelected = readingListMinSelectedCount();
+  const total = reportPapers(report).length;
+  const candidateCount = readingListCandidatePapers(report).length;
+
+  if (elements.readingListCandidateFloorValue) {
+    elements.readingListCandidateFloorValue.textContent = String(floor);
+  }
+
+  if (elements.readingListReviewThresholdValue) {
+    elements.readingListReviewThresholdValue.textContent = String(threshold);
+  }
+
+  if (elements.readingListMinSelected) {
+    elements.readingListMinSelected.value = String(Math.min(minSelected, 20));
+  }
+
+  if (elements.readingListReviewPreview) {
+    const effectiveMin = candidateCount ? Math.min(minSelected, candidateCount) : 0;
+    elements.readingListReviewPreview.textContent = `将从原列表 ${total} 篇中取 ${candidateCount} 篇进入周报复评；优先收录复评分达到 ${threshold} 分的论文，若不足 ${minSelected} 篇，则按复评分补足到 ${effectiveMin} 篇。`;
+  }
+}
+
 function readingListUseOriginalText() {
   if (elements.readingListDialog?.open && elements.readingListUseOriginalText) {
     return elements.readingListUseOriginalText.checked;
@@ -2230,19 +2435,23 @@ function readingListGeneratedStatus(readingList, paperCount) {
   const count = readingList?.paperCount || paperCount;
 
   if (!readingList) {
-    return `基于当前推荐列表生成 ${count} 篇论文的 Markdown。`;
+    return `准备从当前列表选择论文子集，全文复评后生成 Markdown。`;
   }
 
+  const reviewedText = readingList.reviewedPaperCount
+    ? `，复评 ${readingList.reviewedPaperCount} 篇、入选 ${count} 篇${readingList.fallbackSelectedCount ? `，其中 ${readingList.fallbackSelectedCount} 篇保底补入` : ""}`
+    : `，入选 ${count} 篇`;
+
   if (!readingList?.useOriginalText) {
-    return `已生成 ${count} 篇论文的发布版 Markdown，未启用论文原文分析。`;
+    return `已生成发布版 Markdown${reviewedText}，未启用论文原文抓取。`;
   }
 
   const originalTextCount = readingList?.originalTextCount || 0;
   if (originalTextCount) {
-    return `已生成 ${count} 篇论文的发布版 Markdown，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文。`;
+    return `已生成发布版 Markdown${reviewedText}，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文。`;
   }
 
-  return `已生成 ${count} 篇论文的发布版 Markdown，本次未获取到可用 arXiv HTML 原文。`;
+  return `已生成发布版 Markdown${reviewedText}，本次未获取到可用 arXiv HTML 原文。`;
 }
 
 function setReadingListBusy(busy) {
@@ -2256,6 +2465,15 @@ function setReadingListBusy(busy) {
   }
   if (elements.readingListInlineUseOriginalText) {
     elements.readingListInlineUseOriginalText.disabled = busy;
+  }
+  if (elements.readingListCandidateFloor) {
+    elements.readingListCandidateFloor.disabled = busy;
+  }
+  if (elements.readingListReviewThreshold) {
+    elements.readingListReviewThreshold.disabled = busy;
+  }
+  if (elements.readingListMinSelected) {
+    elements.readingListMinSelected.disabled = busy;
   }
   elements.readingListClose.disabled = false;
 }
@@ -2287,21 +2505,24 @@ function openReadingListDialog(report = state.currentReport) {
   state.currentReadingListReport = report;
   clearReadingListSourceStatus();
   setReadingListUseOriginalText(useOriginalText);
+  setReadingListReviewControls(report);
   elements.readingListTitle.textContent = report.readingList?.title || meta.title;
   elements.readingListOutput.value = report.readingList?.markdown || "";
-  const paperCount = recommendedPapersForReadingList(report).length;
+  const candidateCount = readingListCandidatePapers(report).length;
+  const paperCount = report.readingList?.paperCount || candidateCount;
   const generatedStatus = readingListGeneratedStatus(report.readingList, paperCount);
   elements.readingListStatus.textContent = report.readingList?.generatedAt
     ? generatedStatus
-    : "基于当前推荐列表生成 Markdown。";
+    : "先确认周报候选范围和入选阈值，再开始全文复评与生成。";
+  elements.readingListRegenerate.textContent = report.readingList?.markdown ? "重新生成" : "开始生成周报";
   setReadingListProgress(
     report.readingList?.markdown ? "ready" : "idle",
     report.readingList?.markdown ? "已生成" : "等待生成",
-    report.readingList?.markdown ? "可以复制 Markdown，或点击“重新生成”刷新内容。" : "点击“生成发布版周报”后会显示进度。",
+    report.readingList?.markdown ? "可以复制 Markdown，或点击“重新生成”刷新内容。" : "确认候选和阈值后，点击“开始生成周报”。",
     {
       step: report.readingList?.markdown ? "save" : "",
       meta: report.readingList?.markdown
-        ? `${report.readingList.paperCount || recommendedPapersForReadingList(report).length} 篇 · 已保存`
+        ? `${report.readingList.paperCount || paperCount} 篇 · 已保存`
         : "未开始"
     }
   );
@@ -2323,10 +2544,10 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     return;
   }
 
-  const papers = recommendedPapersForReadingList(report);
+  const papers = readingListCandidatePapers(report);
 
   if (!papers.length) {
-    showStatus("当前推荐列表没有高于阈值的论文，无法生成高价值阅读清单。", "warning");
+    showStatus("当前周报候选范围内没有论文，请调低复评候选下限后再生成。", "warning");
     return;
   }
 
@@ -2338,19 +2559,32 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   const meta = readingListMetadata(report);
   const provider = providerLabel();
   const useOriginalText = readingListUseOriginalText();
+  const candidateFloor = readingListCandidateFloor();
+  const reviewScoreThreshold = readingListReviewThreshold();
+  const minSelectedCount = readingListMinSelectedCount();
   const requestId = `reading-list-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextModeText = useOriginalText
-    ? "准备抓取 arXiv HTML 原文。"
-    : "将基于摘要、评分维度和已有分析生成。";
+    ? "准备抓取 arXiv HTML 原文，并重新给出周报四维分数。"
+    : "将基于摘要和已有分析重新给出周报四维分数。";
   setReadingListSourceStepLabel(useOriginalText);
   openReadingListDialog(report);
   setReadingListUseOriginalText(useOriginalText);
+  if (elements.readingListCandidateFloor) {
+    elements.readingListCandidateFloor.value = String(candidateFloor);
+  }
+  if (elements.readingListReviewThreshold) {
+    elements.readingListReviewThreshold.value = String(reviewScoreThreshold);
+  }
+  if (elements.readingListMinSelected) {
+    elements.readingListMinSelected.value = String(minSelectedCount);
+  }
+  updateReadingListReviewPreview(report);
   clearReadingListSourceStatus();
   elements.readingListTitle.textContent = meta.title;
   elements.readingListOutput.value = "";
   elements.readingListOutput.style.height = "";
-  elements.readingListStatus.textContent = `准备生成 ${papers.length} 篇论文的发布版周报。`;
-  setReadingListProgress("loading", "整理推荐论文", `已收集当前列表中的 ${papers.length} 篇达标论文，${contextModeText}`, {
+  elements.readingListStatus.textContent = `准备复评 ${papers.length} 篇候选论文，周报入选线 ${reviewScoreThreshold} 分，保底 ${minSelectedCount} 篇。`;
+  setReadingListProgress("loading", "整理周报候选", `已从原列表按候选下限 ${candidateFloor} 分取出 ${papers.length} 篇论文，若达标不足 ${minSelectedCount} 篇会按复评分补足。${contextModeText}`, {
     step: "collect",
     meta: `0 秒 · ${papers.length} 篇 · ${provider}`
   });
@@ -2364,8 +2598,8 @@ async function generateReadingListForReport(report = state.currentReport, { forc
 
   try {
     const submitDetail = useOriginalText
-      ? `正在提交 ${papers.length} 篇推荐论文；服务端会先抓取 arXiv HTML 原文，再生成发布版周报。`
-      : `正在提交 ${papers.length} 篇推荐论文；本次跳过原文抓取，直接生成发布版周报。`;
+      ? `正在提交 ${papers.length} 篇周报候选；服务端会先抓取 arXiv HTML 原文，再做周报复评和发布版生成。`
+      : `正在提交 ${papers.length} 篇周报候选；本次跳过原文抓取，直接做摘要复评和发布版生成。`;
     setReadingListProgress("loading", "发送生成请求", submitDetail, {
       step: "submit",
       meta: `0 秒 · ${papers.length} 篇 · ${provider}`
@@ -2380,6 +2614,9 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         ...meta,
         sourceReport: reportDisplayTitle(report),
         useOriginalText,
+        reviewBeforeGenerate: true,
+        reviewScoreThreshold,
+        minSelectedCount,
         papers: papers.map(readingListPaperPayload),
         ...llmPayload()
       })
@@ -2412,6 +2649,14 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         generatedAt: new Date().toISOString(),
         mode: modeLabel(data.mode),
         paperCount: data.paperCount || papers.length,
+        candidateFloor,
+        candidateCount: data.candidateCount || papers.length,
+        reviewedPaperCount: data.reviewedPaperCount || papers.length,
+        reviewScoreThreshold: data.reviewScoreThreshold ?? reviewScoreThreshold,
+        minSelectedCount: data.minSelectedCount ?? minSelectedCount,
+        thresholdSelectedCount: data.thresholdSelectedCount ?? data.paperCount ?? papers.length,
+        fallbackSelectedCount: data.fallbackSelectedCount || 0,
+        reviewBeforeGenerate: data.reviewBeforeGenerate ?? true,
         useOriginalText: data.useOriginalText ?? useOriginalText,
         originalTextCount: data.originalTextCount || 0,
         originalTextUnavailableCount: data.originalTextUnavailableCount || 0
@@ -2422,13 +2667,17 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     elements.readingListOutput.value = updatedReport.readingList.markdown;
     const charCount = updatedReport.readingList.markdown.length;
     const originalTextCount = updatedReport.readingList.originalTextCount || 0;
+    const fallbackText = updatedReport.readingList.fallbackSelectedCount
+      ? `，其中 ${updatedReport.readingList.fallbackSelectedCount} 篇为保底补入`
+      : "";
+    const reviewMeta = `，全文/摘要复评 ${updatedReport.readingList.reviewedPaperCount || papers.length} 篇、入选 ${updatedReport.readingList.paperCount} 篇${fallbackText}`;
     const originalTextMeta = !updatedReport.readingList.useOriginalText
-      ? "，未启用论文原文分析"
+      ? "，未启用论文原文抓取"
       : originalTextCount
       ? `，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文`
       : "，本次未获取到可用 arXiv HTML 原文";
-    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${originalTextMeta}，约 ${charCount} 字符。`;
-    setReadingListProgress("ready", "生成完成", `已保存到当前推荐列表${originalTextMeta}。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
+    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${reviewMeta}${originalTextMeta}，约 ${charCount} 字符。`;
+    setReadingListProgress("ready", "生成完成", `已保存到当前列表的周报结果${reviewMeta}${originalTextMeta}。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
       step: "save",
       meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 完成`
     });
@@ -2474,7 +2723,7 @@ async function copyReadingListMarkdown() {
 }
 
 function markdownDownloadName() {
-  const title = (elements.readingListTitle.textContent || "每周高价值论文阅读清单")
+  const title = (elements.readingListTitle.textContent || `${readingListTitlePrefix}精选论文阅读清单`)
     .replace(/[\\/:*?"<>|]+/g, "")
     .replace(/\s+/g, "-")
     .trim();
@@ -2766,7 +3015,7 @@ function updateProgress(progress) {
 }
 
 function showProgressView(total, reusedCount = 0, analyzeCount = total) {
-  const target = Math.min(state.analysisSession?.minRecommended || state.currentMinRecommended || 0, 30);
+  const target = Math.min(state.analysisSession?.minRecommended || state.currentMinRecommended || 0, recommendationTargetMax);
   const targetText = target ? `，最低达标 ${target} 篇` : "";
   showTaskDialog();
   setTaskLocked(true);
@@ -2936,7 +3185,7 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
         state.progressState = { done: index + 1, total: pending.length, paper, phase: "done", startedAt, paperStartedAt };
         updateProgress(state.progressState);
 
-        const target = Math.min(session.minRecommended || 0, 30);
+        const target = Math.min(session.minRecommended || 0, recommendationTargetMax);
         if (session.extraBatchCount > 0 && target && counts.recommended.length >= target) {
           session.stoppedAfterTarget = true;
           session.skippedAfterTarget = Math.max(0, pending.length - session.nextIndex);
@@ -2951,9 +3200,9 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
         mode,
         items: analyzed
       });
-      const target = Math.min(session.minRecommended || 0, 30);
+      const target = Math.min(session.minRecommended || 0, recommendationTargetMax);
 
-      if (!target || currentCounts.recommended.length >= target || !session.search || session.extraBatchCount >= 5) {
+      if (!target || currentCounts.recommended.length >= target || !session.search || session.extraBatchCount >= extraBatchMax) {
         break;
       }
 
@@ -3024,7 +3273,7 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
   setTaskStep("done");
   showTaskPanel("done");
   const counts = splitReport(report);
-  const target = Math.min(session.minRecommended || 0, 30);
+  const target = Math.min(session.minRecommended || 0, recommendationTargetMax);
   const targetReached = !target || counts.recommended.length >= target;
   const targetText = target
     ? targetReached
@@ -3144,6 +3393,10 @@ function analysisText(paper, field, fallback = "大模型未返回该部分内�
     return value;
   }
 
+  if (field === "notRecommendReason") {
+    return notRecommendReasonForPaper(paper);
+  }
+
   if (field === "background" || field === "technicalDetails") {
     return paper?.summary || fallback;
   }
@@ -3157,6 +3410,116 @@ function analysisText(paper, field, fallback = "大模型未返回该部分内�
   }
 
   return fallback;
+}
+
+function notRecommendReasonForPaper(paper) {
+  const score = paperScore(paper);
+
+  if (score >= 60) {
+    return "";
+  }
+
+  const explicit = String(paper?.analysis?.notRecommendReason || "").trim();
+  if (explicit && !isGenericNotRecommendReason(explicit)) {
+    return explicit;
+  }
+
+  const weakDimensionKeys = Object.entries(dimensionLabels)
+    .map(([key, label]) => ({ label, score: Math.round(dimensionScore(paper, key)) }))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 2)
+    .map((item) => item.key);
+  const reasons = weakDimensionKeys.map((key) => weakDimensionShortfall(paper, key)).filter(Boolean);
+
+  return reasons.length
+    ? reasons.join(" ")
+    : "这篇论文目前看不出足够明确的研究增量：问题定义、方法机制、系统可复用性和证据支撑都缺少可核验细节，因此不适合作为本轮重点阅读对象。";
+}
+
+function isGenericNotRecommendReason(value) {
+  return /总分\s*\d+|低于\s*60|主要短板是.*\d+\s*分|建议只在.*再扫读|关键评分维度不足/.test(String(value || ""));
+}
+
+function concreteAnalysisSentence(paper, fields, max = 130) {
+  const text = fields
+    .map((field) => String(paper?.analysis?.[field] || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join(" ");
+
+  if (!text) {
+    return "";
+  }
+
+  const sentence = text
+    .split(/(?<=[。！？.!?])\s*/)
+    .find((item) => item.length >= 18 && !isGenericNotRecommendReason(item))
+    || text;
+
+  return sentence.length > max ? `${sentence.slice(0, max)}...` : sentence;
+}
+
+function weakDimensionShortfall(paper, key) {
+  if (key === "methodNovelty") {
+    const detail = concreteAnalysisSentence(paper, ["method", "technicalDetails", "contribution"]);
+    return detail
+      ? `方法贡献不够清楚，当前描述主要停留在“怎么组织流程/框架”，还看不出可复用的新机制、建模方式或验证算法：${detail}`
+      : "方法贡献不够清楚，当前信息更像既有 LLM/RAG/Agent 流程拼装或概念框架，缺少可复用的新机制、建模方式或验证算法。";
+  }
+
+  if (key === "evidence") {
+    const detail = concreteAnalysisSentence(paper, ["experiment", "limitations"]);
+    return detail
+      ? `证据支撑偏弱，实验或案例还不足以证明结论能泛化到真实场景：${detail}`
+      : "证据支撑偏弱，没有看到足够的数据集、基线、消融、鲁棒性、真实场景案例或可复现线索来支撑结论。";
+  }
+
+  if (key === "practicalValue") {
+    const detail = concreteAnalysisSentence(paper, ["technicalDetails", "method", "networkUseCase"]);
+    return detail
+      ? `系统价值不够落地，模块接口、数据流、闭环执行或失败处理还不够具体：${detail}`
+      : "系统价值不够落地，模块接口、数据流、闭环执行、部署约束和失败处理没有讲清楚，难以判断能否复用到其他场景。";
+  }
+
+  const detail = concreteAnalysisSentence(paper, ["problem", "background"]);
+  return detail
+    ? `研究问题还不够聚焦，问题边界、可验证目标或关键假设没有充分展开：${detail}`
+    : "研究问题还不够聚焦，更像场景方向或业务愿景，缺少清楚的问题边界、可验证目标和关键研究假设。";
+}
+
+function compactSentence(value, max = 110) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "";
+  }
+
+  const match = text.match(/^(.{18,}?[。！？.!?])/);
+  const sentence = match ? match[1] : text;
+  return sentence.length > max ? `${sentence.slice(0, max)}...` : sentence;
+}
+
+function highValueSignalForPaper(paper) {
+  const score = paperScore(paper);
+
+  if (score < 70) {
+    return "";
+  }
+
+  const explicit = String(paper?.analysis?.valueHighlight || "").trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const topDimensions = Object.entries(dimensionLabels)
+    .map(([key, label]) => ({ label, score: Math.round(dimensionScore(paper, key)) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map((item) => `${item.label} ${item.score} 分`)
+    .join("、");
+  const reason = compactSentence(paper?.analysis?.whyRecommend, 96);
+
+  return reason
+    ? `高分信号：${topDimensions || "关键维度较强"}；${reason}`
+    : `高分信号：${topDimensions || "关键维度较强"}，建议优先核验其方法贡献、系统机制和证据支撑。`;
 }
 
 async function translatePaper(paper, button, target) {
@@ -3208,6 +3571,7 @@ function appendPaperCard(paper, container, options = {}) {
   setScorePill(fragment.querySelector(".score-pill"), paper);
   fragment.querySelector(".date-pill").textContent = formatDate(paper.published);
   fragment.querySelector(".category-pill").textContent = paperCategoryLabel(paper);
+  appendIndustryTagPills(fragment.querySelector(".paper-meta"), paper);
   fragment.querySelector("h3").textContent = paper.title || "未命名论文";
 
   const authors = fragment.querySelector(".authors");
@@ -3223,7 +3587,25 @@ function appendPaperCard(paper, container, options = {}) {
     authors.insertAdjacentElement("afterend", origin);
   }
 
-  fragment.querySelector(".tldr").textContent = analysis.tldr || "大模型未返回一句话概要。";
+  const tldr = fragment.querySelector(".tldr");
+  tldr.textContent = analysis.tldr || "大模型未返回一句话概要。";
+  const highValueSignal = highValueSignalForPaper(paper);
+
+  if (highValueSignal) {
+    const signal = document.createElement("p");
+    signal.className = "high-value-signal";
+    signal.textContent = highValueSignal;
+    tldr.insertAdjacentElement("afterend", signal);
+  }
+
+  const notRecommendReason = notRecommendReasonForPaper(paper);
+
+  if (notRecommendReason) {
+    const reason = document.createElement("p");
+    reason.className = "not-recommend-reason";
+    reason.textContent = `不推荐原因：${notRecommendReason}`;
+    tldr.insertAdjacentElement("afterend", reason);
+  }
   fragment.querySelector(".abstract").textContent = paper.summary || "";
   fragment.querySelector(".abs-link").href = paper.absLink || paper.id || "#";
 
@@ -3291,7 +3673,9 @@ function appendExplorePaperRow(paper, container) {
 
   const meta = document.createElement("div");
   meta.className = "explore-paper-meta";
-  meta.textContent = `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · ${paper.candidateSourceLabel || "来源未知"} · ${explorePaperOrigin(paper)}`;
+  const industryTags = industryTagsForPaper(paper);
+  const industryText = industryTags.length ? ` · ${industryTags.join(" / ")}` : "";
+  meta.textContent = `${formatDate(paper.published)} · ${paperCategoryLabel(paper)}${industryText} · ${paper.candidateSourceLabel || "来源未知"} · ${explorePaperOrigin(paper)}`;
 
   const title = document.createElement("h3");
   title.textContent = paper.title || "未命名论文";
@@ -3302,7 +3686,11 @@ function appendExplorePaperRow(paper, container) {
 
   const tldr = document.createElement("p");
   tldr.className = "explore-tldr";
-  tldr.textContent = paper.analysis?.tldr || paper.summary || "暂无概要。";
+  const notRecommendReason = notRecommendReasonForPaper(paper);
+  const highValueSignal = highValueSignalForPaper(paper);
+  tldr.textContent = notRecommendReason
+    ? `不推荐原因：${notRecommendReason}`
+    : highValueSignal || paper.analysis?.tldr || paper.summary || "暂无概要。";
 
   const dimensions = document.createElement("div");
   dimensions.className = "explore-dimensions";
@@ -3372,8 +3760,8 @@ function openReport(report, options = {}) {
   const candidateTotal = report.candidateCount ?? counts.all.length;
   const rangePapers = counts.recommended.length ? counts.recommended : counts.all;
   const rangeLabel = counts.recommended.length ? "推荐论文时间范围" : "候选论文时间范围";
-  elements.generateReadingList.disabled = !counts.recommended.length || state.taskLocked;
-  elements.generateReadingList.textContent = report.readingList?.markdown ? "查看发布版周报" : "生成发布版周报";
+  elements.generateReadingList.disabled = !counts.all.length || state.taskLocked;
+  elements.generateReadingList.textContent = report.readingList?.markdown ? "查看发布版周报" : "准备生成周报";
   setReadingListUseOriginalText(report.readingList?.useOriginalText ?? true);
 
   setHeader({
@@ -3486,6 +3874,7 @@ function renderPaperDetail(paper) {
   category.textContent = paperCategoryLabel(paper);
 
   meta.append(score, date, category);
+  appendIndustryTagPills(meta, paper);
 
   const title = document.createElement("h3");
   title.textContent = paper.title || "未命名论文";
@@ -3519,7 +3908,7 @@ function renderPaperDetail(paper) {
 
   const sections = document.createElement("div");
   sections.className = "analysis-detail-body";
-  sections.append(
+  const detailSections = [
     createDetailSection("背景与问题", [
       { label: "背景", body: analysisText(paper, "background") },
       { label: "问题", body: analysisText(paper, "problem") }
@@ -3535,12 +3924,26 @@ function renderPaperDetail(paper) {
     createDetailSection("网络价值与局限", [
       { label: "潜在价值", body: analysisText(paper, "networkUseCase") },
       { label: "局限风险", body: analysisText(paper, "limitations") }
-    ]),
+    ])
+  ];
+
+  const notRecommendReason = notRecommendReasonForPaper(paper);
+  if (notRecommendReason) {
+    detailSections.push(createDetailSection("不推荐原因", notRecommendReason));
+  }
+
+  const highValueSignal = highValueSignalForPaper(paper);
+  if (highValueSignal) {
+    detailSections.push(createDetailSection("高分信号", highValueSignal));
+  }
+
+  detailSections.push(
     createDetailSection("阅读建议与推荐理由", [
       { label: "阅读建议", body: analysisText(paper, "recommendedReadingPath") },
       { label: "推荐理由", body: analysisText(paper, "whyRecommend") }
     ])
   );
+  sections.append(...detailSections);
 
   elements.analysisDetail.append(header, sections);
 }
@@ -3667,7 +4070,7 @@ elements.selectAllCandidates.addEventListener("click", () => {
 elements.confirmCandidates.addEventListener("click", confirmCandidates);
 
 elements.generateReadingList.addEventListener("click", () => {
-  generateReadingListForReport(state.currentReport);
+  openReadingListDialog(state.currentReport);
 });
 
 elements.readingListRegenerate.addEventListener("click", () => {
@@ -3689,6 +4092,18 @@ elements.readingListUseOriginalText?.addEventListener("change", () => {
 
 elements.readingListInlineUseOriginalText?.addEventListener("change", () => {
   setReadingListUseOriginalText(elements.readingListInlineUseOriginalText.checked);
+});
+
+elements.readingListCandidateFloor?.addEventListener("input", () => {
+  updateReadingListReviewPreview();
+});
+
+elements.readingListReviewThreshold?.addEventListener("input", () => {
+  updateReadingListReviewPreview();
+});
+
+elements.readingListMinSelected?.addEventListener("input", () => {
+  updateReadingListReviewPreview();
 });
 
 elements.readingListClose.addEventListener("click", () => {

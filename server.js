@@ -30,6 +30,9 @@ const paperOriginalTextConcurrency = Math.min(Math.max(Number(process.env.PAPER_
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
 const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
 const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
+const candidateBatchMax = 100;
+const recommendationListMax = 100;
+const readingListCandidateMax = 100;
 const arxivAutoSyncEnabled = !/^(0|false|no)$/i.test(String(process.env.ARXIV_AUTO_SYNC || "1"));
 const arxivAutoSyncInitialDelayMs = Number(process.env.ARXIV_AUTO_SYNC_INITIAL_DELAY_MS || 30 * 1000);
 const arxivAutoSyncRetryMs = Number(process.env.ARXIV_AUTO_SYNC_RETRY_MS || 60 * 60 * 1000);
@@ -62,27 +65,37 @@ const dimensions = [
   {
     key: "scenarioProblemValue",
     label: "研究问题价值",
-    weight: 0.35,
-    description: "是否命中网络自治、网络数字孪生或智能体框架等关键研究问题，问题是否真实、重要、有研究价值。"
+    weight: 0.2,
+    description: "研究问题是否被清晰定义，是否具有真实重要性、科学研究价值和可验证假设；ICT、电信或 ADN 方向匹配只作为标签，不参与该维度加分。"
   },
   {
     key: "methodNovelty",
     label: "方法新意",
-    weight: 0.25,
-    description: "方法、架构或建模方式是否有新东西，而不是简单套模型。"
+    weight: 0.3,
+    description: "方法、架构、建模方式或评估设计是否有实质新意，而不是套用概念、整理流程或包装已有工程实践。"
   },
   {
     key: "practicalValue",
-    label: "框架系统价值",
-    weight: 0.25,
-    description: "是否提出可复用的系统架构、工程化集成方案、智能体协同机制或闭环自治流程。"
+    label: "系统价值",
+    weight: 0.2,
+    description: "论文提出的解决框架、系统机制或工程结构是否清楚、可实现、可复用、可迁移；单纯产业愿景或方案宣介不能给高分。"
   },
   {
     key: "evidence",
     label: "证据强度",
-    weight: 0.15,
-    description: "实验、数据、基线、指标、消融和可复现线索是否扎实。"
+    weight: 0.3,
+    description: "实验、数据、基线、指标、消融、案例验证、可复现线索和结论支撑是否扎实。"
   }
+];
+
+const scoringRubric = [
+  "总分档位：0-49 表示基本不达标，概念模糊、贡献弱、证据不足或只是产业/实践/流程性内容；50-59 表示弱相关或弱贡献，有一定问题意识或应用场景，但研究设计、方法机制或证据明显不足；60-69 表示一般候选，方向或问题有价值，但创新、系统完整性、证据至少有一项明显短板；70-79 表示值得扫读，问题清楚，有一定研究贡献或系统价值，但还不是强论文；80-89 表示重点关注，问题、方法、系统或证据中至少两项比较强，值得深入读；90-100 表示少数高价值论文，问题重要，方法有实质贡献，证据扎实，结论边界清楚，值得跟踪或复现。",
+  "维度打分必须使用同样的档位含义，不能把一般相关论文集中打到 70 分以上；方向匹配、产业价值或 ICT/ADN 相关性只能做标签，不能提高任何维度分。",
+  "研究问题价值：0-49 表示问题不清楚或只是愿景/场景口号；50-59 表示有问题意识，但定义宽泛，缺少可验证目标；60-69 表示问题有意义，但边界、假设或研究难点不够清楚；70-79 表示问题清晰，研究价值明确，值得扫读；80-89 表示问题重要且定义好，对领域有推进意义；90-100 只给非常关键、可泛化、能牵引后续研究的问题。",
+  "方法新意：0-49 表示无实质方法，只是宣传、流程总结、概念框架、标准解读或新名词包装；50-59 表示主要套用已有方法，只有轻微场景包装；60-69 表示有组合或适配，但新机制有限；70-79 表示有明确的技术适配、约束建模、状态表示、工具调用、安全验证、流程或评测设计；80-89 表示提出可复用的新机制、新算法、新任务定义、新评测协议或新的 agent 协同/验证机制；90-100 只给方法贡献显著，别人可以实现、比较、迁移的论文。",
+  "系统价值：0-49 表示只有概念图、愿景或不可执行流程；50-59 表示有系统想法，但模块、接口、运行条件不清楚；60-69 表示系统结构基本清楚，但可复用性、闭环机制或失败处理有限；70-79 表示模块、数据流、流程较清晰，有实现路径；80-89 表示架构完整，关键机制、部署约束、风险处理比较清楚；90-100 只给系统设计成熟，可迁移、可验证、可复用的论文。",
+  "证据强度：0-49 表示几乎没有实验或可核验结果；50-59 表示只有 demo、案例或弱实验；60-69 表示有实验但基线、消融、泛化或复现线索不足；70-79 表示实验设置基本合理，有数据、指标、基线和结果；80-89 表示证据扎实，有多基线、消融、鲁棒性或泛化分析；90-100 只给多场景、多数据、强基线、充分消融且结论边界清楚的论文。",
+  "降分规则：如果只能基于摘要和元数据判断，要保守评分并在 limitations 中说明；如果方法新意或证据强度明显不足，总分必须被拉低；如果只是 LLM/RAG/tool calling/workflow 常规拼装，方法新意通常不应超过 69；如果只有业务场景价值但缺少可验证机制或证据，总分通常不应超过 69。"
 ];
 
 const mimeTypes = {
@@ -109,6 +122,25 @@ const sendJson = (response, status, payload, headers = {}) => {
 
 const clamp = (value, min = 0, max = 100) => Math.max(min, Math.min(max, Number(value) || 0));
 
+const weightedScore = (scores = {}) => {
+  const totalWeight = dimensions.reduce((total, dimension) => total + dimension.weight, 0) || 1;
+  const base = dimensions.reduce((sum, dimension) => (
+    sum + clamp(scores[dimension.key]) * dimension.weight
+  ), 0) / totalWeight;
+  const method = clamp(scores.methodNovelty);
+  const evidence = clamp(scores.evidence);
+  const weakestResearchSignal = Math.min(method, evidence);
+  const balancePenalty = Math.max(0, base - weakestResearchSignal) * 0.12;
+  const weakEvidencePenalty = Math.max(0, 70 - evidence) * 0.2;
+  return clamp(base * 1.2 - 22 - balancePenalty - weakEvidencePenalty);
+};
+
+const normalizeTags = (items, max = 8) => (
+  Array.isArray(items)
+    ? items.map((item) => truncate(item, 40)).filter(Boolean).slice(0, max)
+    : []
+);
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const truncate = (value, length = 2200) => {
@@ -116,7 +148,155 @@ const truncate = (value, length = 2200) => {
   return text.length > length ? `${text.slice(0, length)}...` : text;
 };
 
+const strictIctPattern = /\b(ICT|telecom|telecommunications?|5G|6G|O-RAN|RAN|radio access network|cellular network|mobile network|wireless network|wireless communications?|core network|edge network|network slicing|SDN|NFV|QoS|routing|spectrum|handover|service assurance|fault diagnosis|alarm correlation|optical network|satellite network)\b|通信网络|电信|无线通信|蜂窝|移动网络|无线接入|网络切片/i;
+
+const hasStrictIctSignal = (paper, extra = []) => strictIctPattern.test([
+  paper?.title,
+  paper?.summary,
+  ...(Array.isArray(extra) ? extra : [])
+].filter(Boolean).join(" "));
+
+const normalizeIndustryTags = (paper, items, max = 8, extra = []) => {
+  const tags = normalizeTags(items, max);
+  const hasIctSignal = hasStrictIctSignal(paper, [...tags, ...(Array.isArray(extra) ? extra : [])]);
+  return tags
+    .map((tag) => (/^ICT$/i.test(tag) ? "ICT" : tag))
+    .filter((tag) => !/\bICT\b/i.test(tag) || hasIctSignal);
+};
+
+const genericNotRecommendPattern = /总分\s*\d+|低于\s*60|主要短板是.*\d+\s*分|建议只在.*再扫读|关键评分维度不足/;
+
+const concreteSentence = (items, max = 150) => {
+  const text = (Array.isArray(items) ? items : [items])
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .join(" ");
+  const sentence = text
+    .split(/(?<=[。！？.!?])\s*/)
+    .find((item) => item.length >= 18 && !genericNotRecommendPattern.test(item))
+    || text;
+
+  return truncate(sentence, max);
+};
+
+const weakDimensionShortfall = (key, analysis = {}) => {
+  if (key === "methodNovelty") {
+    const detail = concreteSentence([analysis.method, analysis.technicalDetails, analysis.contribution], 130);
+    return detail
+      ? `方法贡献不够清楚，当前描述主要停留在“怎么组织流程/框架”，还看不出可复用的新机制、建模方式或验证算法：${detail}`
+      : "方法贡献不够清楚，当前信息更像既有 LLM/RAG/Agent 流程拼装或概念框架，缺少可复用的新机制、建模方式或验证算法。";
+  }
+
+  if (key === "evidence") {
+    const detail = concreteSentence([analysis.experiment, analysis.limitations], 130);
+    return detail
+      ? `证据支撑偏弱，实验或案例还不足以证明结论能泛化到真实场景：${detail}`
+      : "证据支撑偏弱，没有看到足够的数据集、基线、消融、鲁棒性、真实场景案例或可复现线索来支撑结论。";
+  }
+
+  if (key === "practicalValue") {
+    const detail = concreteSentence([analysis.technicalDetails, analysis.method, analysis.networkUseCase], 130);
+    return detail
+      ? `系统价值不够落地，模块接口、数据流、闭环执行或失败处理还不够具体：${detail}`
+      : "系统价值不够落地，模块接口、数据流、闭环执行、部署约束和失败处理没有讲清楚，难以判断能否复用到其他场景。";
+  }
+
+  const detail = concreteSentence([analysis.problem, analysis.background], 130);
+  return detail
+    ? `研究问题还不够聚焦，问题边界、可验证目标或关键假设没有充分展开：${detail}`
+    : "研究问题还不够聚焦，更像场景方向或业务愿景，缺少清楚的问题边界、可验证目标和关键研究假设。";
+};
+
+const notRecommendReasonForScore = (score, scores = {}, analysis = {}) => {
+  if (score >= 60) {
+    return "";
+  }
+
+  const existing = normalizeText(analysis.notRecommendReason);
+  if (existing && !genericNotRecommendPattern.test(existing)) {
+    return existing;
+  }
+
+  const weakDimensionKeys = dimensions
+    .map((dimension) => ({
+      key: dimension.key,
+      score: Math.round(clamp(scores[dimension.key]))
+    }))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 2)
+    .map((item) => item.key);
+  const reasons = weakDimensionKeys
+    .map((key) => weakDimensionShortfall(key, analysis))
+    .filter(Boolean);
+
+  return reasons.length
+    ? reasons.join(" ")
+    : "这篇论文目前看不出足够明确的研究增量：问题定义、方法机制、系统可复用性和证据支撑都缺少可核验细节，因此不适合作为本轮重点阅读对象。";
+};
+
+const highValueSignalForScore = (score, scores = {}, analysis = {}) => {
+  if (score < 70) {
+    return "";
+  }
+
+  const existing = normalizeText(analysis.valueHighlight);
+  if (existing) {
+    return existing;
+  }
+
+  const topDimensions = dimensions
+    .map((dimension) => ({
+      label: dimension.label,
+      score: Math.round(clamp(scores[dimension.key]))
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map((item) => `${item.label} ${item.score} 分`)
+    .join("、");
+  const reason = normalizeText(analysis.whyRecommend).split(/[。！？.!?]/)[0];
+  const reasonText = reason ? `；${truncate(reason, 140)}` : "，建议优先核验其方法贡献、系统机制和证据支撑";
+
+  return `高分信号：总分 ${Math.round(score)}，强项是${topDimensions || "关键研究维度"}${reasonText}。`;
+};
+
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const readingListTitlePrefix = "【精选论文】";
+const readingListFooterNote = "本文由论文推荐Agent生成总结+人工校对，欢迎提出宝贵建议。";
+
+const formatReadingListTitle = (report = {}) => {
+  const date = new Date(report.date || new Date());
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  const monthMatch = String(report.month || "").match(/^(\d{4})-(\d{1,2})$/);
+  const year = monthMatch ? Number(monthMatch[1]) : safeDate.getFullYear();
+  const month = monthMatch ? Number(monthMatch[2]) : safeDate.getMonth() + 1;
+  const issue = Math.min(Math.max(Number(report.weekOfMonth || 1), 1), 6);
+
+  return `${readingListTitlePrefix}${year}年${month}月第${issue}月精选论文阅读清单`;
+};
+
+const ensureReadingListMarkdownFormat = (markdown, title) => {
+  let next = String(markdown || "").replace(/^```(?:markdown)?\s*|\s*```$/g, "").trim();
+  const escapedTitle = title.replace(/"/g, '\\"');
+
+  if (/^---\s*[\s\S]*?\n---/.test(next)) {
+    next = next.replace(/(^---\s*[\s\S]*?\ntitle:\s*).*(\n[\s\S]*?\n---)/, `$1"${escapedTitle}"$2`);
+  }
+
+  if (/^#\s+.+$/m.test(next)) {
+    next = next.replace(/^#\s+.+$/m, `# ${title}`);
+  } else if (/^---\s*[\s\S]*?\n---/.test(next)) {
+    next = next.replace(/^(---\s*[\s\S]*?\n---)/, `$1\n\n# ${title}`);
+  } else {
+    next = `# ${title}\n\n${next}`;
+  }
+
+  const footerPattern = new RegExp(`${escapeRegExp(readingListFooterNote)}\\s*$`);
+  if (!footerPattern.test(next)) {
+    next = `${next.replace(/\s+$/g, "")}\n\n${readingListFooterNote}`;
+  }
+
+  return next;
+};
 
 const ensureLlmResponseWithinLimit = (value) => {
   const text = String(value || "").trim();
@@ -701,7 +881,14 @@ const publishOriginalTextProgress = (requestId, items, message, stage = "origina
   });
 };
 
-const enrichPapersWithOriginalText = async (papers, { requestId = "" } = {}) => {
+const enrichPapersWithOriginalText = async (
+  papers,
+  {
+    requestId = "",
+    nextStage = "generate",
+    nextActionMessage = "正在提交给模型生成周报"
+  } = {}
+) => {
   const perPaperBudget = Math.max(
     2500,
     Math.min(paperOriginalTextMaxChars, Math.floor(paperOriginalTextTotalMaxChars / Math.max(1, papers.length)))
@@ -755,8 +942,8 @@ const enrichPapersWithOriginalText = async (papers, { requestId = "" } = {}) => 
   publishOriginalTextProgress(
     requestId,
     progressItems,
-    `原文抓取完成：成功 ${fullTextCount} 篇，未获取 ${results.length - fullTextCount} 篇，正在提交给模型生成周报。`,
-    "generate"
+    `原文抓取完成：成功 ${fullTextCount} 篇，未获取 ${results.length - fullTextCount} 篇，${nextActionMessage}。`,
+    nextStage
   );
 
   return {
@@ -1581,27 +1768,29 @@ const sanitizePaper = (paper) => ({
 const sanitizeReadingListPaper = (paper) => {
   const sanitized = sanitizePaper(paper);
   const analysis = paper?.analysis || {};
+  const scores = Object.fromEntries(
+    dimensions.map((dimension) => [dimension.key, clamp(analysis.scores?.[dimension.key] ?? 0)])
+  );
 
   return {
     ...sanitized,
     analysis: {
-      score: Math.round(clamp(analysis.score ?? 0)),
-      scores: Object.fromEntries(
-        dimensions.map((dimension) => [dimension.key, clamp(analysis.scores?.[dimension.key] ?? 0)])
-      ),
+      score: Math.round(weightedScore(scores)),
+      scores,
       dimensionDetails: dimensions.map((dimension) => ({
         key: dimension.key,
         label: dimension.label,
-        score: Math.round(clamp(analysis.scores?.[dimension.key] ?? 0))
+        score: Math.round(scores[dimension.key] ?? 0)
       })),
       matchedDimensions: Array.isArray(analysis.matchedDimensions)
         ? analysis.matchedDimensions.slice(0, 6).map((item) => truncate(item, 80)).filter(Boolean)
         : dimensions
-          .map((dimension) => ({ label: dimension.label, score: Math.round(clamp(analysis.scores?.[dimension.key] ?? 0)) }))
+          .map((dimension) => ({ label: dimension.label, score: Math.round(scores[dimension.key] ?? 0) }))
           .filter((item) => item.score >= 70)
           .sort((a, b) => b.score - a.score)
           .map((item) => `${item.label} ${item.score}`),
       tldr: truncate(analysis.tldr, 420),
+      valueHighlight: truncate(highValueSignalForScore(weightedScore(scores), scores, analysis), 600),
       problem: truncate(analysis.problem, 900),
       background: truncate(analysis.background, 900),
       method: truncate(analysis.method, 1200),
@@ -1612,6 +1801,13 @@ const sanitizeReadingListPaper = (paper) => {
       limitations: truncate(analysis.limitations, 800),
       recommendedReadingPath: truncate(analysis.recommendedReadingPath, 800),
       whyRecommend: truncate(analysis.whyRecommend, 900),
+      notRecommendReason: truncate(notRecommendReasonForScore(weightedScore(scores), scores, analysis), 900),
+      industryTags: normalizeIndustryTags(
+        sanitized,
+        analysis.industryTags || analysis.ictTags,
+        8,
+        analysis.matchedKeywords
+      ),
       readingGuide: Array.isArray(analysis.readingGuide)
         ? analysis.readingGuide.slice(0, 8).map((item) => truncate(item, 180)).filter(Boolean)
         : [],
@@ -1625,15 +1821,60 @@ const sanitizeReadingListPaper = (paper) => {
 const extractJson = (content) => {
   const text = String(content || "").trim();
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : text;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
+  const candidate = (fenced ? fenced[1] : text).trim();
 
-  if (start === -1 || end === -1) {
+  if (!candidate) {
     throw new Error("LLM did not return a JSON object.");
   }
 
-  return JSON.parse(candidate.slice(start, end + 1));
+  try {
+    return JSON.parse(candidate);
+  } catch (error) {
+    const start = candidate.indexOf("{");
+
+    if (start === -1) {
+      throw error;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start; index < candidate.length; index += 1) {
+      const char = candidate[index];
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        escaped = inString;
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) {
+        continue;
+      }
+
+      if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+
+        if (depth === 0) {
+          return JSON.parse(candidate.slice(start, index + 1));
+        }
+      }
+    }
+
+    throw error;
+  }
 };
 
 const textFields = [
@@ -1790,6 +2031,14 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
             "请优先使用给定的论文标题、作者、arXiv/DOI/论文链接在网上搜索论文原文页面、PDF、HTML、出版页、代码页或项目页，并基于可核对到的论文原文和公开页面做详细分析。",
             "如果当前 API 环境无法联网检索、无法打开链接或无法读取论文原文，必须在 limitations 和 whyRecommend 中明确说明检索限制，只能基于输入的摘要和元数据分析，不要假装读过全文。",
             "请用中文输出，给每篇论文计算 0 到 100 的推荐分，并按指定维度给出分项分。",
+            "请严格按照下面的评分档位和维度细则打分：",
+            ...scoringRubric,
+            "tldr 不是普通摘要，必须是论文价值判断的一句话。推荐分 70 及以上时，tldr 必须写出它相对普通候选更值得读的具体原因，包含核心贡献、最强维度和可核验信号，不能只写“提出了一个框架/方法”。推荐分低于 70 时，tldr 要说明主要价值和主要短板。",
+            "推荐分 70 及以上必须填写 valueHighlight，用 60-120 个中文字符写出显性高分信号：强项来自研究问题、方法新意、系统价值还是证据强度，具体强在哪里。不要重复标题，不要使用“具有重要意义”“值得关注”这类空泛表达。",
+            "如果根据分项分计算后的推荐分低于 60，必须填写 notRecommendReason。它必须是具体评审意见，不是分数解释：不要写“总分低于 60”“某维度多少分”“建议只在后续补充背景时再读”这类模板话；要直接说明这篇论文具体差在哪里，例如方法只是流程拼装、没有可复用机制，系统接口/闭环/失败处理没说清，实验缺少数据集/基线/消融/真实场景，或摘要只能看到愿景而看不到可验证假设。必须引用论文内容中的具体短板。",
+            "ICT、电信、ADN、O-RAN 等产业和业务方向匹配只能写入 industryTags 或 matchedKeywords，不能作为 scores 或 score 的加分依据；总分只反映研究问题价值、方法新意、系统价值和证据强度。",
+            "只有当论文的主问题域是通信/电信/网络基础设施时，才能在 industryTags 中写 ICT，例如 5G/6G、RAN/O-RAN、无线/蜂窝/移动/核心/边缘/光/卫星网络、网络切片、路由、QoS、频谱、切换、业务保障、告警关联或故障诊断。泛 AI agent、泛多智能体系统、泛 graph/neural network、社交网络、一般 computer network 或只出现 network 一词，都不要标 ICT。",
+            "对于产业宣介、实践总结、框架愿景或标准化流程型论文，要按实际研究贡献、可验证机制和证据强度打分，不要因为业务方向高度匹配而抬高研究问题价值、方法新意或系统价值。",
             "分析正文要尽量具体、完整、可读：把问题背景、方法机制、技术路线、实验可信度、网络应用价值、局限和阅读路径写成可以直接帮助研究人员快速判断论文价值的内容。",
             "如果只能基于摘要分析，也要明确区分事实、合理推断和需要打开原文核验的部分。",
             "只返回 JSON，不要输出 Markdown。"
@@ -1801,6 +2050,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
             query,
             onlineSearchInstruction: "对每篇论文先用 title、authors、absLink、link 检索并核对公开论文信息。优先阅读论文原始页面、arXiv PDF/HTML、DOI 出版页、作者项目页或代码仓库；公开元数据页只能作为辅助线索，不能替代论文原文；无法访问时必须如实说明。",
             dimensions,
+            scoringRubric,
             outputSchema: {
               recommendations: [
                 {
@@ -1812,7 +2062,8 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
                     practicalValue: "0-100",
                     evidence: "0-100"
                   },
-                  tldr: "一句话概要，说明论文核心价值",
+                  tldr: "一句话价值判断。70 分及以上必须写出核心贡献、最强维度和可核验证据/系统/方法信号；低于 70 要写出主要价值和短板",
+                  valueHighlight: "仅当推荐分 70 及以上时必填：60-120 个中文字符，说明显性高分信号和强项来源；70 分以下返回空字符串",
                   problem: "论文解决的问题，至少 180 字",
                   background: "研究背景、业务/技术动机、为什么这个问题重要，至少 300 字",
                   method: "核心方法或系统思路，至少 350 字",
@@ -1823,8 +2074,10 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
                   limitations: "从摘要和元数据可见的不足、风险、假设、泛化边界和需要进一步确认点，至少 220 字",
                   recommendedReadingPath: "建议快速阅读这篇论文时按什么顺序读，每部分需要核验什么，如何判断是否值得深入复现，至少 240 字",
                   readingGuide: ["快速阅读建议1", "快速阅读建议2", "快速阅读建议3", "快速阅读建议4", "快速阅读建议5", "快速阅读建议6"],
+                  industryTags: ["仅在主问题域确为通信/电信/网络基础设施时写 ICT 或电信网络；方向标签不参与总分"],
                   matchedKeywords: ["命中的关键词"],
-                  whyRecommend: "为什么进入或接近推荐列表，包含分数解释和适合/不适合推荐的理由，至少 220 字"
+                  whyRecommend: "为什么进入或接近推荐列表，必须解释总分档位、强弱维度、降分原因和适合/不适合推荐的理由，至少 220 字",
+                  notRecommendReason: "仅当推荐分低于 60 时必填：具体评审意见，说明这篇论文内容上差在哪里；禁止写总分、阈值、维度分或模板化建议；60 分及以上返回空字符串"
                 }
               ]
             },
@@ -1877,6 +2130,150 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
       const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
       const timeoutError = new Error(`LLM 请求超过 ${timeoutSeconds} 秒未完成，已自动中止。请稍后重试，或通过 LLM_REQUEST_TIMEOUT_MS 调大超时时间。`);
       timeoutError.code = "LLM_ANALYSIS_TIMEOUT";
+      throw timeoutError;
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThreshold }) => {
+  const config = getLlmConfig(llm);
+
+  if (!config) {
+    const error = new Error("未配置 BigModel GLM-5.2 API key。");
+    error.code = "LLM_NOT_CONFIGURED";
+    throw error;
+  }
+
+  const { endpoint, model, disableThinking, protocol } = config;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
+
+  try {
+    const payload = {
+      model,
+      temperature: 0.15,
+      max_tokens: llmMaxOutputTokens,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是一名严谨的论文周报复评审稿人。",
+            "当前任务不是修改原始推荐列表，也不是沿用摘要初筛分数；原始列表只提供一组待复评论文。",
+            "请基于输入中的论文原文摘录、摘要和元数据，重新给出周报专用四维分数和总分。",
+            "如果 originalText.status=available，必须优先使用 originalText.excerpt；原始 analysis 只能作为背景线索，不能直接继承旧分数、旧排序或旧推荐结论。",
+            "如果没有可用原文，只能基于摘要和已有分析复评，并在 reviewReason 里明确证据边界。",
+            "评分维度、权重和分数档位沿用下面的研究质量标准，但这次分数只服务于周报筛选和排序，不回写原始列表。",
+            ...scoringRubric,
+            "ICT、电信、ADN 等产业方向匹配只能作为标签或方向信号，不能给四维分数加分。",
+            "总分必须由四维分数反映：研究问题价值、方法新意、系统价值、证据强度。产业契合但研究贡献一般的论文，要在方法新意和证据强度上拉开差距。",
+            "reviewReason 必须写成具体复评判断：说明为什么它适合或不适合进入本次周报，点出方法、证据、系统落地或问题价值中的关键依据。",
+            "只返回 JSON，不要输出 Markdown。"
+          ].join("\n")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            reviewContext: {
+              useOriginalText,
+              scoreThreshold,
+              paperCount: papers.length,
+              note: "原始 analysis 字段来自摘要初筛，仅供理解上下文；周报分数、排序和入选判断必须重新评价。"
+            },
+            dimensions,
+            scoringRubric,
+            outputSchema: {
+              reviews: [
+                {
+                  id: "paper id",
+                  scores: {
+                    scenarioProblemValue: "0-100",
+                    methodNovelty: "0-100",
+                    practicalValue: "0-100",
+                    evidence: "0-100"
+                  },
+                  tldr: "一句话周报价值判断，说明这次复评后最值得关注或最明显的短板",
+                  valueHighlight: "60-120 个中文字符，概括高分信号；如果不适合入选，说明核心短板",
+                  reviewReason: "120-240 个中文字符，基于原文或摘要说明周报复评判断，禁止引用旧分数或只解释分数",
+                  evidenceBasis: "full-text | abstract-fallback"
+                }
+              ]
+            },
+            papers: papers.map((paper) => ({
+              id: paper.id,
+              title: paper.title,
+              authors: paper.authors,
+              categories: paper.categories,
+              primaryCategory: paper.primaryCategory,
+              published: paper.published,
+              absLink: paper.absLink,
+              link: paper.link,
+              summary: paper.summary,
+              originalText: paper.originalText?.status === "available"
+                ? {
+                    status: "available",
+                    source: paper.originalText.source,
+                    chars: paper.originalText.chars,
+                    excerpt: paper.originalText.excerpt
+                  }
+                : {
+                    status: paper.originalText?.status || "unavailable",
+                    message: paper.originalText?.message || "未提供论文原文"
+                  },
+              originalAnalysis: {
+                tldr: paper.analysis?.tldr || "",
+                problem: paper.analysis?.problem || "",
+                method: paper.analysis?.method || "",
+                technicalDetails: paper.analysis?.technicalDetails || "",
+                contribution: paper.analysis?.contribution || "",
+                experiment: paper.analysis?.experiment || "",
+                limitations: paper.analysis?.limitations || "",
+                networkUseCase: paper.analysis?.networkUseCase || "",
+                industryTags: paper.analysis?.industryTags || [],
+                matchedKeywords: paper.analysis?.matchedKeywords || []
+              }
+            }))
+          })
+        }
+      ]
+    };
+
+    if (protocol === "anthropic") {
+      const [systemMessage, userMessage] = payload.messages;
+      payload.system = systemMessage.content;
+      payload.messages = [userMessage];
+      delete payload.response_format;
+    }
+
+    if (disableThinking && protocol === "openai") {
+      payload.thinking = { type: "disabled" };
+    }
+
+    const llmResponse = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: llmHeaders(config),
+      body: JSON.stringify(payload)
+    });
+
+    if (!llmResponse.ok) {
+      const errorText = await llmResponse.text();
+      throw new Error(`LLM request failed with ${llmResponse.status}: ${truncate(redactSensitive(errorText), 300)}`);
+    }
+
+    const data = await llmResponse.json();
+    const content = llmTextFromResponse(data, protocol);
+    const parsed = extractJson(content);
+    return Array.isArray(parsed.reviews) ? parsed.reviews : [];
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
+      const timeoutError = new Error(`LLM 周报复评超过 ${timeoutSeconds} 秒未完成，已自动中止。请稍后重试，或调低周报候选数量。`);
+      timeoutError.code = "LLM_READING_LIST_REVIEW_TIMEOUT";
       throw timeoutError;
     }
 
@@ -1963,7 +2360,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
 
   try {
-    const title = truncate(report.title, 120) || "每周高价值论文阅读清单";
+    const title = formatReadingListTitle(report);
     const useOriginalText = report.useOriginalText !== false;
     const payload = {
       model,
@@ -1974,7 +2371,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
           role: "system",
           content: [
             "你是一名面向科研读者和技术负责人的论文周报编辑。",
-            "请基于输入中的高价值论文列表，生成一篇适合发布到洞察网站的中文 Markdown 阅读清单。",
+            "请基于输入中的精选论文列表，生成一篇适合发布到洞察网站的中文 Markdown 阅读清单。",
             "读者重点关注大模型、智能体、网络自治、网络数字孪生、系统架构与工程化集成，以及华为 ADN（Autonomous Driving Network，自智网络/自动驾驶网络）相关研究。",
             "这份清单要帮助读者快速理解：本周哪些论文值得读、每篇文章解决什么问题、核心贡献是什么、方法框架怎么做、实验结果是否支撑结论、局限约束在哪里、它对 ADN 网络研究有什么启发。",
             "输出必须是 Markdown 正文，不要使用代码围栏，不要输出额外解释。"
@@ -1990,9 +2387,15 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               weekOfMonth: report.weekOfMonth,
               sourceReport: report.sourceReport,
               paperCount: papers.length,
+              candidateCount: report.candidateCount || papers.length,
+              reviewedCount: report.reviewedCount || papers.length,
+              reviewScoreThreshold: report.reviewScoreThreshold,
+              minSelectedCount: report.minSelectedCount,
+              fallbackSelectedCount: report.fallbackSelectedCount || 0,
+              reviewBeforeGenerate: report.reviewBeforeGenerate !== false,
               useOriginalText,
               originalTextCount: papers.filter((paper) => paper.originalText?.status === "available").length,
-              tags: ["大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"],
+              tags: ["ICT", "大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"],
               scoringDimensions: dimensions.map((dimension) => ({
                 key: dimension.key,
                 label: dimension.label,
@@ -2001,12 +2404,14 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
             },
             instruction: [
               `请生成「${title}」。`,
-              "标题格式固定为：{year} 年 {month} 月第 {weekOfMonth} 周高价值论文阅读清单。",
-              "输出必须包含 YAML front matter 和正文标题。",
+              "标题格式固定为：【精选论文】{year}年{month}月第{weekOfMonth}月精选论文阅读清单。",
+              "输出必须包含 YAML front matter 和正文标题；YAML title 和正文一级标题必须完全等于输入 report.title。",
               "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、以及对 ADN 网络研究最有价值的研究信号。不要在导读里再写一组独立的阅读建议，避免和后面的阅读顺序重复。",
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
               "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
-              "每篇入选论文都必须展示推荐分，并说明分别符合哪些评分维度。评分维度来自输入 analysis.dimensionDetails / analysis.scores，包括研究问题价值、方法新意、框架系统价值、证据强度；写出高匹配维度及其分项分，必要时指出较弱维度。",
+              "每篇入选论文都必须展示本次周报复评分，并说明分别符合哪些评分维度。评分维度来自输入 readingListReview 或 analysis.dimensionDetails / analysis.scores，包括研究问题价值、方法新意、系统价值、证据强度；写出高匹配维度及其分项分，必要时指出较弱维度。analysis.industryTags 里的 ICT、电信、网络自治等产业/方向标签可以作为标签或方向信号展示，但不要写成评分维度，也不要把方向匹配解释为高分依据。",
+              "不要引用原始推荐列表的旧分数、旧排序或旧推荐/隐藏结论。当前输入论文已经经过周报复评筛选，Markdown 中的周报复评分、阅读层级和排序只依据本次周报复评结果。",
+              "如果某篇论文的 readingListReview.selectionReason 是 fallback，说明它是为了满足周报最低入选数量而补入；不要把它写成强推荐或本周必读，应放在快速扫读或补充观察层级，并明确写出它的具体短板和为什么只适合低优先级阅读。",
               ...(useOriginalText
                 ? [
                   "每篇论文如果带有 originalText.status=available 和 originalText.excerpt，必须优先基于 originalText.excerpt 进行解读；analysis 字段只作为评分、维度和补充参考。不要只改写上一步的 tldr、whyRecommend 或 summary。",
@@ -2026,8 +2431,9 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "论文条目按照「本周必读」「值得跟进」「快速扫读」分层组织。输入论文数量少时可以减少层级，但完整论文清单必须覆盖全部论文。",
               "「本周趋势判断」必须综合多篇论文，不能只是单篇论文摘要。可以包含研究机会、工程落地约束和下一步值得跟踪的问题。",
               "「推荐阅读顺序」要给出实际阅读路线和原因，只保留这一处阅读优先级建议，不要再新增独立的精简阅读、优先三篇或快速取舍章节。",
-              "不要在发布内容中体现内部筛选阈值或推荐阈值；但每篇入选论文必须展示自己的推荐分和符合的评分维度。",
-              "完整论文清单放在最后，表格列为：论文、一句话介绍、推荐分、符合维度、阅读级别、链接。不要在完整论文清单里放方向列；一句话介绍要概括文章做了什么或为什么值得关注。"
+              "不要在发布内容中体现内部筛选阈值或推荐阈值；但每篇入选论文必须展示自己的周报复评分和符合的评分维度。",
+              "完整论文清单放在最后，表格列为：论文、一句话介绍、周报复评分、符合维度、阅读级别、链接。不要在完整论文清单里放方向列；一句话介绍要概括文章做了什么或为什么值得关注。",
+              `全文最后一行必须固定为：${readingListFooterNote}`
             ].join("\n"),
             outputTemplate: [
               "---",
@@ -2037,6 +2443,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               `week_of_month: ${report.weekOfMonth}`,
               "category: \"论文周报\"",
               "tags:",
+              "  - ICT",
               "  - 大模型",
               "  - 智能体",
               "  - 网络自治",
@@ -2056,7 +2463,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "### 1. 论文标题",
               "",
-              "- 推荐分：",
+              "- 周报复评分：",
               "- 符合维度：",
               "- 主问题域：",
               "- 关键支撑技术：",
@@ -2082,8 +2489,10 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "## 完整论文清单",
               "",
-              "| 论文 | 一句话介绍 | 推荐分 | 符合维度 | 阅读级别 | 链接 |",
-              "| --- | --- | --- | --- | --- | --- |"
+              "| 论文 | 一句话介绍 | 周报复评分 | 符合维度 | 阅读级别 | 链接 |",
+              "| --- | --- | --- | --- | --- | --- |",
+              "",
+              readingListFooterNote
             ].join("\n"),
             papers
           })
@@ -2114,7 +2523,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
     }
 
     const data = await llmResponse.json();
-    return ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol)).replace(/^```(?:markdown)?\s*|\s*```$/g, "").trim();
+    return ensureReadingListMarkdownFormat(ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol)), title);
   } catch (error) {
     if (error?.name === "AbortError") {
       const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
@@ -2133,12 +2542,13 @@ const normalizeAnalysis = (paper, analysis) => {
   const scores = Object.fromEntries(
     dimensions.map((dimension) => [dimension.key, clamp(analysis.scores[dimension.key])])
   );
-  const score = clamp(analysis.score);
+  const score = weightedScore(scores);
 
   return {
     score: Math.round(score),
     scores,
     tldr: normalizeText(analysis.tldr),
+    valueHighlight: normalizeText(highValueSignalForScore(score, scores, analysis)),
     problem: normalizeText(analysis.problem),
     background: normalizeText(analysis.background),
     method: normalizeText(analysis.method),
@@ -2152,7 +2562,132 @@ const normalizeAnalysis = (paper, analysis) => {
     matchedKeywords: Array.isArray(analysis.matchedKeywords)
       ? analysis.matchedKeywords.map((item) => normalizeText(item)).filter(Boolean)
       : [],
+    industryTags: normalizeIndustryTags(
+      paper,
+      analysis.industryTags || analysis.ictTags,
+      8,
+      analysis.matchedKeywords
+    ),
+    notRecommendReason: normalizeText(notRecommendReasonForScore(score, scores, analysis)),
     whyRecommend: normalizeText(analysis.whyRecommend)
+  };
+};
+
+const normalizeReadingListReview = (paper, review = {}) => {
+  const scores = Object.fromEntries(
+    dimensions.map((dimension) => [dimension.key, clamp(review.scores?.[dimension.key] ?? 0)])
+  );
+  const score = weightedScore(scores);
+  const dimensionDetails = dimensions.map((dimension) => ({
+    key: dimension.key,
+    label: dimension.label,
+    score: Math.round(scores[dimension.key] ?? 0)
+  }));
+  const matchedDimensions = dimensionDetails
+    .filter((dimension) => dimension.score >= 70)
+    .sort((a, b) => b.score - a.score)
+    .map((dimension) => `${dimension.label} ${dimension.score}`);
+  const originalTextAvailable = paper?.originalText?.status === "available";
+  const evidenceBasis = /full[-_\s]?text/i.test(String(review.evidenceBasis || ""))
+    ? "full-text"
+    : originalTextAvailable
+      ? "full-text"
+      : "abstract-fallback";
+  const reviewReason = normalizeText(review.reviewReason)
+    || normalizeText(review.valueHighlight)
+    || highValueSignalForScore(score, scores, review);
+
+  return {
+    score: Math.round(score),
+    scores,
+    dimensionDetails,
+    matchedDimensions,
+    tldr: normalizeText(review.tldr) || normalizeText(paper?.analysis?.tldr),
+    valueHighlight: normalizeText(review.valueHighlight) || highValueSignalForScore(score, scores, review),
+    reviewReason: truncate(reviewReason, 900),
+    evidenceBasis
+  };
+};
+
+const applyReadingListReviews = (papers, reviews) => {
+  const reviewById = new Map((reviews || []).map((review) => [String(review.id), review]));
+  const missing = papers
+    .filter((paper) => !reviewById.has(paper.id))
+    .map((paper) => ({ id: paper.id, title: paper.title }));
+
+  if (missing.length) {
+    const error = new Error(`LLM did not return reading-list reviews for ${missing.length} papers.`);
+    error.code = "LLM_INCOMPLETE_READING_LIST_REVIEW";
+    error.missingPapers = missing;
+    throw error;
+  }
+
+  return papers.map((paper) => {
+    const readingListReview = normalizeReadingListReview(paper, reviewById.get(paper.id));
+    const analysis = {
+      ...paper.analysis,
+      score: readingListReview.score,
+      scores: readingListReview.scores,
+      dimensionDetails: readingListReview.dimensionDetails,
+      matchedDimensions: readingListReview.matchedDimensions,
+      tldr: readingListReview.tldr || paper.analysis?.tldr || "",
+      valueHighlight: readingListReview.valueHighlight,
+      whyRecommend: readingListReview.reviewReason || paper.analysis?.whyRecommend || ""
+    };
+
+    return {
+      ...paper,
+      analysis,
+      readingListReview
+    };
+  });
+};
+
+const selectReadingListPapers = (papers, { threshold = 70, minSelectedCount = 3 } = {}) => {
+  const sorted = [...papers].sort((a, b) => (
+    b.readingListReview.score - a.readingListReview.score
+    || new Date(b.published || b.updated) - new Date(a.published || a.updated)
+  ));
+  const minimum = Math.max(1, Math.min(sorted.length, Number(minSelectedCount) || 3));
+  const selectedIds = new Set();
+  const selected = [];
+  const thresholdSelected = sorted.filter((paper) => paper.readingListReview.score >= threshold);
+
+  thresholdSelected.forEach((paper) => {
+    selectedIds.add(paper.id);
+    selected.push({
+      ...paper,
+      readingListReview: {
+        ...paper.readingListReview,
+        selectionReason: "threshold"
+      }
+    });
+  });
+
+  for (const paper of sorted) {
+    if (selected.length >= minimum) {
+      break;
+    }
+
+    if (selectedIds.has(paper.id)) {
+      continue;
+    }
+
+    selectedIds.add(paper.id);
+    selected.push({
+      ...paper,
+      readingListReview: {
+        ...paper.readingListReview,
+        selectionReason: "fallback"
+      }
+    });
+  }
+
+  return {
+    selected,
+    thresholdCount: thresholdSelected.length,
+    fallbackCount: selected.filter((paper) => paper.readingListReview.selectionReason === "fallback").length,
+    minSelectedCount: minimum
   };
 };
 
@@ -2227,7 +2762,7 @@ const handleArxivSyncHistoryRequest = async (request, response) => {
 
 const handlePapersRequest = async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
-  const maxResults = Math.min(Math.max(Number(url.searchParams.get("limit") || 10), 5), 30);
+  const maxResults = Math.min(Math.max(Number(url.searchParams.get("limit") || 10), 5), candidateBatchMax);
   const start = Math.max(Number(url.searchParams.get("start") || 0), 0);
   const rawQuery = (url.searchParams.get("query") || defaultQuery).trim();
   const days = Math.min(Math.max(Number(url.searchParams.get("days") || 0), 0), 365);
@@ -2516,8 +3051,8 @@ const handleAnalyzeRequest = async (request, response) => {
   try {
     const payload = await readJsonBody(request);
     const threshold = clamp(payload.threshold ?? 70);
-    const maxAnalyze = Math.min(Math.max(Number(payload.maxAnalyze || 30), 5), 60);
-    const maxRecommendations = Math.min(Math.max(Number(payload.maxRecommendations || 12), 1), 30);
+    const maxAnalyze = Math.min(Math.max(Number(payload.maxAnalyze || 30), 5), recommendationListMax);
+    const maxRecommendations = Math.min(Math.max(Number(payload.maxRecommendations || 12), 1), recommendationListMax);
     const papers = Array.isArray(payload.papers) ? payload.papers.slice(0, maxAnalyze).map(sanitizePaper) : [];
 
     if (!papers.length) {
@@ -2674,22 +3209,27 @@ const handleReadingListRequest = async (request, response) => {
     const payload = await readJsonBody(request);
     requestId = truncate(payload.requestId, 100);
     const papers = Array.isArray(payload.papers)
-      ? payload.papers.slice(0, 40).map(sanitizeReadingListPaper)
+      ? payload.papers.slice(0, readingListCandidateMax).map(sanitizeReadingListPaper)
       : [];
 
     if (!papers.length) {
-      sendJson(response, 400, { error: "NO_RECOMMENDED_PAPERS", message: "No recommended papers were provided." });
+      sendJson(response, 400, { error: "NO_READING_LIST_CANDIDATES", message: "No reading-list candidate papers were provided." });
       return;
     }
 
     const report = {
-      title: truncate(payload.title, 160),
+      title: "",
       date: String(payload.date || new Date().toISOString().slice(0, 10)),
       month: truncate(payload.month, 16),
       weekOfMonth: Math.min(Math.max(Number(payload.weekOfMonth || 1), 1), 6),
       sourceReport: truncate(payload.sourceReport, 240),
-      useOriginalText: booleanOption(payload.useOriginalText, true)
+      useOriginalText: booleanOption(payload.useOriginalText, true),
+      reviewBeforeGenerate: booleanOption(payload.reviewBeforeGenerate, true),
+      reviewScoreThreshold: clamp(payload.reviewScoreThreshold ?? 70),
+      minSelectedCount: Math.min(Math.max(Number(payload.minSelectedCount || 3), 1), 20),
+      candidateCount: papers.length
     };
+    report.title = formatReadingListTitle(report);
 
     const requestLlm = {
       apiKey: payload.llmApiKey,
@@ -2706,10 +3246,10 @@ const handleReadingListRequest = async (request, response) => {
     setPaperRequestStatus(
       requestId,
       "reading-list",
-      report.useOriginalText ? "准备抓取论文原文。" : "已关闭原文分析，正在基于摘要和已有分析生成周报。",
+      report.useOriginalText ? "准备抓取论文原文，随后进行周报复评。" : "已关闭原文抓取，正在准备基于摘要进行周报复评。",
       "running",
       {
-        stage: report.useOriginalText ? "original-text" : "generate",
+        stage: report.useOriginalText ? "original-text" : "review",
         originalTextSummary: {
           total: papers.length,
           pending: report.useOriginalText ? papers.length : 0,
@@ -2732,7 +3272,11 @@ const handleReadingListRequest = async (request, response) => {
     );
 
     const originalTextContext = report.useOriginalText
-      ? await enrichPapersWithOriginalText(papers, { requestId })
+      ? await enrichPapersWithOriginalText(papers, {
+        requestId,
+        nextStage: "review",
+        nextActionMessage: "正在进入周报复评"
+      })
       : {
         papers,
         fullTextCount: 0,
@@ -2740,8 +3284,8 @@ const handleReadingListRequest = async (request, response) => {
         perPaperBudget: 0
       };
     if (!report.useOriginalText) {
-      setPaperRequestStatus(requestId, "reading-list", "已跳过论文原文抓取，正在提交给模型生成周报。", "running", {
-        stage: "generate",
+      setPaperRequestStatus(requestId, "reading-list", "已跳过论文原文抓取，正在提交给模型做周报复评。", "running", {
+        stage: "review",
         originalTextSummary: {
           total: papers.length,
           pending: 0,
@@ -2752,9 +3296,74 @@ const handleReadingListRequest = async (request, response) => {
         originalTextItems: []
       });
     }
+
+    let reviewedPapers = originalTextContext.papers;
+    let selectedPapers = reviewedPapers;
+
+    if (report.reviewBeforeGenerate) {
+      setPaperRequestStatus(requestId, "reading-list", `正在对 ${reviewedPapers.length} 篇候选论文进行周报复评。`, "running", {
+        stage: "review",
+        originalTextSummary: paperRequestStatuses.get(requestId)?.originalTextSummary || {
+          total: papers.length,
+          pending: 0,
+          running: 0,
+          available: originalTextContext.fullTextCount,
+          unavailable: originalTextContext.unavailableCount
+        },
+        originalTextItems: paperRequestStatuses.get(requestId)?.originalTextItems || []
+      });
+      const llmReviews = await callLlmReadingListReview({
+        papers: reviewedPapers,
+        llm: requestLlm,
+        useOriginalText: report.useOriginalText,
+        scoreThreshold: report.reviewScoreThreshold
+      });
+      reviewedPapers = applyReadingListReviews(reviewedPapers, llmReviews);
+      const selection = selectReadingListPapers(reviewedPapers, {
+        threshold: report.reviewScoreThreshold,
+        minSelectedCount: report.minSelectedCount
+      });
+      selectedPapers = selection.selected;
+      report.thresholdSelectedCount = selection.thresholdCount;
+      report.fallbackSelectedCount = selection.fallbackCount;
+      report.effectiveMinSelectedCount = selection.minSelectedCount;
+
+      if (!selectedPapers.length) {
+        const error = new Error("周报复评后没有可入选论文，请扩大候选范围后重试。");
+        error.code = "NO_READING_LIST_SELECTION";
+        error.status = 400;
+        throw error;
+      }
+
+      const fallbackText = report.fallbackSelectedCount
+        ? `，另按复评分补入 ${report.fallbackSelectedCount} 篇保底论文`
+        : "";
+      setPaperRequestStatus(
+        requestId,
+        "reading-list",
+        `周报复评完成：${reviewedPapers.length} 篇候选中 ${report.thresholdSelectedCount} 篇达到 ${report.reviewScoreThreshold} 分${fallbackText}，正在生成周报。`,
+        "running",
+        {
+          stage: "generate",
+          reviewSummary: {
+            candidateCount: reviewedPapers.length,
+            selectedCount: selectedPapers.length,
+            thresholdSelectedCount: report.thresholdSelectedCount,
+            fallbackSelectedCount: report.fallbackSelectedCount,
+            threshold: report.reviewScoreThreshold,
+            minSelectedCount: report.effectiveMinSelectedCount
+          },
+          originalTextSummary: paperRequestStatuses.get(requestId)?.originalTextSummary,
+          originalTextItems: paperRequestStatuses.get(requestId)?.originalTextItems || []
+        }
+      );
+    }
+
+    report.reviewedCount = reviewedPapers.length;
+    report.paperCount = selectedPapers.length;
     const markdown = await callLlmReadingList({
       report,
-      papers: originalTextContext.papers,
+      papers: selectedPapers,
       llm: requestLlm
     });
     const latestReadingListStatus = paperRequestStatuses.get(requestId);
@@ -2773,17 +3382,28 @@ const handleReadingListRequest = async (request, response) => {
     sendJson(response, 200, {
       markdown,
       mode: llmProviderDefaults[inferLlmProvider(requestLlm)]?.mode || "llm",
-      paperCount: papers.length,
+      paperCount: selectedPapers.length,
+      candidateCount: papers.length,
+      reviewedPaperCount: reviewedPapers.length,
+      reviewScoreThreshold: report.reviewScoreThreshold,
+      minSelectedCount: report.effectiveMinSelectedCount || report.minSelectedCount,
+      thresholdSelectedCount: report.thresholdSelectedCount ?? selectedPapers.length,
+      fallbackSelectedCount: report.fallbackSelectedCount || 0,
+      reviewBeforeGenerate: report.reviewBeforeGenerate,
       useOriginalText: report.useOriginalText,
-      originalTextCount: originalTextContext.fullTextCount,
-      originalTextUnavailableCount: originalTextContext.unavailableCount,
+      originalTextCount: selectedPapers.filter((paper) => paper.originalText?.status === "available").length,
+      originalTextUnavailableCount: selectedPapers.filter((paper) => paper.originalText?.status !== "available").length,
       title: report.title
     });
   } catch (error) {
     const status = error.code === "LLM_NOT_CONFIGURED"
       ? 503
+      : error.status
+        ? error.status
       : error.code === "LLM_READING_LIST_TIMEOUT"
         ? 504
+        : error.code === "LLM_READING_LIST_REVIEW_TIMEOUT"
+          ? 504
         : 500;
     const latestReadingListStatus = paperRequestStatuses.get(requestId);
     setPaperRequestStatus(requestId, "reading-list", `周报生成失败：${error.message}`, "error", {
