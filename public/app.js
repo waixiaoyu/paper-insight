@@ -1477,7 +1477,7 @@ function readingListSourceBadge(stateName) {
     pending: "等待",
     running: "抓取中",
     available: "已获取",
-    unavailable: "未获取"
+    unavailable: "已跳过"
   };
 
   return labels[stateName] || "未知";
@@ -1500,7 +1500,7 @@ function renderReadingListSourceStatus(data) {
   const running = Number(summary.running || 0);
   const pending = Number(summary.pending || 0);
   elements.readingListSourcePanel.hidden = false;
-  elements.readingListSourceSummary.textContent = `成功 ${available} · 未获取 ${unavailable} · 进行中 ${running} · 等待 ${pending} / ${total}`;
+  elements.readingListSourceSummary.textContent = `成功 ${available} · 跳过 ${unavailable} · 进行中 ${running} · 等待 ${pending} / ${total}`;
   setReadingListSourceExpanded(state.readingListSourceExpanded);
 
   if (!state.readingListSourceExpanded) {
@@ -1535,6 +1535,59 @@ function renderReadingListSourceStatus(data) {
   });
 }
 
+function readingListStatusUpdatedAgo(data) {
+  const updatedAt = Number(data?.updatedAt || 0);
+
+  if (!updatedAt) {
+    return 0;
+  }
+
+  return Math.max(0, Math.round((Date.now() - updatedAt) / 1000));
+}
+
+function readingListReviewProgressDetail(data) {
+  const summary = data?.reviewSummary || {};
+  const total = Number(summary.total || summary.candidateCount || 0);
+
+  if (!total) {
+    return data.message || "正在基于论文上下文重新给出周报四维分数。";
+  }
+
+  const reviewed = Number(summary.reviewed || 0);
+  const running = Number(summary.running || 0);
+  const pending = Number(summary.pending ?? Math.max(0, total - reviewed - running));
+  const skipped = Number(summary.skipped || 0);
+  const batchIndex = Number(summary.batchIndex || 0);
+  const totalBatches = Number(summary.totalBatches || 0);
+  const itemOrdinal = running ? Math.min(total, reviewed + 1) : reviewed;
+  const parts = [
+    `已复评 ${reviewed}/${total} 篇`,
+    running ? `正在处理 ${running} 篇` : "",
+    pending ? `待处理 ${pending} 篇` : "",
+    skipped ? `已跳过 ${skipped} 篇` : "",
+    totalBatches && totalBatches !== total ? `批次 ${batchIndex}/${totalBatches}` : "",
+    totalBatches === total && itemOrdinal ? `第 ${itemOrdinal}/${total} 篇` : ""
+  ].filter(Boolean);
+
+  return `${data.message || "周报复评进行中。"} ${parts.join("，")}。`;
+}
+
+function readingListGenerateProgressDetail(data) {
+  const summary = data?.reviewSummary || {};
+  const selected = Number(summary.selectedCount || 0);
+  const thresholdSelected = Number(summary.thresholdSelectedCount || 0);
+  const fallbackSelected = Number(summary.fallbackSelectedCount || 0);
+  const updatedAgo = readingListStatusUpdatedAgo(data);
+  const selectedText = selected
+    ? `当前已入选 ${selected} 篇，其中 ${thresholdSelected} 篇达线${fallbackSelected ? `、${fallbackSelected} 篇保底补入` : ""}。`
+    : "";
+  const waitText = updatedAgo >= 12
+    ? `服务端最近一次有效更新在 ${updatedAgo} 秒前；当前是报告正文的长模型调用，完成前无法获得逐段写作进度。`
+    : "正在生成导读、趋势判断、逐篇点评和完整清单。";
+
+  return [data.message || "正在生成发布版周报正文。", selectedText, waitText].filter(Boolean).join(" ");
+}
+
 function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
   if (!data || data.source !== "reading-list" || data.state === "idle") {
     return false;
@@ -1543,8 +1596,15 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
   renderReadingListSourceStatus(data);
 
   const elapsed = secondsSince(state.readingListStartedAt);
-  const meta = `已等待 ${elapsed} 秒 · ${paperCount || data.originalTextSummary?.total || 0} 篇 · ${provider || providerLabel()}`;
+  const updatedAgo = readingListStatusUpdatedAgo(data);
+  const updateMeta = updatedAgo ? ` · 服务端更新 ${updatedAgo} 秒前` : "";
   const stage = data.stage || "";
+  const activePaperCount = stage === "review"
+    ? data.reviewSummary?.total || data.originalTextSummary?.available || paperCount || 0
+    : stage === "generate"
+      ? data.reviewSummary?.selectedCount || data.reviewSummary?.candidateCount || paperCount || 0
+      : paperCount || data.originalTextSummary?.total || 0;
+  const meta = `已等待 ${elapsed} 秒 · ${activePaperCount} 篇 · ${provider || providerLabel()}${updateMeta}`;
 
   if (stage === "original-text") {
     setReadingListProgress("loading", "抓取论文原文", data.message || "正在抓取论文原文。", {
@@ -1558,20 +1618,24 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
   }
 
   if (stage === "generate") {
-    setReadingListProgress("loading", "模型生成中", data.message || "原文上下文已准备，正在等待模型生成周报。", {
+    const detail = readingListGenerateProgressDetail(data);
+    setReadingListProgress("loading", "生成周报正文", detail, {
       step: "generate",
       meta
     });
-    elements.readingListStatus.textContent = `${data.message || "模型生成中。"} 已等待 ${elapsed} 秒。`;
+    elements.readingListStatus.textContent = `${detail} 已等待 ${elapsed} 秒。`;
     return true;
   }
 
   if (stage === "review") {
-    setReadingListProgress("loading", "周报复评中", data.message || "正在基于原文重新给出周报四维分数。", {
+    const detail = readingListReviewProgressDetail(data);
+    setReadingListProgress("loading", "周报复评中", detail, {
       step: "review",
       meta
     });
-    elements.readingListStatus.textContent = `${data.message || "周报复评中。"} 已等待 ${elapsed} 秒。`;
+    elements.readingListStatus.textContent = data.currentTitle
+      ? `正在复评：${data.currentTitle}。已等待 ${elapsed} 秒。`
+      : `${detail} 已等待 ${elapsed} 秒。`;
     return true;
   }
 
@@ -1649,7 +1713,7 @@ function readingListGenerationFocus(elapsed, paperCount, provider, useOriginalTe
       after: 10,
       step: "source",
       status: "仍在整理原文上下文...",
-      detail: "部分论文可能没有 arXiv HTML 版本，服务端会自动降级为摘要和已有分析，然后继续做周报复评。"
+      detail: "部分论文可能没有 arXiv HTML 版本；全文复评模式下这些论文会被跳过，其余论文继续进入周报复评。"
     },
     {
       after: 18,
@@ -1687,7 +1751,12 @@ function refreshReadingListGenerationProgress(paperCount, provider, useOriginalT
 
   const elapsed = secondsSince(state.readingListStartedAt);
   const focus = readingListGenerationFocus(elapsed, paperCount, provider, useOriginalText);
-  setReadingListProgress("loading", focus.step === "review" ? "周报复评中" : "模型生成中", focus.detail, {
+  const title = focus.step === "source"
+    ? "抓取论文原文"
+    : focus.step === "review"
+      ? "周报复评中"
+      : "模型生成中";
+  setReadingListProgress("loading", title, focus.detail, {
     step: focus.step || "generate",
     meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
   });
@@ -2448,8 +2517,9 @@ function readingListGeneratedStatus(readingList, paperCount) {
   }
 
   const originalTextCount = readingList?.originalTextCount || 0;
+  const skippedOriginalTextCount = readingList?.originalTextUnavailableCount || 0;
   if (originalTextCount) {
-    return `已生成发布版 Markdown${reviewedText}，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文。`;
+    return `已生成发布版 Markdown${reviewedText}，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文${skippedOriginalTextCount ? `，${skippedOriginalTextCount} 篇因原文不可用被跳过` : ""}。`;
   }
 
   return `已生成发布版 Markdown${reviewedText}，本次未获取到可用 arXiv HTML 原文。`;
@@ -2653,6 +2723,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         candidateFloor,
         candidateCount: data.candidateCount || papers.length,
         reviewedPaperCount: data.reviewedPaperCount || papers.length,
+        reviewSkippedCount: data.reviewSkippedCount || 0,
         reviewScoreThreshold: data.reviewScoreThreshold ?? reviewScoreThreshold,
         minSelectedCount: data.minSelectedCount ?? minSelectedCount,
         thresholdSelectedCount: data.thresholdSelectedCount ?? data.paperCount ?? papers.length,
@@ -2660,7 +2731,8 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         reviewBeforeGenerate: data.reviewBeforeGenerate ?? true,
         useOriginalText: data.useOriginalText ?? useOriginalText,
         originalTextCount: data.originalTextCount || 0,
-        originalTextUnavailableCount: data.originalTextUnavailableCount || 0
+        originalTextUnavailableCount: data.originalTextUnavailableCount || 0,
+        skippedOriginalTextPapers: Array.isArray(data.skippedOriginalTextPapers) ? data.skippedOriginalTextPapers : []
       }
     });
 
@@ -2671,11 +2743,15 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     const fallbackText = updatedReport.readingList.fallbackSelectedCount
       ? `，其中 ${updatedReport.readingList.fallbackSelectedCount} 篇为保底补入`
       : "";
-    const reviewMeta = `，全文/摘要复评 ${updatedReport.readingList.reviewedPaperCount || papers.length} 篇、入选 ${updatedReport.readingList.paperCount} 篇${fallbackText}`;
+    const reviewSkippedText = updatedReport.readingList.reviewSkippedCount
+      ? `，${updatedReport.readingList.reviewSkippedCount} 篇复评未返回结果已跳过`
+      : "";
+    const reviewMeta = `，全文/摘要复评 ${updatedReport.readingList.reviewedPaperCount || papers.length} 篇、入选 ${updatedReport.readingList.paperCount} 篇${fallbackText}${reviewSkippedText}`;
+    const originalTextSkippedCount = updatedReport.readingList.originalTextUnavailableCount || 0;
     const originalTextMeta = !updatedReport.readingList.useOriginalText
       ? "，未启用论文原文抓取"
       : originalTextCount
-      ? `，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文`
+      ? `，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文${originalTextSkippedCount ? `，${originalTextSkippedCount} 篇因原文不可用被跳过` : ""}`
       : "，本次未获取到可用 arXiv HTML 原文";
     elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${reviewMeta}${originalTextMeta}，约 ${charCount} 字符。`;
     setReadingListProgress("ready", "生成完成", `已保存到当前列表的周报结果${reviewMeta}${originalTextMeta}。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {

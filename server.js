@@ -33,6 +33,7 @@ const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 10 * 60
 const candidateBatchMax = 100;
 const recommendationListMax = 100;
 const readingListCandidateMax = 100;
+const readingListReviewBatchSize = Math.min(Math.max(Number(process.env.READING_LIST_REVIEW_BATCH_SIZE || 1), 1), 20);
 const arxivAutoSyncEnabled = !/^(0|false|no)$/i.test(String(process.env.ARXIV_AUTO_SYNC || "1"));
 const arxivAutoSyncInitialDelayMs = Number(process.env.ARXIV_AUTO_SYNC_INITIAL_DELAY_MS || 30 * 1000);
 const arxivAutoSyncRetryMs = Number(process.env.ARXIV_AUTO_SYNC_RETRY_MS || 60 * 60 * 1000);
@@ -823,8 +824,14 @@ const fetchPaperOriginalText = async (paper, maxChars) => {
   }
 
   if (paperOriginalTextInflight.has(cacheKey)) {
-    const entry = await paperOriginalTextInflight.get(cacheKey);
-    return paperOriginalTextResult(entry, maxChars);
+    try {
+      const entry = await paperOriginalTextInflight.get(cacheKey);
+      return paperOriginalTextResult(entry, maxChars);
+    } catch (error) {
+      return unavailablePaperOriginalText(error.name === "AbortError"
+        ? "抓取 arXiv HTML 原文超时。"
+        : error.message);
+    }
   }
 
   const run = async () => {
@@ -959,12 +966,12 @@ const enrichPapersWithOriginalText = async (
       item.cached = Boolean(originalText.cached);
       item.message = originalText.status === "available"
         ? `${originalText.cached ? "命中缓存" : "已获取"} ${originalText.source || "原文"}，约 ${originalText.chars || 0} 字符`
-        : originalText.message || "未获取到可用原文";
+        : `已跳过：${originalText.message || "未获取到可用原文"}`;
       results[index] = {
         ...paper,
         originalText
       };
-      publishOriginalTextProgress(requestId, progressItems, `${item.state === "available" ? "已获取原文" : "未获取原文"}：${item.title}`);
+      publishOriginalTextProgress(requestId, progressItems, `${item.state === "available" ? "已获取原文" : "已跳过原文不可用论文"}：${item.title}`);
     }
   };
 
@@ -972,18 +979,26 @@ const enrichPapersWithOriginalText = async (
     Array.from({ length: Math.min(paperOriginalTextConcurrency, papers.length) }, worker)
   );
 
-  const fullTextCount = results.filter((paper) => paper.originalText?.status === "available").length;
+  const availablePapers = results.filter((paper) => paper.originalText?.status === "available");
+  const skippedPapers = results.filter((paper) => paper.originalText?.status !== "available");
+  const fullTextCount = availablePapers.length;
   publishOriginalTextProgress(
     requestId,
     progressItems,
-    `原文抓取完成：成功 ${fullTextCount} 篇，未获取 ${results.length - fullTextCount} 篇，${nextActionMessage}。`,
+    `原文抓取完成：成功 ${fullTextCount} 篇，已跳过 ${skippedPapers.length} 篇原文不可用论文，${nextActionMessage}。`,
     nextStage
   );
 
   return {
-    papers: results,
+    papers: availablePapers,
+    allPapers: results,
+    skippedPapers: skippedPapers.map((paper) => ({
+      id: paper.id,
+      title: paper.title,
+      message: paper.originalText?.message || "未获取到可用原文"
+    })),
     fullTextCount,
-    unavailableCount: results.length - fullTextCount,
+    unavailableCount: skippedPapers.length,
     perPaperBudget
   };
 };
@@ -2200,7 +2215,9 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
             "当前任务不是修改原始推荐列表，也不是沿用摘要初筛分数；原始列表只提供一组待复评论文。",
             "请基于输入中的论文原文摘录、摘要和元数据，重新给出周报专用四维分数和总分。",
             "如果 originalText.status=available，必须优先使用 originalText.excerpt；原始 analysis 只能作为背景线索，不能直接继承旧分数、旧排序或旧推荐结论。",
-            "如果没有可用原文，只能基于摘要和已有分析复评，并在 reviewReason 里明确证据边界。",
+            useOriginalText
+              ? "本次启用全文复评，输入论文已经过滤为可获取原文的候选；不要把摘要初筛结论当作全文复评结论。"
+              : "本次未启用全文复评，只能基于摘要和已有分析复评，并在 reviewReason 里明确证据边界。",
             "评分维度、权重和分数档位沿用下面的研究质量标准，但这次分数只服务于周报筛选和排序，不回写原始列表。",
             ...scoringRubric,
             "ICT、电信、ADN 等产业方向匹配只能作为标签或方向信号，不能给四维分数加分。",
@@ -2450,8 +2467,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "如果某篇论文的 readingListReview.selectionReason 是 fallback，说明它是为了满足周报最低入选数量而补入；不要把它写成强推荐或本周必读，应放在快速扫读或补充观察层级，并明确写出它的具体短板和为什么只适合低优先级阅读。",
               ...(useOriginalText
                 ? [
-                  "每篇论文如果带有 originalText.status=available 和 originalText.excerpt，必须优先基于 originalText.excerpt 进行解读；analysis 字段只作为评分、维度和补充参考。不要只改写上一步的 tldr、whyRecommend 或 summary。",
-                  "如果 originalText 不可用，再使用 analysis.problem、analysis.method、analysis.technicalDetails、analysis.experiment、analysis.limitations、analysis.networkUseCase 和论文摘要，并明确这是基于摘要和已有分析的判断。"
+                  "本次启用论文原文抓取，入选论文已经过滤为 originalText.status=available 的候选。每篇论文必须优先基于 originalText.excerpt 进行解读；analysis 字段只作为评分、维度和补充参考。不要只改写上一步的 tldr、whyRecommend 或 summary。"
                 ]
                 : [
                   "本次未启用论文原文抓取，只能基于论文摘要、评分维度和已有分析生成。每篇论文涉及内容、方法、结果和局限时，都要用「基于摘要和已有分析看」标明依据，不要声称读过原文或全文。"
@@ -2646,7 +2662,7 @@ const normalizeReadingListReview = (paper, review = {}) => {
   };
 };
 
-const applyReadingListReviews = (papers, reviews) => {
+const applyReadingListReviews = (papers, reviews, { allowMissing = false } = {}) => {
   const reviewById = new Map((reviews || []).map((review) => [String(review.id), review]));
   const missing = papers
     .filter((paper) => !reviewById.has(paper.id))
@@ -2656,10 +2672,12 @@ const applyReadingListReviews = (papers, reviews) => {
     const error = new Error(`LLM did not return reading-list reviews for ${missing.length} papers.`);
     error.code = "LLM_INCOMPLETE_READING_LIST_REVIEW";
     error.missingPapers = missing;
-    throw error;
+    if (!allowMissing || missing.length >= papers.length) {
+      throw error;
+    }
   }
 
-  return papers.map((paper) => {
+  const reviewedPapers = papers.filter((paper) => reviewById.has(paper.id)).map((paper) => {
     const readingListReview = normalizeReadingListReview(paper, reviewById.get(paper.id));
     const analysis = {
       ...paper.analysis,
@@ -2678,6 +2696,11 @@ const applyReadingListReviews = (papers, reviews) => {
       readingListReview
     };
   });
+
+  return {
+    papers: reviewedPapers,
+    missing
+  };
 };
 
 const selectReadingListPapers = (papers, { threshold = 70, minSelectedCount = 3 } = {}) => {
@@ -3320,6 +3343,12 @@ const handleReadingListRequest = async (request, response) => {
         unavailableCount: 0,
         perPaperBudget: 0
       };
+    if (report.useOriginalText && !originalTextContext.papers.length) {
+      const error = new Error("本次候选论文都没有获取到可用 arXiv HTML 原文，无法继续全文复评。请扩大候选范围，或关闭全文复评后基于摘要生成。");
+      error.code = "NO_READING_LIST_ORIGINAL_TEXT";
+      error.status = 400;
+      throw error;
+    }
     if (!report.useOriginalText) {
       setPaperRequestStatus(requestId, "reading-list", "已跳过论文原文抓取，正在提交给模型做周报复评。", "running", {
         stage: "review",
@@ -3338,8 +3367,18 @@ const handleReadingListRequest = async (request, response) => {
     let selectedPapers = reviewedPapers;
 
     if (report.reviewBeforeGenerate) {
-      setPaperRequestStatus(requestId, "reading-list", `正在对 ${reviewedPapers.length} 篇候选论文进行周报复评。`, "running", {
+      const reviewTotal = reviewedPapers.length;
+      setPaperRequestStatus(requestId, "reading-list", `正在对 ${reviewTotal} 篇候选论文进行周报复评。`, "running", {
         stage: "review",
+        reviewSummary: {
+          total: reviewTotal,
+          reviewed: 0,
+          running: 0,
+          pending: reviewTotal,
+          batchIndex: 0,
+          totalBatches: Math.ceil(reviewTotal / readingListReviewBatchSize),
+          skipped: 0
+        },
         originalTextSummary: paperRequestStatuses.get(requestId)?.originalTextSummary || {
           total: papers.length,
           pending: 0,
@@ -3349,13 +3388,79 @@ const handleReadingListRequest = async (request, response) => {
         },
         originalTextItems: paperRequestStatuses.get(requestId)?.originalTextItems || []
       });
-      const llmReviews = await callLlmReadingListReview({
-        papers: reviewedPapers,
-        llm: requestLlm,
-        useOriginalText: report.useOriginalText,
-        scoreThreshold: report.reviewScoreThreshold
-      });
-      reviewedPapers = applyReadingListReviews(reviewedPapers, llmReviews);
+      const reviewBatches = [];
+
+      for (let start = 0; start < reviewedPapers.length; start += readingListReviewBatchSize) {
+        reviewBatches.push(reviewedPapers.slice(start, start + readingListReviewBatchSize));
+      }
+
+      const llmReviews = [];
+      let processedReviewCount = 0;
+
+      for (let batchIndex = 0; batchIndex < reviewBatches.length; batchIndex += 1) {
+        const batch = reviewBatches[batchIndex];
+        const reviewedCount = llmReviews.length;
+        const skippedCount = Math.max(0, processedReviewCount - reviewedCount);
+        const pendingCount = Math.max(0, reviewTotal - processedReviewCount - batch.length);
+        const currentOrdinal = processedReviewCount + 1;
+        const batchTitle = batch.length === 1
+          ? readingListStatusTitle(batch[0], processedReviewCount)
+          : `${readingListStatusTitle(batch[0], processedReviewCount)} 等 ${batch.length} 篇`;
+        const reviewMessage = batch.length === 1
+          ? `周报复评第 ${currentOrdinal}/${reviewTotal} 篇：正在处理 ${batchTitle}。`
+          : `周报复评第 ${batchIndex + 1}/${reviewBatches.length} 批：正在处理 ${batchTitle}。`;
+
+        setPaperRequestStatus(requestId, "reading-list", reviewMessage, "running", {
+          stage: "review",
+          currentIndex: reviewedCount,
+          currentTitle: batchTitle,
+          reviewSummary: {
+            total: reviewTotal,
+            reviewed: reviewedCount,
+            running: batch.length,
+            pending: pendingCount,
+            batchIndex: batchIndex + 1,
+            totalBatches: reviewBatches.length,
+            skipped: skippedCount
+          },
+          originalTextSummary: paperRequestStatuses.get(requestId)?.originalTextSummary,
+          originalTextItems: paperRequestStatuses.get(requestId)?.originalTextItems || []
+        });
+
+        const batchReviews = await callLlmReadingListReview({
+          papers: batch,
+          llm: requestLlm,
+          useOriginalText: report.useOriginalText,
+          scoreThreshold: report.reviewScoreThreshold
+        });
+
+        llmReviews.push(...batchReviews);
+        processedReviewCount += batch.length;
+        const completedReviewCount = Math.min(reviewTotal, llmReviews.length);
+        const skippedReviewCount = Math.max(0, processedReviewCount - completedReviewCount);
+        const skippedReviewText = skippedReviewCount
+          ? `，已跳过 ${skippedReviewCount} 篇未返回复评结果的论文`
+          : "";
+        setPaperRequestStatus(requestId, "reading-list", `周报复评进度：已完成 ${completedReviewCount}/${reviewTotal} 篇${skippedReviewText}。`, "running", {
+          stage: "review",
+          reviewSummary: {
+            total: reviewTotal,
+            reviewed: completedReviewCount,
+            running: 0,
+            pending: Math.max(0, reviewTotal - processedReviewCount),
+            batchIndex: batchIndex + 1,
+            totalBatches: reviewBatches.length,
+            skipped: skippedReviewCount
+          },
+          originalTextSummary: paperRequestStatuses.get(requestId)?.originalTextSummary,
+          originalTextItems: paperRequestStatuses.get(requestId)?.originalTextItems || []
+        });
+      }
+
+      const appliedReviews = applyReadingListReviews(reviewedPapers, llmReviews, { allowMissing: true });
+      reviewedPapers = appliedReviews.papers;
+      report.reviewSkippedCount = appliedReviews.missing.length;
+
       const selection = selectReadingListPapers(reviewedPapers, {
         threshold: report.reviewScoreThreshold,
         minSelectedCount: report.minSelectedCount
@@ -3375,14 +3480,24 @@ const handleReadingListRequest = async (request, response) => {
       const fallbackText = report.fallbackSelectedCount
         ? `，另按复评分补入 ${report.fallbackSelectedCount} 篇保底论文`
         : "";
+      const skippedReviewText = report.reviewSkippedCount
+        ? `，跳过 ${report.reviewSkippedCount} 篇未返回复评结果的论文`
+        : "";
       setPaperRequestStatus(
         requestId,
         "reading-list",
-        `周报复评完成：${reviewedPapers.length} 篇候选中 ${report.thresholdSelectedCount} 篇达到 ${report.reviewScoreThreshold} 分${fallbackText}，正在生成周报。`,
+        `周报复评完成：${reviewedPapers.length} 篇候选中 ${report.thresholdSelectedCount} 篇达到 ${report.reviewScoreThreshold} 分${fallbackText}${skippedReviewText}，正在生成周报正文。`,
         "running",
         {
           stage: "generate",
           reviewSummary: {
+            total: reviewTotal,
+            reviewed: reviewedPapers.length,
+            running: 0,
+            pending: 0,
+            skipped: report.reviewSkippedCount,
+            batchIndex: reviewBatches.length,
+            totalBatches: reviewBatches.length,
             candidateCount: reviewedPapers.length,
             selectedCount: selectedPapers.length,
             thresholdSelectedCount: report.thresholdSelectedCount,
@@ -3424,6 +3539,7 @@ const handleReadingListRequest = async (request, response) => {
       paperCount: selectedPapers.length,
       candidateCount: papers.length,
       reviewedPaperCount: reviewedPapers.length,
+      reviewSkippedCount: report.reviewSkippedCount || 0,
       reviewScoreThreshold: report.reviewScoreThreshold,
       minSelectedCount: report.effectiveMinSelectedCount || report.minSelectedCount,
       thresholdSelectedCount: report.thresholdSelectedCount ?? selectedPapers.length,
@@ -3431,7 +3547,10 @@ const handleReadingListRequest = async (request, response) => {
       reviewBeforeGenerate: report.reviewBeforeGenerate,
       useOriginalText: report.useOriginalText,
       originalTextCount: selectedPapers.filter((paper) => paper.originalText?.status === "available").length,
-      originalTextUnavailableCount: selectedPapers.filter((paper) => paper.originalText?.status !== "available").length,
+      originalTextUnavailableCount: report.useOriginalText
+        ? originalTextContext.unavailableCount
+        : selectedPapers.filter((paper) => paper.originalText?.status !== "available").length,
+      skippedOriginalTextPapers: originalTextContext.skippedPapers || [],
       title: generatedTitle
     });
   } catch (error) {
