@@ -264,6 +264,25 @@ const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim()
 const readingListTitlePrefix = "【精选论文】";
 const readingListFooterNote = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.2";
 const readingListTitleSuffixMaxChars = 32;
+const readingListSpecificTitleTopics = [
+  { label: "护栏验证", patterns: [/guard\s*rail/i, /guardrail/i, /criticality/i, /护栏/i] },
+  { label: "可信安全", patterns: [/safety/i, /security/i, /trust/i, /reliab/i, /安全/i, /可信/i, /可靠/i] },
+  { label: "网络数字孪生", patterns: [/digital\s*twin/i, /twin\s*network/i, /数字孪生/i] },
+  { label: "意图驱动", patterns: [/intent[-\s]?based/i, /intent[-\s]?driven/i, /意图/i] },
+  { label: "闭环自治", patterns: [/closed[-\s]?loop/i, /feedback\s*loop/i, /闭环/i, /自治闭环/i] },
+  { label: "多智能体协同", patterns: [/multi[-\s]?agent/i, /multiagent/i, /多智能体/i, /协同智能体/i] },
+  { label: "检索增强", patterns: [/\bRAG\b/i, /retriev/i, /检索增强/i, /知识检索/i] },
+  { label: "网络基础模型", patterns: [/foundation\s*model/i, /network\s*foundation/i, /基础模型/i, /表征学习/i] },
+  { label: "评测基准", patterns: [/benchmark/i, /evaluation/i, /评测/i, /基准/i] },
+  { label: "仿真评估", patterns: [/simulation/i, /simulator/i, /仿真/i, /模拟/i] },
+  { label: "故障诊断", patterns: [/fault/i, /anomal/i, /root\s*cause/i, /故障/i, /异常/i, /根因/i] },
+  { label: "流量调度", patterns: [/traffic/i, /routing/i, /scheduling/i, /路由/i, /流量/i, /调度/i] },
+  { label: "无线网络", patterns: [/\bRAN\b/i, /\b6G\b/i, /wireless/i, /radio\s*access/i, /无线/i] },
+  { label: "工具调用", patterns: [/tool\s*use/i, /tool\s*calling/i, /function\s*calling/i, /工具调用/i] },
+  { label: "知识图谱", patterns: [/knowledge\s*graph/i, /知识图谱/i] }
+];
+const readingListGenericTitlePattern = /(值得关注|重要趋势|核心趋势|前沿进展|发展趋势|新范式|新方向|新机遇|持续演进|加速落地|深度融合|全面赋能|多点开花|多维推进|本周论文|关键方向|技术路线|研究进展)/;
+const readingListBroadTitleTerms = ["智能体", "网络自治", "大模型", "ICT", "ADN", "系统架构", "工程化", "论文", "研究"];
 
 const formatReadingListTitleBase = (report = {}) => {
   const date = new Date(report.date || new Date());
@@ -284,7 +303,83 @@ const readingListTitleFromMarkdown = (markdown) => {
   return normalizeText(headingTitle || frontmatterTitle);
 };
 
-const normalizeReadingListTitle = (value, titleBase, description = "") => {
+const readingListPaperTopicText = (paper = {}) => normalizeText([
+  paper.title,
+  paper.summary,
+  paper.analysis?.tldr,
+  paper.analysis?.problem,
+  paper.analysis?.method,
+  paper.analysis?.technicalDetails,
+  paper.analysis?.networkUseCase,
+  paper.readingListReview?.tldr,
+  paper.readingListReview?.valueHighlight,
+  paper.readingListReview?.reviewReason
+].filter(Boolean).join(" "));
+
+const readingListTitleTopicHints = (papers = [], limit = 4) => {
+  const scores = new Map();
+
+  papers.forEach((paper, index) => {
+    const text = readingListPaperTopicText(paper);
+    const weight = index < 3 ? 2 : 1;
+
+    readingListSpecificTitleTopics.forEach((topic) => {
+      if (topic.patterns.some((pattern) => pattern.test(text))) {
+        scores.set(topic.label, (scores.get(topic.label) || 0) + weight);
+      }
+    });
+  });
+
+  return [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-Hans-CN"))
+    .slice(0, limit)
+    .map(([label]) => label);
+};
+
+const readingListTitleHasSpecificTopic = (suffix, topicHints = []) => {
+  const text = normalizeText(suffix);
+  return topicHints.some((topic) => text.includes(topic));
+};
+
+const isGenericReadingListTitleSuffix = (suffix, topicHints = []) => {
+  const text = normalizeText(suffix);
+
+  if (Array.from(text).length < 10) {
+    return true;
+  }
+
+  if (readingListTitleHasSpecificTopic(text, topicHints)) {
+    return false;
+  }
+
+  const broadTermCount = readingListBroadTitleTerms.filter((term) => text.includes(term)).length;
+  return readingListGenericTitlePattern.test(text) || broadTermCount >= 2;
+};
+
+const fallbackReadingListTitleSuffix = (papers = [], description = "") => {
+  const topicHints = readingListTitleTopicHints(papers, 3);
+
+  if (topicHints.length >= 2) {
+    return `${topicHints[0]}与${topicHints[1]}构成本周主线`;
+  }
+
+  if (topicHints.length === 1) {
+    return `${topicHints[0]}成为本周最具体信号`;
+  }
+
+  const descriptionText = normalizeText(description)
+    .replace(/^本周观点[:：]\s*/, "")
+    .replace(/[。！？.!?]+$/g, "");
+
+  if (descriptionText && !isGenericReadingListTitleSuffix(descriptionText, [])) {
+    return descriptionText;
+  }
+
+  return "可验证系统证据成为本周筛选主线";
+};
+
+const normalizeReadingListTitle = (value, titleBase, { description = "", papers = [] } = {}) => {
+  const topicHints = readingListTitleTopicHints(papers);
   const raw = normalizeText(value).replace(/^#\s*/, "");
   const withoutOldPrefix = raw.replace(/^【精选论文】\d{2,4}年\d{1,2}月第\d{1,2}[周月](?:精选论文)?阅读清单[:：]\s*/, "")
     .replace(/^【精选论文】\d{2,4}年\d{1,2}月第\d{1,2}[周月][:：]\s*/, "");
@@ -296,15 +391,26 @@ const normalizeReadingListTitle = (value, titleBase, description = "") => {
     .replace(/精选论文阅读清单/g, "")
     .replace(/[。！？.!?]+$/g, "")
     .trim();
-  const compactSuffix = Array.from(suffix || "本周论文聚焦网络智能体闭环验证").slice(0, readingListTitleSuffixMaxChars).join("");
+  const concreteSuffix = isGenericReadingListTitleSuffix(suffix, topicHints)
+    ? fallbackReadingListTitleSuffix(papers, fallback)
+    : suffix;
+  const compactSuffix = Array.from(concreteSuffix || fallbackReadingListTitleSuffix(papers, fallback)).slice(0, readingListTitleSuffixMaxChars).join("");
 
   return `${titleBase}${compactSuffix}`;
 };
 
-const ensureReadingListMarkdownFormat = (markdown, titleBase) => {
+const ensureReadingListFooter = (markdown) => {
+  const footerLikePattern = new RegExp(`\\n*(?:>\\s*)?${escapeRegExp(readingListFooterNote)}\\s*$`);
+  const partialFooterPattern = /\n*(?:>\s*)?本文由论文推荐\s*Agent\s*生成[\s\S]{0,240}$/;
+  const withoutExactFooter = String(markdown || "").replace(footerLikePattern, "").replace(partialFooterPattern, "").replace(/\s+$/g, "");
+
+  return `${withoutExactFooter}\n\n${readingListFooterNote}`;
+};
+
+const ensureReadingListMarkdownFormat = (markdown, titleBase, { papers = [] } = {}) => {
   let next = String(markdown || "").replace(/^```(?:markdown)?\s*|\s*```$/g, "").trim();
   const description = normalizeText(next.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1] || "");
-  const title = normalizeReadingListTitle(readingListTitleFromMarkdown(next), titleBase, description);
+  const title = normalizeReadingListTitle(readingListTitleFromMarkdown(next), titleBase, { description, papers });
   const escapedTitle = title.replace(/"/g, '\\"');
 
   if (/^---\s*[\s\S]*?\n---/.test(next)) {
@@ -324,11 +430,7 @@ const ensureReadingListMarkdownFormat = (markdown, titleBase) => {
   }
 
   next = next.replace(/^>\s*本周观点：.*\n+/m, "");
-
-  const footerPattern = new RegExp(`${escapeRegExp(readingListFooterNote)}\\s*$`);
-  if (!footerPattern.test(next)) {
-    next = `${next.replace(/\s+$/g, "")}\n\n${readingListFooterNote}`;
-  }
+  next = ensureReadingListFooter(next);
 
   return { markdown: next, title };
 };
@@ -2413,6 +2515,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
   try {
     const titleBase = formatReadingListTitleBase(report);
     const useOriginalText = report.useOriginalText !== false;
+    const titleTopicHints = readingListTitleTopicHints(papers);
     const payload = {
       model,
       temperature: 0.25,
@@ -2446,6 +2549,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               reviewBeforeGenerate: report.reviewBeforeGenerate !== false,
               useOriginalText,
               originalTextCount: papers.filter((paper) => paper.originalText?.status === "available").length,
+              titleTopicHints,
               tags: ["ICT", "大模型", "智能体", "网络自治", "网络数字孪生", "系统架构", "华为 ADN"],
               scoringDimensions: dimensions.map((dimension) => ({
                 key: dimension.key,
@@ -2456,7 +2560,8 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
             instruction: [
               `请生成以「${titleBase}」开头的标题。`,
               "标题格式固定为：【精选论文】{yy}年{month}月第{weekOfMonth}周阅读清单：{一句话观点}。",
-              "标题冒号后必须直接写一句本周核心趋势或观点，控制在 18-32 个中文字符以内；不要复述标题，不要使用“值得关注”“重要意义”这类空泛表达。",
+              `标题冒号后必须直接写一句本周核心趋势或观点，控制在 18-32 个中文字符以内；必须绑定本周入选论文的具体主题，优先使用这些主题提示：${titleTopicHints.join("、") || "从入选论文标题和证据中提取具体主题"}。`,
+              "标题不要只写“智能体赋能网络自治”“新范式”“值得关注”“重要趋势”“加速落地”“多点开花”这类每天都能套用的泛化表述。标题必须让读者看出本周具体在讨论什么问题或技术信号。",
               "输出必须包含 YAML front matter 和正文标题；YAML title 和正文一级标题必须完全一致，且都使用完整标题。",
               "YAML front matter 必须包含 description 字段，内容可以与标题冒号后的观点一致或略微展开，控制在 55 个中文字符以内。",
               "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、以及对 ADN 网络研究最有价值的研究信号。不要在导读里再写一组独立的阅读建议，避免和后面的阅读顺序重复。",
@@ -2576,7 +2681,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
     }
 
     const data = await llmResponse.json();
-    return ensureReadingListMarkdownFormat(ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol)), titleBase);
+    return ensureReadingListMarkdownFormat(ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol)), titleBase, { papers });
   } catch (error) {
     if (error?.name === "AbortError") {
       const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
