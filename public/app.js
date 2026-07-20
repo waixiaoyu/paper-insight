@@ -1207,7 +1207,8 @@ function reportTitle() {
 function readingListTitle(report = state.currentReport) {
   const date = new Date(report?.createdAt || new Date());
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
-  return `${readingListTitlePrefix}${safeDate.getFullYear()}年${safeDate.getMonth() + 1}月第${weekOfMonth(safeDate)}月精选论文阅读清单`;
+  const shortYear = String(safeDate.getFullYear()).slice(-2);
+  return `${readingListTitlePrefix}${shortYear}年${safeDate.getMonth() + 1}月第${weekOfMonth(safeDate)}周阅读清单：待生成观点`;
 }
 
 function setActiveView(name) {

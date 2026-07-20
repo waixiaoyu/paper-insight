@@ -261,25 +261,57 @@ const highValueSignalForScore = (score, scores = {}, analysis = {}) => {
 
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
 const readingListTitlePrefix = "【精选论文】";
-const readingListFooterNote = "本文由论文推荐Agent生成总结+人工校对，欢迎提出宝贵建议。";
+const readingListFooterNote = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.2";
+const readingListTitleSuffixMaxChars = 32;
 
-const formatReadingListTitle = (report = {}) => {
+const formatReadingListTitleBase = (report = {}) => {
   const date = new Date(report.date || new Date());
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
   const monthMatch = String(report.month || "").match(/^(\d{4})-(\d{1,2})$/);
   const year = monthMatch ? Number(monthMatch[1]) : safeDate.getFullYear();
   const month = monthMatch ? Number(monthMatch[2]) : safeDate.getMonth() + 1;
   const issue = Math.min(Math.max(Number(report.weekOfMonth || 1), 1), 6);
+  const shortYear = String(year).slice(-2);
 
-  return `${readingListTitlePrefix}${year}年${month}月第${issue}月精选论文阅读清单`;
+  return `${readingListTitlePrefix}${shortYear}年${month}月第${issue}周阅读清单：`;
 };
 
-const ensureReadingListMarkdownFormat = (markdown, title) => {
+const readingListTitleFromMarkdown = (markdown) => {
+  const text = String(markdown || "");
+  const frontmatterTitle = text.match(/^title:\s*["']?(.+?)["']?\s*$/m)?.[1];
+  const headingTitle = text.match(/^#\s+(.+?)\s*$/m)?.[1];
+  return normalizeText(headingTitle || frontmatterTitle);
+};
+
+const normalizeReadingListTitle = (value, titleBase, description = "") => {
+  const raw = normalizeText(value).replace(/^#\s*/, "");
+  const withoutOldPrefix = raw.replace(/^【精选论文】\d{2,4}年\d{1,2}月第\d{1,2}[周月](?:精选论文)?阅读清单[:：]\s*/, "")
+    .replace(/^【精选论文】\d{2,4}年\d{1,2}月第\d{1,2}[周月][:：]\s*/, "");
+  const candidate = raw.startsWith(titleBase)
+    ? raw.slice(titleBase.length)
+    : withoutOldPrefix;
+  const fallback = normalizeText(description).replace(/^本周观点[:：]\s*/, "");
+  const suffix = normalizeText(candidate || fallback)
+    .replace(/精选论文阅读清单/g, "")
+    .replace(/[。！？.!?]+$/g, "")
+    .trim();
+  const compactSuffix = Array.from(suffix || "本周论文聚焦网络智能体闭环验证").slice(0, readingListTitleSuffixMaxChars).join("");
+
+  return `${titleBase}${compactSuffix}`;
+};
+
+const ensureReadingListMarkdownFormat = (markdown, titleBase) => {
   let next = String(markdown || "").replace(/^```(?:markdown)?\s*|\s*```$/g, "").trim();
+  const description = normalizeText(next.match(/^description:\s*["']?(.+?)["']?\s*$/m)?.[1] || "");
+  const title = normalizeReadingListTitle(readingListTitleFromMarkdown(next), titleBase, description);
   const escapedTitle = title.replace(/"/g, '\\"');
 
   if (/^---\s*[\s\S]*?\n---/.test(next)) {
-    next = next.replace(/(^---\s*[\s\S]*?\ntitle:\s*).*(\n[\s\S]*?\n---)/, `$1"${escapedTitle}"$2`);
+    if (/^title:\s*.+$/m.test(next)) {
+      next = next.replace(/(^title:\s*).+$/m, `$1"${escapedTitle}"`);
+    } else {
+      next = next.replace(/^---\s*/, `---\ntitle: "${escapedTitle}"\n`);
+    }
   }
 
   if (/^#\s+.+$/m.test(next)) {
@@ -290,12 +322,14 @@ const ensureReadingListMarkdownFormat = (markdown, title) => {
     next = `# ${title}\n\n${next}`;
   }
 
+  next = next.replace(/^>\s*本周观点：.*\n+/m, "");
+
   const footerPattern = new RegExp(`${escapeRegExp(readingListFooterNote)}\\s*$`);
   if (!footerPattern.test(next)) {
     next = `${next.replace(/\s+$/g, "")}\n\n${readingListFooterNote}`;
   }
 
-  return next;
+  return { markdown: next, title };
 };
 
 const ensureLlmResponseWithinLimit = (value) => {
@@ -2360,7 +2394,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
 
   try {
-    const title = formatReadingListTitle(report);
+    const titleBase = formatReadingListTitleBase(report);
     const useOriginalText = report.useOriginalText !== false;
     const payload = {
       model,
@@ -2381,7 +2415,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
           role: "user",
           content: JSON.stringify({
             report: {
-              title,
+              titleBase,
               date: report.date,
               month: report.month,
               weekOfMonth: report.weekOfMonth,
@@ -2403,9 +2437,11 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               }))
             },
             instruction: [
-              `请生成「${title}」。`,
-              "标题格式固定为：【精选论文】{year}年{month}月第{weekOfMonth}月精选论文阅读清单。",
-              "输出必须包含 YAML front matter 和正文标题；YAML title 和正文一级标题必须完全等于输入 report.title。",
+              `请生成以「${titleBase}」开头的标题。`,
+              "标题格式固定为：【精选论文】{yy}年{month}月第{weekOfMonth}周阅读清单：{一句话观点}。",
+              "标题冒号后必须直接写一句本周核心趋势或观点，控制在 18-32 个中文字符以内；不要复述标题，不要使用“值得关注”“重要意义”这类空泛表达。",
+              "输出必须包含 YAML front matter 和正文标题；YAML title 和正文一级标题必须完全一致，且都使用完整标题。",
+              "YAML front matter 必须包含 description 字段，内容可以与标题冒号后的观点一致或略微展开，控制在 55 个中文字符以内。",
               "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、以及对 ADN 网络研究最有价值的研究信号。不要在导读里再写一组独立的阅读建议，避免和后面的阅读顺序重复。",
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
               "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
@@ -2437,7 +2473,8 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
             ].join("\n"),
             outputTemplate: [
               "---",
-              `title: \"${title}\"`,
+              `title: \"${titleBase}一句话观点\"`,
+              "description: \"一句话提炼本周核心趋势或观点，不超过 55 个中文字符\"",
               `date: \"${report.date}\"`,
               `month: \"${report.month}\"`,
               `week_of_month: ${report.weekOfMonth}`,
@@ -2453,7 +2490,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               `paper_count: ${papers.length}`,
               "---",
               "",
-              `# ${title}`,
+              `# ${titleBase}一句话观点`,
               "",
               "## 报告导读",
               "",
@@ -2523,7 +2560,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
     }
 
     const data = await llmResponse.json();
-    return ensureReadingListMarkdownFormat(ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol)), title);
+    return ensureReadingListMarkdownFormat(ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol)), titleBase);
   } catch (error) {
     if (error?.name === "AbortError") {
       const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
@@ -3229,7 +3266,7 @@ const handleReadingListRequest = async (request, response) => {
       minSelectedCount: Math.min(Math.max(Number(payload.minSelectedCount || 3), 1), 20),
       candidateCount: papers.length
     };
-    report.title = formatReadingListTitle(report);
+    report.title = formatReadingListTitleBase(report);
 
     const requestLlm = {
       apiKey: payload.llmApiKey,
@@ -3361,11 +3398,13 @@ const handleReadingListRequest = async (request, response) => {
 
     report.reviewedCount = reviewedPapers.length;
     report.paperCount = selectedPapers.length;
-    const markdown = await callLlmReadingList({
+    const readingListResult = await callLlmReadingList({
       report,
       papers: selectedPapers,
       llm: requestLlm
     });
+    const markdown = readingListResult.markdown;
+    const generatedTitle = readingListResult.title || report.title;
     const latestReadingListStatus = paperRequestStatuses.get(requestId);
     setPaperRequestStatus(requestId, "reading-list", "周报生成完成。", "done", {
       stage: "done",
@@ -3393,7 +3432,7 @@ const handleReadingListRequest = async (request, response) => {
       useOriginalText: report.useOriginalText,
       originalTextCount: selectedPapers.filter((paper) => paper.originalText?.status === "available").length,
       originalTextUnavailableCount: selectedPapers.filter((paper) => paper.originalText?.status !== "available").length,
-      title: report.title
+      title: generatedTitle
     });
   } catch (error) {
     const status = error.code === "LLM_NOT_CONFIGURED"
