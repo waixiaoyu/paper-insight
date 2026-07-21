@@ -1474,6 +1474,14 @@ const paperOriginalTextExcerpt = (text, maxChars = paperOriginalTextMaxChars) =>
   const sectionKeywords = [
     "abstract",
     "introduction",
+    "affiliation",
+    "affiliations",
+    "institution",
+    "university",
+    "institute",
+    "department",
+    "author",
+    "email",
     "method",
     "approach",
     "framework",
@@ -1490,6 +1498,7 @@ const paperOriginalTextExcerpt = (text, maxChars = paperOriginalTextMaxChars) =>
     "ablation",
     "discussion",
     "limitation",
+    "acknowledg",
     "conclusion"
   ];
   const scored = paragraphs
@@ -2454,6 +2463,7 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
             ...scoringRubric,
             "ICT、电信、ADN 等产业方向匹配只能作为标签或兴趣适配信号，不能给四维分数加分；服务端会先按四维分计算研究质量，再按 interestFit 做最终周报分校准。",
             "总分必须主要由四维分数反映：研究问题价值、方法新意、系统价值、证据强度。产业契合但研究贡献一般的论文，要在方法新意和证据强度上拉开差距；专用非目标领域论文要通过 interestFit 降低入选优先级。",
+            "每篇论文必须提取发表单位/作者机构线索。优先从 originalText.excerpt 的作者区、机构脚注、标题页、邮箱域名、致谢、项目页说明和摘要上下文判断；可以返回多个机构。无法确认时 affiliations 返回「单位线索不足」，并在 affiliationEvidence 里说明缺少哪些依据。不要凭作者姓名或国家刻板印象硬猜机构。",
             "reviewReason 必须写成具体复评判断：说明为什么它适合或不适合进入本次周报，点出方法、证据、系统落地或问题价值中的关键依据。",
             "只返回 JSON，不要输出 Markdown。"
           ].join("\n")
@@ -2481,6 +2491,8 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
                   },
                   interestFit: "target_network_autonomy | general_ai_system | out_of_scope_domain | unclear",
                   interestReason: "40-120 个中文字符，说明方向兴趣和是否需要降权",
+                  affiliations: ["发表单位或作者机构名称；无法确认时返回：单位线索不足"],
+                  affiliationEvidence: "40-160 个中文字符，说明判断发表单位所依据的作者区、脚注、邮箱域名、致谢或原文/摘要线索；无法确认时说明线索不足",
                   tldr: "一句话周报价值判断，说明这次复评后最值得关注或最明显的短板",
                   valueHighlight: "60-120 个中文字符，概括高分信号；如果不适合入选，说明核心短板",
                   reviewReason: "120-240 个中文字符，基于原文或摘要说明周报复评判断，禁止引用旧分数或只解释分数",
@@ -2700,6 +2712,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
               "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
               "每篇入选论文都必须展示本次周报复评分，并说明分别符合哪些评分维度。评分维度来自输入 readingListReview 或 analysis.dimensionDetails / analysis.scores，包括研究问题价值、方法新意、系统价值、证据强度；写出高匹配维度及其分项分，必要时指出较弱维度。analysis.industryTags 里的 ICT、电信、网络自治等产业/方向标签可以作为标签或方向信号展示，但不要写成评分维度，也不要把方向匹配解释为高分依据。",
+              "每篇入选论文都必须写「发表单位」。优先使用 readingListReview.affiliations 和 readingListReview.affiliationEvidence；如果 affiliations 是「单位线索不足」，仍必须写成「发表单位：单位线索不足（依据：...）」并解释缺少原文作者区、机构脚注、邮箱域名、致谢或项目页线索。不要把作者姓名误写成单位，不要无依据猜测机构。",
               "不要引用原始推荐列表的旧分数、旧排序或旧推荐/隐藏结论。当前输入论文已经经过周报复评筛选，Markdown 中的周报复评分、阅读层级和排序只依据本次周报复评结果。",
               "如果某篇论文的 readingListReview.selectionReason 是 fallback，说明它是为了满足周报最低入选数量而补入；不要把它写成强推荐或本周必读，应放在快速扫读或补充观察层级，并明确写出它的具体短板和为什么只适合低优先级阅读。",
               ...(useOriginalText
@@ -2721,7 +2734,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "「本周趋势判断」必须综合多篇论文，不能只是单篇论文摘要。可以包含研究机会、工程落地约束和下一步值得跟踪的问题。",
               "「推荐阅读顺序」要给出实际阅读路线和原因，只保留这一处阅读优先级建议，不要再新增独立的精简阅读、优先三篇或快速取舍章节。",
               "不要在发布内容中体现内部筛选阈值或推荐阈值；但每篇入选论文必须展示自己的周报复评分和符合的评分维度。",
-              "完整论文清单放在最后，表格列为：论文、一句话介绍、周报复评分、符合维度、阅读级别、链接。不要在完整论文清单里放方向列；一句话介绍要概括文章做了什么或为什么值得关注。",
+              "完整论文清单放在最后，表格列为：论文、发表单位、一句话介绍、周报复评分、符合维度、阅读级别、链接。不要在完整论文清单里放方向列；发表单位列必须覆盖每篇论文，线索不足时写「单位线索不足」；一句话介绍要概括文章做了什么或为什么值得关注。",
               `全文最后一行必须固定为：${readingListFooterNote}`
             ].join("\n"),
             outputTemplate: [
@@ -2753,6 +2766,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "### 1. 论文标题",
               "",
+              "- 发表单位：",
               "- 周报复评分：",
               "- 符合维度：",
               "- 主问题域：",
@@ -2779,8 +2793,8 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               "",
               "## 完整论文清单",
               "",
-              "| 论文 | 一句话介绍 | 周报复评分 | 符合维度 | 阅读级别 | 链接 |",
-              "| --- | --- | --- | --- | --- | --- |",
+              "| 论文 | 发表单位 | 一句话介绍 | 周报复评分 | 符合维度 | 阅读级别 | 链接 |",
+              "| --- | --- | --- | --- | --- | --- | --- |",
               "",
               readingListFooterNote
             ].join("\n"),
@@ -2869,6 +2883,27 @@ const normalizeAnalysis = (paper, analysis) => {
   };
 };
 
+const weakAffiliationPattern = /^(?:unknown|unclear|n\/a|none|null|not\s+available|not\s+specified|单位线索不足|单位不明|未知|不详|无法确认|无)$/i;
+
+const normalizeAffiliations = (value) => {
+  const rawItems = Array.isArray(value)
+    ? value
+    : String(value || "").split(/[;；、\n]+/);
+  const items = rawItems
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .filter((item) => !weakAffiliationPattern.test(item))
+    .map((item) => truncate(item, 100));
+  const unique = [...new Set(items)];
+  return unique.length ? unique.slice(0, 8) : ["单位线索不足"];
+};
+
+const fallbackAffiliationEvidence = (paper = {}) => (
+  paper.originalText?.status === "available"
+    ? "原文摘录、作者列表和摘要中没有看到足够明确的机构线索，需要打开论文 PDF 或项目页进一步核验。"
+    : "未获取到可用原文，只能基于作者列表、摘要和元数据判断，目前单位线索不足。"
+);
+
 const normalizeReadingListReview = (paper, review = {}) => {
   const scores = Object.fromEntries(
     dimensions.map((dimension) => [dimension.key, clamp(review.scores?.[dimension.key] ?? 0)])
@@ -2900,6 +2935,19 @@ const normalizeReadingListReview = (paper, review = {}) => {
     || normalizeText(review.valueHighlight)
     || highValueSignalForScore(score, scores, { ...review, interestFit: interest.fit, interestReason })
     || interestReason;
+  const affiliations = normalizeAffiliations(
+    review.affiliations
+      || review.affiliation
+      || review.institutions
+      || review.institution
+      || review.authorAffiliations
+  );
+  const affiliationEvidence = normalizeText(
+    review.affiliationEvidence
+      || review.institutionEvidence
+      || review.affiliationReason
+      || review.affiliationClues
+  ) || fallbackAffiliationEvidence(paper);
 
   return {
     score: Math.round(score),
@@ -2912,6 +2960,8 @@ const normalizeReadingListReview = (paper, review = {}) => {
     matchedDimensions,
     tldr: normalizeText(review.tldr) || normalizeText(paper?.analysis?.tldr),
     valueHighlight: normalizeText(review.valueHighlight) || highValueSignalForScore(score, scores, { ...review, interestFit: interest.fit, interestReason }),
+    affiliations,
+    affiliationEvidence: truncate(affiliationEvidence, 600),
     reviewReason: truncate(reviewReason, 900),
     evidenceBasis
   };
@@ -2946,6 +2996,8 @@ const applyReadingListReviews = (papers, reviews, { allowMissing = false } = {})
       matchedDimensions: readingListReview.matchedDimensions,
       tldr: readingListReview.tldr || paper.analysis?.tldr || "",
       valueHighlight: readingListReview.valueHighlight,
+      affiliations: readingListReview.affiliations,
+      affiliationEvidence: readingListReview.affiliationEvidence,
       whyRecommend: readingListReview.reviewReason || paper.analysis?.whyRecommend || ""
     };
 
