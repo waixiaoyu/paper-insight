@@ -39,6 +39,50 @@ const dimensionWeights = {
 };
 
 const strictIctPattern = /\b(ICT|telecom|telecommunications?|5G|6G|O-RAN|RAN|radio access network|cellular network|mobile network|wireless network|wireless communications?|core network|edge network|network slicing|SDN|NFV|QoS|routing|spectrum|handover|service assurance|fault diagnosis|alarm correlation|optical network|satellite network)\b|通信网络|电信|无线通信|蜂窝|移动网络|无线接入|网络切片/i;
+const targetInterestPattern = /\b(autonomous network(?:ing)?|self-driving network|zero-touch network|network digital twin|digital twin network|intent[-\s]?based network(?:ing)?|intent[-\s]?driven network|closed-loop autonomy|network automation|network orchestration|network management|network operations?|service assurance|O-RAN|RAN|radio access network|telecom(?:munications?)?|ICT|5G|6G|wireless communications?|cellular network|mobile network|core network|edge network|optical network|satellite network|network slicing|routing|QoS|spectrum|handover|fault diagnosis|alarm correlation|traffic prediction|anomaly detection)\b|网络自治|自智网络|零接触网络|网络数字孪生|意图驱动|闭环自治|网络自动化|网络编排|网络运维|电信|通信网络|无线通信|蜂窝|移动网络|无线接入|网络切片|路由|频谱|切换|故障诊断|告警关联|业务保障/i;
+const generalAiInterestPattern = /\b(large language model|LLM|foundation model|AI[-\s]?agents?|LLM[-\s]?agents?|agentic AI|autonomous agents?|multi[-\s]?agents?|RAG|retrieval[-\s]?augmented|tool[-\s]?calling|agent[-\s]?framework|agentic[-\s]?framework|workflow|benchmark|evaluation|guardrail|safety|alignment|planning|reasoning|orchestration|system architecture)\b|大模型|智能体|多智能体|工具调用|检索增强|评测|基准|安全|规划|推理|系统架构|工程化/i;
+const outOfScopeDomainPattern = /\b(medical|medicine|clinical|healthcare|diagnosis|patient|disease|cancer|genom(?:e|ic)|gene|protein|drug|brain|neuroscience|biology|biomedical|bioinformatics|geospatial|geography|earth observation|remote sensing|game|gaming|recommender systems?|social network|social media|education|finance|financial|legal|law|economics|chemistry|molecular)\b|医学|医疗|临床|诊断|患者|疾病|癌症|基因|蛋白|药物|脑科学|神经科学|生命科学|生物|地理|遥感|游戏|推荐系统|社交网络|教育|金融|法律|经济|化学|分子/i;
+const falseNetworkDomainPattern = /\b(social network|regulatory network|protein network|gene network|brain network)\b|社交网络|调控网络|蛋白网络|基因网络|脑网络/i;
+const interestFitRules = {
+  target_network_autonomy: {
+    label: "网络自治/电信方向",
+    adjustment: 4,
+    reason: "方向适配：命中网络自治、电信网络、ADN 或网络基础设施问题，小幅提升本轮排序优先级。"
+  },
+  general_ai_system: {
+    label: "通用 AI/Agent 方法",
+    adjustment: 2,
+    reason: "方向适配：属于通用 AI/Agent/系统方法，保留阅读价值，但需要进一步判断能否迁移到网络自治场景。"
+  },
+  out_of_scope_domain: {
+    label: "专用非目标领域",
+    adjustment: -6,
+    reason: "方向适配：主问题属于医学、生命科学、地理、游戏、社科、推荐等专用非目标领域，小幅降低本轮推荐优先级。"
+  },
+  unclear: {
+    label: "方向相关性不明",
+    adjustment: -2,
+    reason: "方向适配：暂时没有看到明确的网络自治/电信网络信号，也缺少足够清楚的通用可迁移方法，仅轻微后移。"
+  }
+};
+const interestFitAliases = {
+  target: "target_network_autonomy",
+  network: "target_network_autonomy",
+  telecom: "target_network_autonomy",
+  ict: "target_network_autonomy",
+  adn: "target_network_autonomy",
+  "target-network-autonomy": "target_network_autonomy",
+  target_network: "target_network_autonomy",
+  general: "general_ai_system",
+  generic: "general_ai_system",
+  "general-ai-system": "general_ai_system",
+  out: "out_of_scope_domain",
+  domain: "out_of_scope_domain",
+  irrelevant: "out_of_scope_domain",
+  "out-of-scope-domain": "out_of_scope_domain",
+  uncertain: "unclear",
+  unknown: "unclear"
+};
 const candidateBatchMax = 100;
 const recommendationTargetMax = 100;
 const extraBatchMax = 10;
@@ -334,7 +378,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
-const scoringRulesVersion = "research-quality-rubric-specific-lowreason-v2026-07-10";
+const scoringRulesVersion = "research-quality-rubric-soft-interest-no-cap-v2026-07-21b";
 const readingListStepOrder = ["collect", "submit", "source", "review", "generate", "receive", "save"];
 
 function normalizeQueryText(value) {
@@ -753,6 +797,64 @@ function clamp(value, min = 0, max = 100) {
   return Math.max(min, Math.min(max, Number(value) || 0));
 }
 
+function normalizeInterestFit(value, fallback = "unclear") {
+  const raw = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+  const normalized = interestFitAliases[raw] || raw;
+  return interestFitRules[normalized] ? normalized : fallback;
+}
+
+function interestTextForPaper(paper = {}) {
+  const analysis = paper.analysis || {};
+  return [
+    paper.title,
+    paper.summary,
+    paper.primaryCategory,
+    ...(Array.isArray(paper.categories) ? paper.categories : []),
+    analysis.tldr,
+    analysis.problem,
+    analysis.method,
+    analysis.technicalDetails,
+    ...(Array.isArray(analysis.matchedKeywords) ? analysis.matchedKeywords : [])
+  ].filter(Boolean).join(" ");
+}
+
+function inferInterestFit(paper = {}) {
+  const text = interestTextForPaper(paper);
+  const hasTarget = targetInterestPattern.test(text) || strictIctPattern.test(text);
+  const hasGeneralAi = generalAiInterestPattern.test(text);
+  const hasSpecificNonTarget = outOfScopeDomainPattern.test(text) || (falseNetworkDomainPattern.test(text) && !hasTarget);
+
+  if (hasTarget) {
+    return "target_network_autonomy";
+  }
+
+  if (hasGeneralAi) {
+    return "general_ai_system";
+  }
+
+  if (hasSpecificNonTarget) {
+    return "out_of_scope_domain";
+  }
+
+  return "unclear";
+}
+
+function interestCalibrationForPaper(paper = {}) {
+  const analysis = paper.analysis || {};
+  const inferred = inferInterestFit(paper);
+  const modelFit = normalizeInterestFit(
+    analysis.interestFit || analysis.domainFit || analysis.topicFit || analysis.relevanceFit,
+    inferred
+  );
+  const modelClaimsTargetWithoutEvidence = modelFit === "target_network_autonomy"
+    && inferred !== "target_network_autonomy";
+  const fit = modelClaimsTargetWithoutEvidence ? inferred : modelFit;
+  return {
+    fit,
+    ...(interestFitRules[fit] || interestFitRules.unclear)
+  };
+}
+
 function candidateLimitValue() {
   return Math.max(5, Math.min(candidateBatchMax, Number(elements.limitInput.value) || 10));
 }
@@ -901,7 +1003,7 @@ function dimensionScore(paper, key) {
   return rawDimensionScore(paper, key) ?? 0;
 }
 
-function weightedPaperScore(paper) {
+function researchQualityScore(paper) {
   let weighted = 0;
   let totalWeight = 0;
 
@@ -926,12 +1028,43 @@ function weightedPaperScore(paper) {
   const balancePenalty = Math.max(0, base - weakestResearchSignal) * 0.12;
   const weakEvidencePenalty = Math.max(0, 70 - evidence) * 0.2;
 
-  return Math.round(clamp(base * 1.2 - 22 - balancePenalty - weakEvidencePenalty));
+  return clamp(base * 1.2 - 22 - balancePenalty - weakEvidencePenalty);
+}
+
+function weightedPaperScore(paper) {
+  const quality = researchQualityScore(paper);
+
+  if (quality === null) {
+    return null;
+  }
+
+  const interest = interestCalibrationForPaper(paper);
+  return Math.round(clamp(quality + interest.adjustment));
 }
 
 function paperScore(paper) {
   const weighted = weightedPaperScore(paper);
   return weighted ?? clamp(paper?.analysis?.score ?? 0);
+}
+
+function interestLabelForPaper(paper) {
+  const analysis = paper?.analysis || {};
+  return analysis.interestLabel || interestCalibrationForPaper(paper).label;
+}
+
+function interestReasonForPaper(paper) {
+  const analysis = paper?.analysis || {};
+  return String(analysis.interestReason || interestCalibrationForPaper(paper).reason || "").trim();
+}
+
+function interestAdjustmentText(paper) {
+  const adjustment = Number(paper?.analysis?.interestAdjustment ?? interestCalibrationForPaper(paper).adjustment) || 0;
+
+  if (adjustment > 0) {
+    return `+${adjustment}`;
+  }
+
+  return String(adjustment);
 }
 
 const scoreTierClasses = [
@@ -988,8 +1121,9 @@ function setScorePill(pill, paper) {
   const score = paperScore(paper);
   const tier = scoreTier(score);
   pill.textContent = `${score} 分 · ${tier.label}`;
-  pill.title = tier.description;
-  pill.setAttribute("aria-label", `${score} 分，${tier.label}。${tier.description}`);
+  const interestText = `${interestLabelForPaper(paper)} ${interestAdjustmentText(paper)} 分`;
+  pill.title = `${tier.description} ${interestText}`;
+  pill.setAttribute("aria-label", `${score} 分，${tier.label}。${tier.description} ${interestText}`);
   pill.classList.remove(...scoreTierClasses);
   pill.classList.add(tier.className);
 }
@@ -1039,11 +1173,17 @@ function industryTagsForPaper(paper) {
 }
 
 function appendIndustryTagPills(meta, paper) {
+  const interest = document.createElement("span");
+  interest.className = "industry-pill";
+  interest.textContent = interestLabelForPaper(paper);
+  interest.title = `${interestReasonForPaper(paper)} 校准 ${interestAdjustmentText(paper)} 分。`;
+  meta.append(interest);
+
   industryTagsForPaper(paper).forEach((tag) => {
     const pill = document.createElement("span");
     pill.className = "industry-pill";
     pill.textContent = tag;
-    pill.title = "产业/方向匹配标签，不参与推荐分计算。";
+    pill.title = "产业/方向标签；最终推荐分由兴趣适配单独校准。";
     meta.append(pill);
   });
 }
@@ -1075,6 +1215,10 @@ function readingListPaperPayload(paper) {
     analysis: {
       score: paperScore(paper),
       scores: Object.fromEntries(dimensionDetails.map((item) => [item.key, item.score])),
+      interestFit: analysis.interestFit || interestCalibrationForPaper(paper).fit,
+      interestLabel: interestLabelForPaper(paper),
+      interestAdjustment: Number(analysis.interestAdjustment ?? interestCalibrationForPaper(paper).adjustment) || 0,
+      interestReason: interestReasonForPaper(paper),
       dimensionDetails,
       matchedDimensions,
       tldr: analysis.tldr || "",
@@ -3496,9 +3640,15 @@ function notRecommendReasonForPaper(paper) {
     return "";
   }
 
+  const interest = interestCalibrationForPaper(paper);
+  const lowInterestReason = interest.fit === "out_of_scope_domain" || interest.fit === "unclear"
+    ? interestReasonForPaper(paper)
+    : "";
   const explicit = String(paper?.analysis?.notRecommendReason || "").trim();
   if (explicit && !isGenericNotRecommendReason(explicit)) {
-    return explicit;
+    return lowInterestReason && !explicit.includes("方向适配")
+      ? `${lowInterestReason} ${explicit}`
+      : explicit;
   }
 
   const weakDimensionKeys = Object.entries(dimensionLabels)
@@ -3508,9 +3658,10 @@ function notRecommendReasonForPaper(paper) {
     .map((item) => item.key);
   const reasons = weakDimensionKeys.map((key) => weakDimensionShortfall(paper, key)).filter(Boolean);
 
-  return reasons.length
+  const qualityReason = reasons.length
     ? reasons.join(" ")
     : "这篇论文目前看不出足够明确的研究增量：问题定义、方法机制、系统可复用性和证据支撑都缺少可核验细节，因此不适合作为本轮重点阅读对象。";
+  return lowInterestReason ? `${lowInterestReason} ${qualityReason}` : qualityReason;
 }
 
 function isGenericNotRecommendReason(value) {
@@ -3581,9 +3732,13 @@ function highValueSignalForPaper(paper) {
     return "";
   }
 
+  const interest = interestCalibrationForPaper(paper);
+  const interestReason = interest.fit === "target_network_autonomy" ? interestReasonForPaper(paper) : "";
   const explicit = String(paper?.analysis?.valueHighlight || "").trim();
   if (explicit) {
-    return explicit;
+    return interestReason && !explicit.includes("方向适配")
+      ? `${explicit} ${interestReason}`
+      : explicit;
   }
 
   const topDimensions = Object.entries(dimensionLabels)
@@ -3594,9 +3749,10 @@ function highValueSignalForPaper(paper) {
     .join("、");
   const reason = compactSentence(paper?.analysis?.whyRecommend, 96);
 
+  const suffix = interestReason ? ` ${interestReason}` : "";
   return reason
-    ? `高分信号：${topDimensions || "关键维度较强"}；${reason}`
-    : `高分信号：${topDimensions || "关键维度较强"}，建议优先核验其方法贡献、系统机制和证据支撑。`;
+    ? `高分信号：${topDimensions || "关键维度较强"}；${reason}${suffix}`
+    : `高分信号：${topDimensions || "关键维度较强"}，建议优先核验其方法贡献、系统机制和证据支撑。${suffix}`;
 }
 
 async function translatePaper(paper, button, target) {
@@ -3901,7 +4057,7 @@ function openPaper(paper, options = {}) {
   setHeader({
     eyebrow: state.paperReturnView === "explore" ? "论文探索 / 单篇分析" : "推荐报告 / 单篇分析",
     title: paper.title || "论文分析",
-    description: `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · 推荐分 ${paperScore(paper)}。`,
+    description: `${formatDate(paper.published)} · ${paperCategoryLabel(paper)} · ${interestLabelForPaper(paper)} · 推荐分 ${paperScore(paper)}。`,
     showBack: true,
     backLabel: state.paperReturnView === "explore" ? "返回探索" : "返回报告"
   });
@@ -3986,6 +4142,10 @@ function renderPaperDetail(paper) {
   const sections = document.createElement("div");
   sections.className = "analysis-detail-body";
   const detailSections = [
+    createDetailSection("方向适配", [
+      { label: "兴趣分类", body: `${interestLabelForPaper(paper)}（校准 ${interestAdjustmentText(paper)} 分）` },
+      { label: "判断依据", body: interestReasonForPaper(paper) }
+    ]),
     createDetailSection("背景与问题", [
       { label: "背景", body: analysisText(paper, "background") },
       { label: "问题", body: analysisText(paper, "problem") }

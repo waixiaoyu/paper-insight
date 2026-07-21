@@ -67,7 +67,7 @@ const dimensions = [
     key: "scenarioProblemValue",
     label: "研究问题价值",
     weight: 0.2,
-    description: "研究问题是否被清晰定义，是否具有真实重要性、科学研究价值和可验证假设；ICT、电信或 ADN 方向匹配只作为标签，不参与该维度加分。"
+    description: "研究问题是否被清晰定义，是否具有真实重要性、科学研究价值和可验证假设；方向兴趣会在总分校准中单独处理，不混入该维度。"
   },
   {
     key: "methodNovelty",
@@ -90,13 +90,14 @@ const dimensions = [
 ];
 
 const scoringRubric = [
-  "总分档位：0-49 表示基本不达标，概念模糊、贡献弱、证据不足或只是产业/实践/流程性内容；50-59 表示弱相关或弱贡献，有一定问题意识或应用场景，但研究设计、方法机制或证据明显不足；60-69 表示一般候选，方向或问题有价值，但创新、系统完整性、证据至少有一项明显短板；70-79 表示值得扫读，问题清楚，有一定研究贡献或系统价值，但还不是强论文；80-89 表示重点关注，问题、方法、系统或证据中至少两项比较强，值得深入读；90-100 表示少数高价值论文，问题重要，方法有实质贡献，证据扎实，结论边界清楚，值得跟踪或复现。",
-  "维度打分必须使用同样的档位含义，不能把一般相关论文集中打到 70 分以上；方向匹配、产业价值或 ICT/ADN 相关性只能做标签，不能提高任何维度分。",
+  "总分档位：0-49 表示基本不达标，概念模糊、贡献弱、证据不足或只是产业/实践/流程性内容；50-59 表示弱相关、弱贡献或专用非目标领域论文；60-69 表示一般候选，方向或问题有价值，但创新、系统完整性、证据至少有一项明显短板，或方向相关性还不明确；70-79 表示值得扫读，问题清楚，有一定研究贡献或系统价值，但还不是强论文；80-89 表示重点关注，问题、方法、系统或证据中至少两项比较强，值得深入读；90-100 表示少数高价值论文，问题重要，方法有实质贡献，证据扎实，结论边界清楚，且和目标方向高度相关。",
+  "维度打分必须使用同样的档位含义，不能把一般相关论文集中打到 70 分以上；方向匹配、产业价值或 ICT/ADN 相关性不能提高四维分，只能通过独立的 interestFit 影响最终推荐分。",
   "研究问题价值：0-49 表示问题不清楚或只是愿景/场景口号；50-59 表示有问题意识，但定义宽泛，缺少可验证目标；60-69 表示问题有意义，但边界、假设或研究难点不够清楚；70-79 表示问题清晰，研究价值明确，值得扫读；80-89 表示问题重要且定义好，对领域有推进意义；90-100 只给非常关键、可泛化、能牵引后续研究的问题。",
   "方法新意：0-49 表示无实质方法，只是宣传、流程总结、概念框架、标准解读或新名词包装；50-59 表示主要套用已有方法，只有轻微场景包装；60-69 表示有组合或适配，但新机制有限；70-79 表示有明确的技术适配、约束建模、状态表示、工具调用、安全验证、流程或评测设计；80-89 表示提出可复用的新机制、新算法、新任务定义、新评测协议或新的 agent 协同/验证机制；90-100 只给方法贡献显著，别人可以实现、比较、迁移的论文。",
   "系统价值：0-49 表示只有概念图、愿景或不可执行流程；50-59 表示有系统想法，但模块、接口、运行条件不清楚；60-69 表示系统结构基本清楚，但可复用性、闭环机制或失败处理有限；70-79 表示模块、数据流、流程较清晰，有实现路径；80-89 表示架构完整，关键机制、部署约束、风险处理比较清楚；90-100 只给系统设计成熟，可迁移、可验证、可复用的论文。",
   "证据强度：0-49 表示几乎没有实验或可核验结果；50-59 表示只有 demo、案例或弱实验；60-69 表示有实验但基线、消融、泛化或复现线索不足；70-79 表示实验设置基本合理，有数据、指标、基线和结果；80-89 表示证据扎实，有多基线、消融、鲁棒性或泛化分析；90-100 只给多场景、多数据、强基线、充分消融且结论边界清楚的论文。",
-  "降分规则：如果只能基于摘要和元数据判断，要保守评分并在 limitations 中说明；如果方法新意或证据强度明显不足，总分必须被拉低；如果只是 LLM/RAG/tool calling/workflow 常规拼装，方法新意通常不应超过 69；如果只有业务场景价值但缺少可验证机制或证据，总分通常不应超过 69。"
+  "兴趣适配：interestFit 必须在 target_network_autonomy、general_ai_system、out_of_scope_domain、unclear 中选择。网络自治、电信网络、ADN、O-RAN、5G/6G、网络数字孪生、意图驱动、闭环自治、网络运维、路由/QoS/频谱/切片/故障诊断等目标方向用 target_network_autonomy；通用 LLM/Agent/多智能体/工具调用/RAG/评测/安全/系统架构方法用 general_ai_system，即使用医学、金融等垂直数据验证，只要主要贡献是可迁移通用方法也不要归为非目标；只有主问题、评价对象或应用场景明确落在医学、生命科学、脑科学、基因组、地理数据、游戏、教育、金融、法律、社科、推荐系统等专用垂直领域，且摘要看不出可迁移的一般 AI/Agent/系统方法时，才用 out_of_scope_domain；看不清适用方向时用 unclear。",
+  "降分规则：如果只能基于摘要和元数据判断，要保守评分并在 limitations 中说明；如果方法新意或证据强度明显不足，总分必须被拉低；如果只是 LLM/RAG/tool calling/workflow 常规拼装，方法新意通常不应超过 69；如果只有业务场景价值但缺少可验证机制或证据，总分通常不应超过 69；专用非目标领域论文只做轻度降权，不设置 70 分封顶，研究质量特别强时仍可进入推荐区。"
 ];
 
 const mimeTypes = {
@@ -123,7 +124,109 @@ const sendJson = (response, status, payload, headers = {}) => {
 
 const clamp = (value, min = 0, max = 100) => Math.max(min, Math.min(max, Number(value) || 0));
 
-const weightedScore = (scores = {}) => {
+const interestFitRules = {
+  target_network_autonomy: {
+    label: "网络自治/电信方向",
+    adjustment: 4,
+    reason: "方向适配：命中网络自治、电信网络、ADN 或网络基础设施问题，小幅提升本轮排序优先级。"
+  },
+  general_ai_system: {
+    label: "通用 AI/Agent 方法",
+    adjustment: 2,
+    reason: "方向适配：属于通用 AI/Agent/系统方法，保留阅读价值，但需要进一步判断能否迁移到网络自治场景。"
+  },
+  out_of_scope_domain: {
+    label: "专用非目标领域",
+    adjustment: -6,
+    reason: "方向适配：主问题属于医学、生命科学、地理、游戏、社科、推荐等专用非目标领域，小幅降低本轮推荐优先级。"
+  },
+  unclear: {
+    label: "方向相关性不明",
+    adjustment: -2,
+    reason: "方向适配：暂时没有看到明确的网络自治/电信网络信号，也缺少足够清楚的通用可迁移方法，仅轻微后移。"
+  }
+};
+
+const interestFitAliases = {
+  target: "target_network_autonomy",
+  network: "target_network_autonomy",
+  telecom: "target_network_autonomy",
+  ict: "target_network_autonomy",
+  adn: "target_network_autonomy",
+  "target-network-autonomy": "target_network_autonomy",
+  "target_network": "target_network_autonomy",
+  general: "general_ai_system",
+  generic: "general_ai_system",
+  "general-ai-system": "general_ai_system",
+  out: "out_of_scope_domain",
+  domain: "out_of_scope_domain",
+  irrelevant: "out_of_scope_domain",
+  "out-of-scope-domain": "out_of_scope_domain",
+  uncertain: "unclear",
+  unknown: "unclear"
+};
+
+const normalizeInterestFit = (value, fallback = "unclear") => {
+  const raw = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+  const normalized = interestFitAliases[raw] || raw;
+  return interestFitRules[normalized] ? normalized : fallback;
+};
+
+const textForInterestFit = (paper = {}, analysis = {}) => [
+  paper.title,
+  paper.summary,
+  paper.primaryCategory,
+  ...(Array.isArray(paper.categories) ? paper.categories : []),
+  analysis.tldr,
+  analysis.problem,
+  analysis.method,
+  analysis.technicalDetails,
+  ...(Array.isArray(analysis.matchedKeywords) ? analysis.matchedKeywords : [])
+].filter(Boolean).join(" ");
+
+const targetInterestPattern = /\b(autonomous network(?:ing)?|self-driving network|zero-touch network|network digital twin|digital twin network|intent[-\s]?based network(?:ing)?|intent[-\s]?driven network|closed-loop autonomy|network automation|network orchestration|network management|network operations?|service assurance|O-RAN|RAN|radio access network|telecom(?:munications?)?|ICT|5G|6G|wireless communications?|cellular network|mobile network|core network|edge network|optical network|satellite network|network slicing|routing|QoS|spectrum|handover|fault diagnosis|alarm correlation|traffic prediction|anomaly detection)\b|网络自治|自智网络|零接触网络|网络数字孪生|意图驱动|闭环自治|网络自动化|网络编排|网络运维|电信|通信网络|无线通信|蜂窝|移动网络|无线接入|网络切片|路由|频谱|切换|故障诊断|告警关联|业务保障/i;
+const generalAiInterestPattern = /\b(large language model|LLM|foundation model|AI[-\s]?agents?|LLM[-\s]?agents?|agentic AI|autonomous agents?|multi[-\s]?agents?|RAG|retrieval[-\s]?augmented|tool[-\s]?calling|agent[-\s]?framework|agentic[-\s]?framework|workflow|benchmark|evaluation|guardrail|safety|alignment|planning|reasoning|orchestration|system architecture)\b|大模型|智能体|多智能体|工具调用|检索增强|评测|基准|安全|规划|推理|系统架构|工程化/i;
+const outOfScopeDomainPattern = /\b(medical|medicine|clinical|healthcare|diagnosis|patient|disease|cancer|genom(?:e|ic)|gene|protein|drug|brain|neuroscience|biology|biomedical|bioinformatics|geospatial|geography|earth observation|remote sensing|game|gaming|recommender systems?|social network|social media|education|finance|financial|legal|law|economics|chemistry|molecular)\b|医学|医疗|临床|诊断|患者|疾病|癌症|基因|蛋白|药物|脑科学|神经科学|生命科学|生物|地理|遥感|游戏|推荐系统|社交网络|教育|金融|法律|经济|化学|分子/i;
+const falseNetworkDomainPattern = /\b(social network|regulatory network|protein network|gene network|brain network)\b|社交网络|调控网络|蛋白网络|基因网络|脑网络/i;
+
+const inferInterestFit = (paper = {}, analysis = {}) => {
+  const text = textForInterestFit(paper, analysis);
+  const hasTarget = targetInterestPattern.test(text) || hasStrictIctSignal(paper, analysis.matchedKeywords);
+  const hasGeneralAi = generalAiInterestPattern.test(text);
+  const hasSpecificNonTarget = outOfScopeDomainPattern.test(text) || (falseNetworkDomainPattern.test(text) && !hasTarget);
+
+  if (hasTarget) {
+    return "target_network_autonomy";
+  }
+
+  if (hasGeneralAi) {
+    return "general_ai_system";
+  }
+
+  if (hasSpecificNonTarget) {
+    return "out_of_scope_domain";
+  }
+
+  return "unclear";
+};
+
+const interestCalibrationForPaper = (paper = {}, analysis = {}) => {
+  const inferred = inferInterestFit(paper, analysis);
+  const modelFit = normalizeInterestFit(analysis.interestFit || analysis.domainFit || analysis.topicFit || analysis.relevanceFit, inferred);
+  const modelClaimsTargetWithoutEvidence = modelFit === "target_network_autonomy"
+    && inferred !== "target_network_autonomy";
+  const fit = modelClaimsTargetWithoutEvidence ? inferred : modelFit;
+  const rule = interestFitRules[fit] || interestFitRules.unclear;
+
+  return {
+    fit,
+    label: rule.label,
+    adjustment: rule.adjustment,
+    reason: rule.reason
+  };
+};
+
+const researchQualityScore = (scores = {}) => {
   const totalWeight = dimensions.reduce((total, dimension) => total + dimension.weight, 0) || 1;
   const base = dimensions.reduce((sum, dimension) => (
     sum + clamp(scores[dimension.key]) * dimension.weight
@@ -134,6 +237,12 @@ const weightedScore = (scores = {}) => {
   const balancePenalty = Math.max(0, base - weakestResearchSignal) * 0.12;
   const weakEvidencePenalty = Math.max(0, 70 - evidence) * 0.2;
   return clamp(base * 1.2 - 22 - balancePenalty - weakEvidencePenalty);
+};
+
+const weightedScore = (scores = {}, interestFit = "general_ai_system") => {
+  const quality = researchQualityScore(scores);
+  const rule = interestFitRules[normalizeInterestFit(interestFit, "general_ai_system")] || interestFitRules.general_ai_system;
+  return clamp(quality + rule.adjustment);
 };
 
 const normalizeTags = (items, max = 8) => (
@@ -213,9 +322,13 @@ const notRecommendReasonForScore = (score, scores = {}, analysis = {}) => {
     return "";
   }
 
+  const interestFit = normalizeInterestFit(analysis.interestFit || analysis.domainFit || analysis.topicFit || analysis.relevanceFit, "");
+  const lowInterestReason = (interestFit === "out_of_scope_domain" || interestFit === "unclear")
+    ? normalizeText(analysis.interestReason) || interestFitRules[interestFit].reason
+    : "";
   const existing = normalizeText(analysis.notRecommendReason);
   if (existing && !genericNotRecommendPattern.test(existing)) {
-    return existing;
+    return lowInterestReason ? `${lowInterestReason} ${existing}` : existing;
   }
 
   const weakDimensionKeys = dimensions
@@ -230,9 +343,10 @@ const notRecommendReasonForScore = (score, scores = {}, analysis = {}) => {
     .map((key) => weakDimensionShortfall(key, analysis))
     .filter(Boolean);
 
-  return reasons.length
+  const qualityReason = reasons.length
     ? reasons.join(" ")
     : "这篇论文目前看不出足够明确的研究增量：问题定义、方法机制、系统可复用性和证据支撑都缺少可核验细节，因此不适合作为本轮重点阅读对象。";
+  return lowInterestReason ? `${lowInterestReason} ${qualityReason}` : qualityReason;
 };
 
 const highValueSignalForScore = (score, scores = {}, analysis = {}) => {
@@ -242,7 +356,13 @@ const highValueSignalForScore = (score, scores = {}, analysis = {}) => {
 
   const existing = normalizeText(analysis.valueHighlight);
   if (existing) {
-    return existing;
+    const interestFit = normalizeInterestFit(analysis.interestFit || analysis.domainFit || analysis.topicFit || analysis.relevanceFit, "");
+    const interestReason = interestFit === "target_network_autonomy"
+      ? normalizeText(analysis.interestReason) || interestFitRules.target_network_autonomy.reason
+      : "";
+    return interestReason && !existing.includes("方向适配")
+      ? `${existing} ${interestReason}`
+      : existing;
   }
 
   const topDimensions = dimensions
@@ -1922,12 +2042,19 @@ const sanitizeReadingListPaper = (paper) => {
   const scores = Object.fromEntries(
     dimensions.map((dimension) => [dimension.key, clamp(analysis.scores?.[dimension.key] ?? 0)])
   );
+  const interest = interestCalibrationForPaper(sanitized, analysis);
+  const score = weightedScore(scores, interest.fit);
+  const interestReason = normalizeText(analysis.interestReason) || interest.reason;
 
   return {
     ...sanitized,
     analysis: {
-      score: Math.round(weightedScore(scores)),
+      score: Math.round(score),
       scores,
+      interestFit: interest.fit,
+      interestLabel: interest.label,
+      interestAdjustment: interest.adjustment,
+      interestReason,
       dimensionDetails: dimensions.map((dimension) => ({
         key: dimension.key,
         label: dimension.label,
@@ -1941,7 +2068,7 @@ const sanitizeReadingListPaper = (paper) => {
           .sort((a, b) => b.score - a.score)
           .map((item) => `${item.label} ${item.score}`),
       tldr: truncate(analysis.tldr, 420),
-      valueHighlight: truncate(highValueSignalForScore(weightedScore(scores), scores, analysis), 600),
+      valueHighlight: truncate(highValueSignalForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason }), 600),
       problem: truncate(analysis.problem, 900),
       background: truncate(analysis.background, 900),
       method: truncate(analysis.method, 1200),
@@ -1952,7 +2079,7 @@ const sanitizeReadingListPaper = (paper) => {
       limitations: truncate(analysis.limitations, 800),
       recommendedReadingPath: truncate(analysis.recommendedReadingPath, 800),
       whyRecommend: truncate(analysis.whyRecommend, 900),
-      notRecommendReason: truncate(notRecommendReasonForScore(weightedScore(scores), scores, analysis), 900),
+      notRecommendReason: truncate(notRecommendReasonForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason }), 900),
       industryTags: normalizeIndustryTags(
         sanitized,
         analysis.industryTags || analysis.ictTags,
@@ -2187,9 +2314,10 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
             "tldr 不是普通摘要，必须是论文价值判断的一句话。推荐分 70 及以上时，tldr 必须写出它相对普通候选更值得读的具体原因，包含核心贡献、最强维度和可核验信号，不能只写“提出了一个框架/方法”。推荐分低于 70 时，tldr 要说明主要价值和主要短板。",
             "推荐分 70 及以上必须填写 valueHighlight，用 60-120 个中文字符写出显性高分信号：强项来自研究问题、方法新意、系统价值还是证据强度，具体强在哪里。不要重复标题，不要使用“具有重要意义”“值得关注”这类空泛表达。",
             "如果根据分项分计算后的推荐分低于 60，必须填写 notRecommendReason。它必须是具体评审意见，不是分数解释：不要写“总分低于 60”“某维度多少分”“建议只在后续补充背景时再读”这类模板话；要直接说明这篇论文具体差在哪里，例如方法只是流程拼装、没有可复用机制，系统接口/闭环/失败处理没说清，实验缺少数据集/基线/消融/真实场景，或摘要只能看到愿景而看不到可验证假设。必须引用论文内容中的具体短板。",
-            "ICT、电信、ADN、O-RAN 等产业和业务方向匹配只能写入 industryTags 或 matchedKeywords，不能作为 scores 或 score 的加分依据；总分只反映研究问题价值、方法新意、系统价值和证据强度。",
+            "ICT、电信、ADN、O-RAN 等产业和业务方向匹配只能写入 industryTags、matchedKeywords、interestFit 和 interestReason，不能作为四维 scores 的加分依据；服务端会先按四维分计算研究质量，再按 interestFit 做最终推荐分校准。",
             "只有当论文的主问题域是通信/电信/网络基础设施时，才能在 industryTags 中写 ICT，例如 5G/6G、RAN/O-RAN、无线/蜂窝/移动/核心/边缘/光/卫星网络、网络切片、路由、QoS、频谱、切换、业务保障、告警关联或故障诊断。泛 AI agent、泛多智能体系统、泛 graph/neural network、社交网络、一般 computer network 或只出现 network 一词，都不要标 ICT。",
             "对于产业宣介、实践总结、框架愿景或标准化流程型论文，要按实际研究贡献、可验证机制和证据强度打分，不要因为业务方向高度匹配而抬高研究问题价值、方法新意或系统价值。",
+            "非目标领域的定义是：论文主问题、评价对象或主要应用场景明确落在医学、生命科学、脑科学、基因组、地理、游戏、教育、金融、法律、社科、推荐系统等专用垂直领域，且摘要没有展示可迁移的通用 AI/Agent/系统方法。若论文只是使用这些垂直数据做验证，但主要贡献是通用机制、架构、评测或 agent 方法，应设为 general_ai_system，而不是 out_of_scope_domain。",
             "分析正文要尽量具体、完整、可读：把问题背景、方法机制、技术路线、实验可信度、网络应用价值、局限和阅读路径写成可以直接帮助研究人员快速判断论文价值的内容。",
             "如果只能基于摘要分析，也要明确区分事实、合理推断和需要打开原文核验的部分。",
             "只返回 JSON，不要输出 Markdown。"
@@ -2213,6 +2341,8 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
                     practicalValue: "0-100",
                     evidence: "0-100"
                   },
+                  interestFit: "target_network_autonomy | general_ai_system | out_of_scope_domain | unclear",
+                  interestReason: "40-120 个中文字符，说明它为什么属于网络自治/电信方向、通用可迁移方法、专用非目标领域或方向不明",
                   tldr: "一句话价值判断。70 分及以上必须写出核心贡献、最强维度和可核验证据/系统/方法信号；低于 70 要写出主要价值和短板",
                   valueHighlight: "仅当推荐分 70 及以上时必填：60-120 个中文字符，说明显性高分信号和强项来源；70 分以下返回空字符串",
                   problem: "论文解决的问题，至少 180 字",
@@ -2322,8 +2452,8 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
               : "本次未启用全文复评，只能基于摘要和已有分析复评，并在 reviewReason 里明确证据边界。",
             "评分维度、权重和分数档位沿用下面的研究质量标准，但这次分数只服务于周报筛选和排序，不回写原始列表。",
             ...scoringRubric,
-            "ICT、电信、ADN 等产业方向匹配只能作为标签或方向信号，不能给四维分数加分。",
-            "总分必须由四维分数反映：研究问题价值、方法新意、系统价值、证据强度。产业契合但研究贡献一般的论文，要在方法新意和证据强度上拉开差距。",
+            "ICT、电信、ADN 等产业方向匹配只能作为标签或兴趣适配信号，不能给四维分数加分；服务端会先按四维分计算研究质量，再按 interestFit 做最终周报分校准。",
+            "总分必须主要由四维分数反映：研究问题价值、方法新意、系统价值、证据强度。产业契合但研究贡献一般的论文，要在方法新意和证据强度上拉开差距；专用非目标领域论文要通过 interestFit 降低入选优先级。",
             "reviewReason 必须写成具体复评判断：说明为什么它适合或不适合进入本次周报，点出方法、证据、系统落地或问题价值中的关键依据。",
             "只返回 JSON，不要输出 Markdown。"
           ].join("\n")
@@ -2349,6 +2479,8 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
                     practicalValue: "0-100",
                     evidence: "0-100"
                   },
+                  interestFit: "target_network_autonomy | general_ai_system | out_of_scope_domain | unclear",
+                  interestReason: "40-120 个中文字符，说明方向兴趣和是否需要降权",
                   tldr: "一句话周报价值判断，说明这次复评后最值得关注或最明显的短板",
                   valueHighlight: "60-120 个中文字符，概括高分信号；如果不适合入选，说明核心短板",
                   reviewReason: "120-240 个中文字符，基于原文或摘要说明周报复评判断，禁止引用旧分数或只解释分数",
@@ -2700,13 +2832,19 @@ const normalizeAnalysis = (paper, analysis) => {
   const scores = Object.fromEntries(
     dimensions.map((dimension) => [dimension.key, clamp(analysis.scores[dimension.key])])
   );
-  const score = weightedScore(scores);
+  const interest = interestCalibrationForPaper(paper, analysis);
+  const interestReason = normalizeText(analysis.interestReason) || interest.reason;
+  const score = weightedScore(scores, interest.fit);
 
   return {
     score: Math.round(score),
     scores,
+    interestFit: interest.fit,
+    interestLabel: interest.label,
+    interestAdjustment: interest.adjustment,
+    interestReason,
     tldr: normalizeText(analysis.tldr),
-    valueHighlight: normalizeText(highValueSignalForScore(score, scores, analysis)),
+    valueHighlight: normalizeText(highValueSignalForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason })),
     problem: normalizeText(analysis.problem),
     background: normalizeText(analysis.background),
     method: normalizeText(analysis.method),
@@ -2726,7 +2864,7 @@ const normalizeAnalysis = (paper, analysis) => {
       8,
       analysis.matchedKeywords
     ),
-    notRecommendReason: normalizeText(notRecommendReasonForScore(score, scores, analysis)),
+    notRecommendReason: normalizeText(notRecommendReasonForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason })),
     whyRecommend: normalizeText(analysis.whyRecommend)
   };
 };
@@ -2735,7 +2873,14 @@ const normalizeReadingListReview = (paper, review = {}) => {
   const scores = Object.fromEntries(
     dimensions.map((dimension) => [dimension.key, clamp(review.scores?.[dimension.key] ?? 0)])
   );
-  const score = weightedScore(scores);
+  const interest = interestCalibrationForPaper(paper, {
+    ...paper?.analysis,
+    ...review,
+    interestFit: review.interestFit || paper?.analysis?.interestFit,
+    interestReason: review.interestReason || paper?.analysis?.interestReason
+  });
+  const interestReason = normalizeText(review.interestReason) || normalizeText(paper?.analysis?.interestReason) || interest.reason;
+  const score = weightedScore(scores, interest.fit);
   const dimensionDetails = dimensions.map((dimension) => ({
     key: dimension.key,
     label: dimension.label,
@@ -2753,15 +2898,20 @@ const normalizeReadingListReview = (paper, review = {}) => {
       : "abstract-fallback";
   const reviewReason = normalizeText(review.reviewReason)
     || normalizeText(review.valueHighlight)
-    || highValueSignalForScore(score, scores, review);
+    || highValueSignalForScore(score, scores, { ...review, interestFit: interest.fit, interestReason })
+    || interestReason;
 
   return {
     score: Math.round(score),
     scores,
+    interestFit: interest.fit,
+    interestLabel: interest.label,
+    interestAdjustment: interest.adjustment,
+    interestReason,
     dimensionDetails,
     matchedDimensions,
     tldr: normalizeText(review.tldr) || normalizeText(paper?.analysis?.tldr),
-    valueHighlight: normalizeText(review.valueHighlight) || highValueSignalForScore(score, scores, review),
+    valueHighlight: normalizeText(review.valueHighlight) || highValueSignalForScore(score, scores, { ...review, interestFit: interest.fit, interestReason }),
     reviewReason: truncate(reviewReason, 900),
     evidenceBasis
   };
@@ -2788,6 +2938,10 @@ const applyReadingListReviews = (papers, reviews, { allowMissing = false } = {})
       ...paper.analysis,
       score: readingListReview.score,
       scores: readingListReview.scores,
+      interestFit: readingListReview.interestFit,
+      interestLabel: readingListReview.interestLabel,
+      interestAdjustment: readingListReview.interestAdjustment,
+      interestReason: readingListReview.interestReason,
       dimensionDetails: readingListReview.dimensionDetails,
       matchedDimensions: readingListReview.matchedDimensions,
       tldr: readingListReview.tldr || paper.analysis?.tldr || "",
