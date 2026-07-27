@@ -1,0 +1,1213 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/k2u8om",
+    "id": "k2u8om",
+    "slide": 9,
+    "layoutId": "cd7cd47d-cc91-4108-81ce-9fa013508c7f",
+    "layoutName": "Title Slide",
+    "layoutType": "title",
+    "masterLayoutId": "887b93c2-d02e-4ba1-a70b-01f1b26fff2b",
+    "masterLayoutName": "Master",
+    "backgroundColor": "#FFFFFF",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "ChatGPT",
+    "colors": {
+      "accent1": "#156082",
+      "accent2": "#E97132",
+      "accent3": "#196B24",
+      "accent4": "#0F9ED5",
+      "accent5": "#A02B93",
+      "accent6": "#4EA72E",
+      "bg1": "#FFFFFF",
+      "bg2": "#000000",
+      "tx1": "#1F1F1F",
+      "tx2": "#FFFFFF",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#0E2841",
+      "lt2": "#E8E8E8",
+      "hlink": "#467886",
+      "folHlink": "#96607D"
+    },
+    "typefaces": [
+      "Microsoft YaHei"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "cd7cd47d-cc91-4108-81ce-9fa013508c7f",
+      "name": "Title Slide",
+      "type": "title",
+      "parentLayoutId": "887b93c2-d02e-4ba1-a70b-01f1b26fff2b",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "887b93c2-d02e-4ba1-a70b-01f1b26fff2b",
+      "name": "Master",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/65wjudg7",
+      "id": "1",
+      "bbox": [
+        42,
+        40,
+        420,
+        24
+      ],
+      "geometry": "rect",
+      "text": "优势在哪里",
+      "textPreview": "优势在哪里",
+      "resolvedFontSize": 15,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 15,
+        "typeface": "Microsoft YaHei",
+        "color": "#0E5E72",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优势在哪里"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优势在哪里",
+          "lineSpacingPercent": 112000,
+          "resolvedTextStyle": {
+            "fontSize": 15,
+            "typeface": "Microsoft YaHei",
+            "color": "#0E5E72",
+            "bold": true,
+            "alignment": "left",
+            "lineSpacing": 1.12
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优势在哪里",
+              "fontSize": 15,
+              "typeface": "Microsoft YaHei",
+              "color": "#0E5E72",
+              "bold": true,
+              "alignment": "left",
+              "lineSpacing": 1.12
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hwfyxobm",
+      "id": "2",
+      "bbox": [
+        42,
+        70,
+        980,
+        68
+      ],
+      "geometry": "rect",
+      "text": "优势来自可视化的人机共控 Agentic 流程",
+      "textPreview": "优势来自可视化的人机共控 Agentic 流程",
+      "resolvedFontSize": 44,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 44,
+        "typeface": "Microsoft YaHei",
+        "color": "#071321",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优势来自可视化的人机共控 Agentic 流程"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优势来自可视化的人机共控 Agentic 流程",
+          "lineSpacingPercent": 95000,
+          "resolvedTextStyle": {
+            "fontSize": 44,
+            "typeface": "Microsoft YaHei",
+            "color": "#071321",
+            "bold": true,
+            "alignment": "left",
+            "lineSpacing": 0.95
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优势来自可视化的人机共控 Agentic 流程",
+              "fontSize": 44,
+              "typeface": "Microsoft YaHei",
+              "color": "#071321",
+              "bold": true,
+              "alignment": "left",
+              "lineSpacing": 0.95
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/obm58z25",
+      "id": "3",
+      "bbox": [
+        42,
+        650,
+        1196,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#E3E8ED",
+      "lineWidth": 1
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/zed8v6ps",
+      "id": "4",
+      "bbox": [
+        42,
+        664,
+        420,
+        24
+      ],
+      "geometry": "rect",
+      "text": "Agentic Paper Insight 宣传材料",
+      "textPreview": "Agentic Paper Insight 宣传材料",
+      "resolvedFontSize": 14,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 14,
+        "typeface": "Microsoft YaHei",
+        "color": "#52657A",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Agentic Paper Insight 宣传材料"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Agentic Paper Insight 宣传材料",
+          "lineSpacingPercent": 112000,
+          "resolvedTextStyle": {
+            "fontSize": 14,
+            "typeface": "Microsoft YaHei",
+            "color": "#52657A",
+            "alignment": "left",
+            "lineSpacing": 1.12
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Agentic Paper Insight 宣传材料",
+              "fontSize": 14,
+              "typeface": "Microsoft YaHei",
+              "color": "#52657A",
+              "alignment": "left",
+              "lineSpacing": 1.12
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/6xkf6dcb",
+      "id": "5",
+      "bbox": [
+        1170,
+        662,
+        68,
+        26
+      ],
+      "geometry": "rect",
+      "text": "09",
+      "textPreview": "09",
+      "resolvedFontSize": 14,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 14,
+        "typeface": "Microsoft YaHei",
+        "color": "#52657A",
+        "alignment": "right",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "09"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "09",
+          "lineSpacingPercent": 112000,
+          "resolvedTextStyle": {
+            "fontSize": 14,
+            "typeface": "Microsoft YaHei",
+            "color": "#52657A",
+            "alignment": "right",
+            "lineSpacing": 1.12
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "09",
+              "fontSize": 14,
+              "typeface": "Microsoft YaHei",
+              "color": "#52657A",
+              "alignment": "right",
+              "lineSpacing": 1.12
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hk3q5o7q",
+      "id": "6",
+      "bbox": [
+        42,
+        150,
+        1030,
+        56
+      ],
+      "geometry": "rect",
+      "text": "Agentic Paper Insight 把研究跟踪拆成可见、可控、可恢复的关口：机器负责同步、提取、评分和成稿，人负责方向、边界和最终判断。",
+      "textPreview": "Agentic Paper Insight 把研究跟踪拆成可见、可控、可恢复的关口：机器负责同步、提取、评分和成稿，人负责方向、边界和最终判断。",
+      "resolvedFontSize": 20.12,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 22,
+        "typeface": "Microsoft YaHei",
+        "color": "#52657A",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.91,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Agentic Paper Insight"
+          },
+          {
+            "index": 2,
+            "text": "把研究跟踪拆成可见、可控、可恢复的关口：机器负责同步、提取、评分和成稿，人负责方向、边界和最终判断。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Agentic Paper Insight 把研究跟踪拆成可见、可控、可恢复的关口：机器负责同步、提取、评分和成稿，人负责方向、边界和最终判断。",
+          "lineSpacingPercent": 116000,
+          "resolvedTextStyle": {
+            "fontSize": 22,
+            "typeface": "Microsoft YaHei",
+            "color": "#52657A",
+            "alignment": "left",
+            "lineSpacing": 1.16
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Agentic Paper Insight 把研究跟踪拆成可见、可控、可恢复的关口：机器负责同步、提取、评分和成稿，人负责方向、边界和最终判断。",
+              "fontSize": 22,
+              "typeface": "Microsoft YaHei",
+              "color": "#52657A",
+              "alignment": "left",
+              "lineSpacing": 1.16
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/oza1gvy9",
+      "id": "7",
+      "bbox": [
+        42,
+        238,
+        540,
+        116
+      ],
+      "geometry": "rect",
+      "fillColor": "#F4F7F9",
+      "lineWidth": 0
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/z61032ls",
+      "id": "8",
+      "bbox": [
+        60,
+        256,
+        504,
+        34
+      ],
+      "geometry": "rect",
+      "text": "优势 1：全流程可视化",
+      "textPreview": "优势 1：全流程可视化",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 19,
+        "typeface": "Microsoft YaHei",
+        "color": "#071321",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优势 1：全流程可视化"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优势 1：全流程可视化",
+          "lineSpacingPercent": 112000,
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "typeface": "Microsoft YaHei",
+            "color": "#071321",
+            "bold": true,
+            "alignment": "left",
+            "lineSpacing": 1.12
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优势 1：全流程可视化",
+              "fontSize": 19,
+              "typeface": "Microsoft YaHei",
+              "color": "#071321",
+              "bold": true,
+              "alignment": "left",
+              "lineSpacing": 1.12
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/al87ed8b",
+      "id": "9",
+      "bbox": [
+        60,
+        300,
+        504,
+        36
+      ],
+      "geometry": "rect",
+      "text": "候选、确认、AI 分析、分数、详情和发布结果连续呈现，人能看见 Agent 走到哪一步、为什么这样判断。",
+      "textPreview": "候选、确认、AI 分析、分数、详情和发布结果连续呈现，人能看见 Agent 走到哪一步、为什么这样判断。",
+      "resolvedFontSize": 12.93,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 15.51,
+        "typeface": "Microsoft YaHei",
+        "color": "#52657A",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.83,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "候选、确认、AI 分析、分数、详情和发布结果连续呈现，人能看见 Agent"
+          },
+          {
+            "index": 2,
+            "text": "走到哪一步、为什么这样判断。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "候选、确认、AI 分析、分数、详情和发布结果连续呈现，人能看见 Agent 走到哪一步、为什么这样判断。",
+          "lineSpacingPercent": 116000,
+          "resolvedTextStyle": {
+            "fontSize": 15.51,
+            "typeface": "Microsoft YaHei",
+            "color": "#52657A",
+            "alignment": "left",
+            "lineSpacing": 1.16
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "候选、确认、AI 分析、分数、详情和发布结果连续呈现，人能看见 Agent 走到哪一步、为什么这样判断。",
+              "fontSize": 15.51,
+              "typeface": "Microsoft YaHei",
+              "color": "#52657A",
+              "alignment": "left",
+              "lineSpacing": 1.16
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/k3q5o7qp",
+      "id": "10",
+      "bbox": [
+        640,
+        238,
+        540,
+        116
+      ],
+      "geometry": "rect",
+      "fillColor": "#F4F7F9",
+      "lineWidth": 0
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/donyd0z6",
+      "id": "11",
+      "bbox": [
+        658,
+        256,
+        504,
+        34
+      ],
+      "geometry": "rect",
+      "text": "优势 2：人工参与是设计亮点",
+      "textPreview": "优势 2：人工参与是设计亮点",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 19,
+        "typeface": "Microsoft YaHei",
+        "color": "#071321",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优势 2：人工参与是设计亮点"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优势 2：人工参与是设计亮点",
+          "lineSpacingPercent": 112000,
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "typeface": "Microsoft YaHei",
+            "color": "#071321",
+            "bold": true,
+            "alignment": "left",
+            "lineSpacing": 1.12
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优势 2：人工参与是设计亮点",
+              "fontSize": 19,
+              "typeface": "Microsoft YaHei",
+              "color": "#071321",
+              "bold": true,
+              "alignment": "left",
+              "lineSpacing": 1.12
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/2x4nap4r",
+      "id": "12",
+      "bbox": [
+        658,
+        300,
+        504,
+        36
+      ],
+      "geometry": "rect",
+      "text": "候选确认、阈值调整、隐藏/推荐和阅读清单发布都留给人决策；Agent Loop 提供证据和建议。",
+      "textPreview": "候选确认、阈值调整、隐藏/推荐和阅读清单发布都留给人决策；Agent Loop 提供证据和建议。",
+      "resolvedFontSize": 12.93,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 15.51,
+        "typeface": "Microsoft YaHei",
+        "color": "#52657A",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.83,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "候选确认、阈值调整、隐藏/推荐和阅读清单发布都留给人决策；Agent Loop"
+          },
+          {
+            "index": 2,
+            "text": "提供证据和建议。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "候选确认、阈值调整、隐藏/推荐和阅读清单发布都留给人决策；Agent Loop 提供证据和建议。",
+          "lineSpacingPercent": 116000,
+          "resolvedTextStyle": {
+            "fontSize": 15.51,
+            "typeface": "Microsoft YaHei",
+            "color": "#52657A",
+            "alignment": "left",
+            "lineSpacing": 1.16
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "候选确认、阈值调整、隐藏/推荐和阅读清单发布都留给人决策；Agent Loop 提供证据和建议。",
+              "fontSize": 15.51,
+              "typeface": "Microsoft YaHei",
+              "color": "#52657A",
+              "alignment": "left",
+              "lineSpacing": 1.16
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/vixczed8",
+      "id": "13",
+      "bbox": [
+        42,
+        380,
+        540,
+        116
+      ],
+      "geometry": "rect",
+      "fillColor": "#F4F7F9",
+      "lineWidth": 0
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/kre1w7mp",
+      "id": "14",
+      "bbox": [
+        60,
+        398,
+        504,
+        34
+      ],
+      "geometry": "rect",
+      "text": "优势 3：评分和横向校准更硬",
+      "textPreview": "优势 3：评分和横向校准更硬",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 19,
+        "typeface": "Microsoft YaHei",
+        "color": "#071321",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优势 3：评分和横向校准更硬"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优势 3：评分和横向校准更硬",
+          "lineSpacingPercent": 112000,
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "typeface": "Microsoft YaHei",
+            "color": "#071321",
+            "bold": true,
+            "alignment": "left",
+            "lineSpacing": 1.12
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优势 3：评分和横向校准更硬",
+              "fontSize": 19,
+              "typeface": "Microsoft YaHei",
+              "color": "#071321",
+              "bold": true,
+              "alignment": "left",
+              "lineSpacing": 1.12
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/dcbulwva",
+      "id": "15",
+      "bbox": [
+        60,
+        442,
+        504,
+        36
+      ],
+      "geometry": "rect",
+      "text": "四维质量评分与兴趣适配分离，同批候选再比较新意、证据和系统价值，避免“方向像”替代“质量高”。",
+      "textPreview": "四维质量评分与兴趣适配分离，同批候选再比较新意、证据和系统价值，避免“方向像”替代“质量高”。",
+      "resolvedFontSize": 12.93,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 15.51,
+        "typeface": "Microsoft YaHei",
+        "color": "#52657A",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.83,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "四维质量评分与兴趣适配分离，同批候选再比较新意、证据和系统价值，避免“方向像"
+          },
+          {
+            "index": 2,
+            "text": "”替代“质量高”。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "四维质量评分与兴趣适配分离，同批候选再比较新意、证据和系统价值，避免“方向像”替代“质量高”。",
+          "lineSpacingPercent": 116000,
+          "resolvedTextStyle": {
+            "fontSize": 15.51,
+            "typeface": "Microsoft YaHei",
+            "color": "#52657A",
+            "alignment": "left",
+            "lineSpacing": 1.16
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "四维质量评分与兴趣适配分离，同批候选再比较新意、证据和系统价值，避免“方向像”替代“质量高”。",
+              "fontSize": 15.51,
+              "typeface": "Microsoft YaHei",
+              "color": "#52657A",
+              "alignment": "left",
+              "lineSpacing": 1.16
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/6psfil0r",
+      "id": "16",
+      "bbox": [
+        640,
+        380,
+        540,
+        116
+      ],
+      "geometry": "rect",
+      "fillColor": "#DDF4F7",
+      "lineColor": "#9DD3DD",
+      "lineWidth": 1
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/val87ed8",
+      "id": "17",
+      "bbox": [
+        658,
+        398,
+        504,
+        34
+      ],
+      "geometry": "rect",
+      "text": "优势 4：长链路更稳",
+      "textPreview": "优势 4：长链路更稳",
+      "resolvedFontSize": 19,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 19,
+        "typeface": "Microsoft YaHei",
+        "color": "#071321",
+        "bold": true,
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 1,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "优势 4：长链路更稳"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "优势 4：长链路更稳",
+          "lineSpacingPercent": 112000,
+          "resolvedTextStyle": {
+            "fontSize": 19,
+            "typeface": "Microsoft YaHei",
+            "color": "#071321",
+            "bold": true,
+            "alignment": "left",
+            "lineSpacing": 1.12
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "优势 4：长链路更稳",
+              "fontSize": 19,
+              "typeface": "Microsoft YaHei",
+              "color": "#071321",
+              "bold": true,
+              "alignment": "left",
+              "lineSpacing": 1.12
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/knih4byh",
+      "id": "18",
+      "bbox": [
+        658,
+        442,
+        504,
+        36
+      ],
+      "geometry": "rect",
+      "text": "增量同步、请求队列、429 冷却、失败续跑和 fallback 保底，让 Agentic 流程可恢复、可追踪。",
+      "textPreview": "增量同步、请求队列、429 冷却、失败续跑和 fallback 保底，让 Agentic 流程可恢复、可追踪。",
+      "resolvedFontSize": 12.93,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 15.51,
+        "typeface": "Microsoft YaHei",
+        "color": "#52657A",
+        "alignment": "left",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.83,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "增量同步、请求队列、429 冷却、失败续跑和 fallback 保底，让 Agentic"
+          },
+          {
+            "index": 2,
+            "text": "流程可恢复、可追踪。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "增量同步、请求队列、429 冷却、失败续跑和 fallback 保底，让 Agentic 流程可恢复、可追踪。",
+          "lineSpacingPercent": 116000,
+          "resolvedTextStyle": {
+            "fontSize": 15.51,
+            "typeface": "Microsoft YaHei",
+            "color": "#52657A",
+            "alignment": "left",
+            "lineSpacing": 1.16
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "增量同步、请求队列、429 冷却、失败续跑和 fallback 保底，让 Agentic 流程可恢复、可追踪。",
+              "fontSize": 15.51,
+              "typeface": "Microsoft YaHei",
+              "color": "#52657A",
+              "alignment": "left",
+              "lineSpacing": 1.16
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/d8bat47y",
+      "id": "19",
+      "bbox": [
+        42,
+        548,
+        1138,
+        72
+      ],
+      "geometry": "rect",
+      "fillColor": "#15748A",
+      "lineWidth": 0
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/d4vmtwra",
+      "id": "20",
+      "bbox": [
+        70,
+        560,
+        1082,
+        48
+      ],
+      "geometry": "rect",
+      "text": "Agentic 价值 = AI 扩展处理半径 + 全流程可视化 + 人在关键关口接管。\n系统不是替人做最终判断，而是把判断依据准备到足够清楚。",
+      "textPreview": "Agentic 价值 = AI 扩展处理半径 + 全流程可视化 + 人在关键关口接管。 | 系统不是替人做最终判断，而是把判断依据准备到足够清楚。",
+      "resolvedFontSize": 19.05,
+      "resolvedTextStyle": {
+        "anchor": 1,
+        "fontSize": 21,
+        "typeface": "Microsoft YaHei",
+        "color": "#FFFFFF",
+        "bold": true,
+        "alignment": "center",
+        "verticalAlignment": "top",
+        "wrap": "square",
+        "autoFit": "shrinkText",
+        "autoFitScale": 0.91,
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Agentic 价值 = AI 扩展处理半径 + 全流程可视化 + 人在关键关口接管。"
+          },
+          {
+            "index": 2,
+            "text": "系统不是替人做最终判断，而是把判断依据准备到足够清楚。"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Agentic 价值 = AI 扩展处理半径 + 全流程可视化 + 人在关键关口接管。",
+          "lineSpacingPercent": 105000,
+          "resolvedTextStyle": {
+            "fontSize": 21,
+            "typeface": "Microsoft YaHei",
+            "color": "#FFFFFF",
+            "bold": true,
+            "alignment": "center",
+            "lineSpacing": 1.05
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Agentic 价值 = AI 扩展处理半径 + 全流程可视化 + 人在关键关口接管。",
+              "fontSize": 21,
+              "typeface": "Microsoft YaHei",
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center",
+              "lineSpacing": 1.05
+            }
+          ],
+          "marginLeft": 0
+        },
+        {
+          "index": 2,
+          "text": "系统不是替人做最终判断，而是把判断依据准备到足够清楚。",
+          "lineSpacingPercent": 105000,
+          "resolvedTextStyle": {
+            "fontSize": 21,
+            "typeface": "Microsoft YaHei",
+            "color": "#FFFFFF",
+            "bold": true,
+            "alignment": "center",
+            "lineSpacing": 1.05
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "系统不是替人做最终判断，而是把判断依据准备到足够清楚。",
+              "fontSize": 21,
+              "typeface": "Microsoft YaHei",
+              "color": "#FFFFFF",
+              "bold": true,
+              "alignment": "center",
+              "lineSpacing": 1.05
+            }
+          ],
+          "marginLeft": 0
+        }
+      ],
+      "lineWidth": 0
+    }
+  ],
+  "composeRuns": []
+}

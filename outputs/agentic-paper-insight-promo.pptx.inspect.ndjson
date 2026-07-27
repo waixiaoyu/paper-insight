@@ -1,0 +1,219 @@
+{"kind":"deck","id":"pr/ep4vlr","name":"Deck"}
+{"kind":"layout","layoutId":"887b93c2-d02e-4ba1-a70b-01f1b26fff2b","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"cd7cd47d-cc91-4108-81ce-9fa013508c7f","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/o9bm16","slide":1,"title":"AGENTIC PAPER INSIGHT","textShapes":6}
+{"kind":"shape","id":"sh/4vmtwra5","slide":1,"bbox":[710,0,570,720]}
+{"kind":"shape","id":"sh/bat47y1k","slide":1,"bbox":[686,82,560,320]}
+{"kind":"shape","id":"sh/tsvu9kni","slide":1,"bbox":[748,364,442,254]}
+{"kind":"textbox","id":"sh/bm58z25k","slide":1,"text":"AGENTIC PAPER INSIGHT","textPreview":"AGENTIC PAPER INSIGHT","textChars":21,"textLines":1,"bbox":[42,48,320,28]}
+{"kind":"textbox","id":"sh/m1cfa9w3","slide":1,"text":"Agentic Paper Insight\n研究情报引擎","textPreview":"Agentic Paper Insight | 研究情报引擎","textChars":28,"textLines":2,"bbox":[42,112,615,190]}
+{"kind":"textbox","id":"sh/twra5gbq","slide":1,"text":"面向 AI Agent / 网络自治研究，把 arXiv 增量同步、内部推荐列表、人工确认、证据评分和外部精选报告串成可视化 Agentic 流程。","textPreview":"面向 AI Agent / 网络自治研究，把 arXiv 增量同步、内部推荐列表、人工确认、证据评分和外部精选报告串成可视化 Agentic 流程。","textChars":74,"textLines":1,"bbox":[46,330,560,92]}
+{"kind":"shape","id":"sh/4byhgn29","slide":1,"bbox":[42,498,260,52]}
+{"kind":"textbox","id":"sh/m58z25kb","slide":1,"text":"人机共控 / 全流程可视化","textPreview":"人机共控 / 全流程可视化","textChars":13,"textLines":1,"bbox":[60,512,224,28]}
+{"kind":"shape","id":"sh/bq1oryts","slide":1,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/4byhgn29","slide":1,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/twra5gbq","slide":1,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"image","id":"im/jm1cfa9w","slide":1,"name":"","geometry":"roundRect","alt":"Paper Insight 首页截图","bbox":[692,88,548,308]}
+{"kind":"image","id":"im/1032lszq","slide":1,"name":"","geometry":"roundRect","alt":"推荐报告截图","bbox":[754,370,430,242]}
+{"kind":"notes","id":"nt/o9bm16","slide":1,"text":""}
+{"kind":"slide","id":"sl/tqhy3d","slide":2,"title":"为什么需要","textShapes":14}
+{"kind":"textbox","id":"sh/nap4r65w","slide":2,"text":"为什么需要","textPreview":"为什么需要","textChars":5,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/cvixczed","slide":2,"text":"真正难点是让研究判断可控、可见、不漂","textPreview":"真正难点是让研究判断可控、可见、不漂","textChars":18,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/5gbq1ory","slide":2,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/udg7adsj","slide":2,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/nyd0z610","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"textbox","id":"sh/cj6tovah","slide":2,"text":"周期性研究情报最容易出问题的地方不在生成文字，而在候选、评分和取舍。全自动会快，但容易把方向相关、证据薄弱和重复结果混在一起。","textPreview":"周期性研究情报最容易出问题的地方不在生成文字，而在候选、评分和取舍。全自动会快，但容易把方向相关、证据薄弱和重复结果混在一起。","textChars":63,"textLines":1,"bbox":[42,152,910,70]}
+{"kind":"shape","id":"sh/54zidony","slide":2,"bbox":[42,272,540,108]}
+{"kind":"textbox","id":"sh/u9knih4b","slide":2,"text":"痛点 1：最新性难保证","textPreview":"痛点 1：最新性难保证","textChars":11,"textLines":1,"bbox":[60,290,504,34]}
+{"kind":"textbox","id":"sh/judg7ads","slide":2,"text":"RSS 延迟、API 限流、重复记录和服务重启补同步，都会影响候选池的时间边界。","textPreview":"RSS 延迟、API 限流、重复记录和服务重启补同步，都会影响候选池的时间边界。","textChars":40,"textLines":1,"bbox":[60,334,504,28]}
+{"kind":"shape","id":"sh/nyd0z610","slide":2,"bbox":[640,272,540,108]}
+{"kind":"textbox","id":"sh/udg7adsj","slide":2,"text":"痛点 2：候选口径会漂","textPreview":"痛点 2：候选口径会漂","textChars":11,"textLines":1,"bbox":[658,290,504,34]}
+{"kind":"textbox","id":"sh/54zidony","slide":2,"text":"同样叫 AI Agent / 网络自治，不同查询会拉来不同候选；没有确认环节，噪声会直接进入分析。","textPreview":"同样叫 AI Agent / 网络自治，不同查询会拉来不同候选；没有确认环节，噪声会直接进入分析。","textChars":49,"textLines":1,"bbox":[658,334,504,28]}
+{"kind":"shape","id":"sh/cj6tovah","slide":2,"bbox":[42,404,540,108]}
+{"kind":"textbox","id":"sh/nap4r65w","slide":2,"text":"痛点 3：评分容易被主题带偏","textPreview":"痛点 3：评分容易被主题带偏","textChars":14,"textLines":1,"bbox":[60,422,504,34]}
+{"kind":"textbox","id":"sh/upwb2hwf","slide":2,"text":"方向契合不等于研究质量高。只看单篇摘要，容易把概念包装误判为高价值。","textPreview":"方向契合不等于研究质量高。只看单篇摘要，容易把概念包装误判为高价值。","textChars":34,"textLines":1,"bbox":[60,466,504,28]}
+{"kind":"shape","id":"sh/5gbq1ory","slide":2,"bbox":[640,404,540,108]}
+{"kind":"textbox","id":"sh/cvixczed","slide":2,"text":"痛点 4：全自动流程不可见","textPreview":"痛点 4：全自动流程不可见","textChars":13,"textLines":1,"bbox":[658,422,504,34]}
+{"kind":"textbox","id":"sh/jm1cfa9w","slide":2,"text":"长链路里一次错误会被后续放大。没有可视化状态和人工关口，就很难追问依据或中途纠偏。","textPreview":"长链路里一次错误会被后续放大。没有可视化状态和人工关口，就很难追问依据或中途纠偏。","textChars":41,"textLines":1,"bbox":[658,466,504,28]}
+{"kind":"textbox","id":"sh/u18jqh0f","slide":2,"text":"设计取向：AI 批量处理和组织证据，人通过可视化流程把住候选、阈值、隐藏/推荐和最终发布。","textPreview":"设计取向：AI 批量处理和组织证据，人通过可视化流程把住候选、阈值、隐藏/推荐和最终发布。","textChars":45,"textLines":1,"bbox":[42,566,1030,48]}
+{"kind":"notes","id":"nt/tqhy3d","slide":2,"text":""}
+{"kind":"slide","id":"sl/69eq3e","slide":3,"title":"系统流程","textShapes":29}
+{"kind":"textbox","id":"sh/zqtcj6to","slide":3,"text":"系统流程","textPreview":"系统流程","textChars":4,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/obm58z25","slide":3,"text":"系统把研究判断串成可视化 Agentic 闭环","textPreview":"系统把研究判断串成可视化 Agentic 闭环","textChars":23,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/hwfyxobm","slide":3,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/6xkf6dcb","slide":3,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/zed8v6ps","slide":3,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"shape","id":"sh/oza1gvy9","slide":3,"bbox":[42,230,164,164]}
+{"kind":"textbox","id":"sh/hk3q5o7q","slide":3,"text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[60,250,32,28]}
+{"kind":"textbox","id":"sh/al87ed8b","slide":3,"text":"arXiv 同步","textPreview":"arXiv 同步","textChars":8,"textLines":1,"bbox":[64,294,120,28]}
+{"kind":"textbox","id":"sh/z61032ls","slide":3,"text":"RSS 自动入库\n必要时 API 扩展","textPreview":"RSS 自动入库 | 必要时 API 扩展","textChars":19,"textLines":2,"bbox":[64,336,120,50]}
+{"kind":"textbox","id":"sh/za1gvy90","slide":3,"text":">","textPreview":">","textChars":1,"textLines":1,"bbox":[213,296,28,40]}
+{"kind":"shape","id":"sh/ap4r65wj","slide":3,"bbox":[241,230,164,164]}
+{"kind":"textbox","id":"sh/hgn29gr2","slide":3,"text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[259,250,32,28]}
+{"kind":"textbox","id":"sh/svu9knih","slide":3,"text":"设置查询","textPreview":"设置查询","textChars":4,"textLines":1,"bbox":[263,294,120,28]}
+{"kind":"textbox","id":"sh/zidonyd0","slide":3,"text":"点选或手输\n定义本轮主题","textPreview":"点选或手输 | 定义本轮主题","textChars":12,"textLines":2,"bbox":[263,336,120,50]}
+{"kind":"textbox","id":"sh/a1gvy90j","slide":3,"text":">","textPreview":">","textChars":1,"textLines":1,"bbox":[412,296,28,40]}
+{"kind":"shape","id":"sh/hoza1gvy","slide":3,"bbox":[440,230,164,164]}
+{"kind":"textbox","id":"sh/s36hcrmh","slide":3,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[458,250,32,28]}
+{"kind":"textbox","id":"sh/3m94fu18","slide":3,"text":"确认候选","textPreview":"确认候选","textChars":4,"textLines":1,"bbox":[462,294,120,28]}
+{"kind":"textbox","id":"sh/a5gbq1or","slide":3,"text":"人工保留\n要分析的论文","textPreview":"人工保留 | 要分析的论文","textChars":11,"textLines":2,"bbox":[462,336,120,50]}
+{"kind":"textbox","id":"sh/yxobm58z","slide":3,"text":">","textPreview":">","textChars":1,"textLines":1,"bbox":[611,296,28,40]}
+{"kind":"shape","id":"sh/nih4byhg","slide":3,"bbox":[639,230,164,164]}
+{"kind":"textbox","id":"sh/g3ex0nux","slide":3,"text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[657,250,32,28]}
+{"kind":"textbox","id":"sh/5o7qpg3e","slide":3,"text":"AI 分析","textPreview":"AI 分析","textChars":5,"textLines":1,"bbox":[661,294,120,28]}
+{"kind":"textbox","id":"sh/ylc7u54z","slide":3,"text":"四维评分\n输出阅读建议","textPreview":"四维评分 | 输出阅读建议","textChars":11,"textLines":2,"bbox":[661,336,120,50]}
+{"kind":"textbox","id":"sh/r65wjudg","slide":3,"text":">","textPreview":">","textChars":1,"textLines":1,"bbox":[810,296,28,40]}
+{"kind":"shape","id":"sh/gr2p8nqx","slide":3,"bbox":[838,230,164,164]}
+{"kind":"textbox","id":"sh/9cvixcze","slide":3,"text":"5","textPreview":"5","textChars":1,"textLines":1,"bbox":[856,250,32,28]}
+{"kind":"textbox","id":"sh/yd0z6103","slide":3,"text":"推荐列表","textPreview":"推荐列表","textChars":4,"textLines":1,"bbox":[860,294,120,28]}
+{"kind":"textbox","id":"sh/rytsvu9k","slide":3,"text":"内部筛选层\n排序/隐藏/详情","textPreview":"内部筛选层 | 排序/隐藏/详情","textChars":14,"textLines":2,"bbox":[860,336,120,50]}
+{"kind":"textbox","id":"sh/d4vmtwra","slide":3,"text":">","textPreview":">","textChars":1,"textLines":1,"bbox":[1009,296,28,40]}
+{"kind":"shape","id":"sh/oj2t83it","slide":3,"bbox":[1037,230,164,164]}
+{"kind":"textbox","id":"sh/vy90je9c","slide":3,"text":"6","textPreview":"6","textChars":1,"textLines":1,"bbox":[1055,250,32,28]}
+{"kind":"textbox","id":"sh/6dcbulwv","slide":3,"text":"精选报告","textPreview":"精选报告","textChars":4,"textLines":1,"bbox":[1059,294,120,28]}
+{"kind":"textbox","id":"sh/dsji5sne","slide":3,"text":"外部发布层\n复评后成稿","textPreview":"外部发布层 | 复评后成稿","textChars":11,"textLines":2,"bbox":[1059,336,120,50]}
+{"kind":"textbox","id":"sh/o7qpg3ex","slide":3,"text":"两个结果层级：推荐列表用于内部筛选和复核；每周精选报告是外部发布层，只保留复评后真正入选的论文。","textPreview":"两个结果层级：推荐列表用于内部筛选和复核；每周精选报告是外部发布层，只保留复评后真正入选的论文。","textChars":48,"textLines":1,"bbox":[42,470,1020,56]}
+{"kind":"textbox","id":"sh/vmtwra5g","slide":3,"text":"候选进入 AI 前由人确认，进入精选报告前再按阈值、保底数和原文复评结果把关。","textPreview":"候选进入 AI 前由人确认，进入精选报告前再按阈值、保底数和原文复评结果把关。","textChars":39,"textLines":1,"bbox":[42,532,900,42]}
+{"kind":"notes","id":"nt/69eq3e","slide":3,"text":""}
+{"kind":"slide","id":"sl/eq8do7","slide":4,"title":"怎么用 1/4","textShapes":7}
+{"kind":"textbox","id":"sh/yhgn29gr","slide":4,"text":"怎么用 1/4","textPreview":"怎么用 1/4","textChars":7,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/58z25kb6","slide":4,"text":"先配置 API 和查询口径，保证结果可控","textPreview":"先配置 API 和查询口径，保证结果可控","textChars":20,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/gn29gr2p","slide":4,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/nuxc3ylc","slide":4,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/y90je9cv","slide":4,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"shape","id":"sh/5wjudg7a","slide":4,"bbox":[44,162,572,327]}
+{"kind":"shape","id":"sh/nqxs72x4","slide":4,"bbox":[664,162,572,327]}
+{"kind":"textbox","id":"sh/cbulwval","slide":4,"text":"API Key 只存当前浏览器会话，模型选择和 Key 管理集中在左上角设置。","textPreview":"API Key 只存当前浏览器会话，模型选择和 Key 管理集中在左上角设置。","textChars":39,"textLines":1,"bbox":[56,512,500,44]}
+{"kind":"textbox","id":"sh/5sneloj2","slide":4,"text":"查询条件支持点选和手工输入，适合把“默认主题”和“临时研究问题”分开管理。","textPreview":"查询条件支持点选和手工输入，适合把“默认主题”和“临时研究问题”分开管理。","textChars":37,"textLines":1,"bbox":[676,512,510,44]}
+{"kind":"textbox","id":"sh/u54zidon","slide":4,"text":"推荐阈值、每轮候选数、最低达标数都在左侧控制，能适配扫读、重点跟踪和洞察输出三种强度。","textPreview":"推荐阈值、每轮候选数、最低达标数都在左侧控制，能适配扫读、重点跟踪和洞察输出三种强度。","textChars":43,"textLines":1,"bbox":[42,590,1030,32]}
+{"kind":"image","id":"im/xs72x4na","slide":4,"name":"","geometry":"roundRect","alt":"API 设置界面","bbox":[50,168,560,315]}
+{"kind":"image","id":"im/fyxobm58","slide":4,"name":"","geometry":"roundRect","alt":"查询条件设置界面","bbox":[670,168,560,315]}
+{"kind":"notes","id":"nt/eq8do7","slide":4,"text":""}
+{"kind":"slide","id":"sl/d1dgof","slide":5,"title":"怎么用 2/4","textShapes":13}
+{"kind":"textbox","id":"sh/fepkzupw","slide":5,"text":"怎么用 2/4","textPreview":"怎么用 2/4","textChars":7,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/4zidonyd","slide":5,"text":"生成推荐列表前先确认候选，再交给 AI 分析","textPreview":"生成推荐列表前先确认候选，再交给 AI 分析","textChars":22,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/xkf6dcbu","slide":5,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/mlkjm1cf","slide":5,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/f6dcbulw","slide":5,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"shape","id":"sh/4r65wjud","slide":5,"bbox":[42,170,320,112]}
+{"kind":"shape","id":"sh/xc3ylc7u","slide":5,"bbox":[60,188,34,34]}
+{"kind":"textbox","id":"sh/m94fu18j","slide":5,"text":"1","textPreview":"1","textChars":1,"textLines":1,"bbox":[60,191,34,24]}
+{"kind":"textbox","id":"sh/fu18jqh0","slide":5,"text":"获取候选","textPreview":"获取候选","textChars":4,"textLines":1,"bbox":[106,186,238,28]}
+{"kind":"textbox","id":"sh/r65wjudg","slide":5,"text":"从本地 arXiv 库读取，必要时用 arXiv API 扩展。","textPreview":"从本地 arXiv 库读取，必要时用 arXiv API 扩展。","textChars":32,"textLines":1,"bbox":[106,218,238,50]}
+{"kind":"shape","id":"sh/ylc7u54z","slide":5,"bbox":[42,300,320,112]}
+{"kind":"shape","id":"sh/9cvixcze","slide":5,"bbox":[60,318,34,34]}
+{"kind":"textbox","id":"sh/gr2p8nqx","slide":5,"text":"2","textPreview":"2","textChars":1,"textLines":1,"bbox":[60,321,34,24]}
+{"kind":"textbox","id":"sh/nih4byhg","slide":5,"text":"确认论文","textPreview":"确认论文","textChars":4,"textLines":1,"bbox":[106,316,238,28]}
+{"kind":"textbox","id":"sh/yxobm58z","slide":5,"text":"取消明显不相关的候选，避免浪费模型调用。","textPreview":"取消明显不相关的候选，避免浪费模型调用。","textChars":20,"textLines":1,"bbox":[106,348,238,50]}
+{"kind":"shape","id":"sh/5o7qpg3e","slide":5,"bbox":[42,430,320,112]}
+{"kind":"shape","id":"sh/g3ex0nux","slide":5,"bbox":[60,448,34,34]}
+{"kind":"textbox","id":"sh/rmhk3q5o","slide":5,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[60,451,34,24]}
+{"kind":"textbox","id":"sh/y1kre1w7","slide":5,"text":"继续分析","textPreview":"继续分析","textChars":4,"textLines":1,"bbox":[106,446,238,28]}
+{"kind":"textbox","id":"sh/6dcbulwv","slide":5,"text":"分析失败可从当前论文重试，已成功项不重复调用。","textPreview":"分析失败可从当前论文重试，已成功项不重复调用。","textChars":23,"textLines":1,"bbox":[106,478,238,50]}
+{"kind":"shape","id":"sh/vy90je9c","slide":5,"bbox":[414,160,812,462]}
+{"kind":"image","id":"im/rqd4vmtw","slide":5,"name":"","geometry":"roundRect","alt":"候选确认弹窗","bbox":[420,166,800,450]}
+{"kind":"notes","id":"nt/d1dgof","slide":5,"text":""}
+{"kind":"slide","id":"sl/v9a87a","slide":6,"title":"怎么用 3/4","textShapes":9}
+{"kind":"textbox","id":"sh/itgfmlkj","slide":6,"text":"怎么用 3/4","textPreview":"怎么用 3/4","textChars":7,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/pkzupwb2","slide":6,"text":"推荐列表是内部筛选层，不是最终报告","textPreview":"推荐列表是内部筛选层，不是最终报告","textChars":17,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/0z61032l","slide":6,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/72x4nap4","slide":6,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/ih4byhgn","slide":6,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"shape","id":"sh/p8nqxs72","slide":6,"bbox":[384,144,852,484]}
+{"kind":"shape","id":"sh/7y1kre1w","slide":6,"bbox":[42,160,280,142]}
+{"kind":"textbox","id":"sh/ed8v6psf","slide":6,"text":"3","textPreview":"3","textChars":1,"textLines":1,"bbox":[64,182,236,62]}
+{"kind":"textbox","id":"sh/8v6psfil","slide":6,"text":"推荐 / 隐藏 / 全部分析，用来做内部取舍","textPreview":"推荐 / 隐藏 / 全部分析，用来做内部取舍","textChars":22,"textLines":1,"bbox":[64,256,236,34]}
+{"kind":"shape","id":"sh/xczed8v6","slide":6,"bbox":[42,326,280,142]}
+{"kind":"textbox","id":"sh/qpg3ex0n","slide":6,"text":"4","textPreview":"4","textChars":1,"textLines":1,"bbox":[64,348,236,62]}
+{"kind":"textbox","id":"sh/fa9w3m94","slide":6,"text":"问题 / 方法 / 系统 / 证据，解释为什么排序","textPreview":"问题 / 方法 / 系统 / 证据，解释为什么排序","textChars":25,"textLines":1,"bbox":[64,422,236,34]}
+{"kind":"textbox","id":"sh/8jqh0fep","slide":6,"text":"定位：推荐列表面向研究团队，承载排序、隐藏、详情复核和继续分析，目标是帮人决定哪些论文进入精选报告。","textPreview":"定位：推荐列表面向研究团队，承载排序、隐藏、详情复核和继续分析，目标是帮人决定哪些论文进入精选报告。","textChars":50,"textLines":1,"bbox":[42,512,292,76]}
+{"kind":"image","id":"im/t47y1kre","slide":6,"name":"","geometry":"roundRect","alt":"推荐列表界面","bbox":[390,150,840,472]}
+{"kind":"notes","id":"nt/v9a87a","slide":6,"text":""}
+{"kind":"slide","id":"sl/fkbkru","slide":7,"title":"怎么用 4/4","textShapes":14}
+{"kind":"textbox","id":"sh/5sneloj2","slide":7,"text":"怎么用 4/4","textPreview":"怎么用 4/4","textChars":7,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/u54zidon","slide":7,"text":"单篇详情帮助读者快速决定要不要深读","textPreview":"单篇详情帮助读者快速决定要不要深读","textChars":17,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/nqxs72x4","slide":7,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/czed8v6p","slide":7,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/5kb6xkf6","slide":7,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"shape","id":"sh/ytsvu9kn","slide":7,"bbox":[506,144,730,416]}
+{"kind":"textbox","id":"sh/gn29gr2p","slide":7,"text":"方向适配","textPreview":"方向适配","textChars":4,"textLines":1,"bbox":[54,164,140,28]}
+{"kind":"textbox","id":"sh/58z25kb6","slide":7,"text":"网络自治/电信、通用 AI、非目标领域分开校准。","textPreview":"网络自治/电信、通用 AI、非目标领域分开校准。","textChars":24,"textLines":1,"bbox":[200,164,250,48]}
+{"kind":"shape","id":"sh/d8bat47y","slide":7,"bbox":[54,226,392,0]}
+{"kind":"textbox","id":"sh/knih4byh","slide":7,"text":"背景与问题","textPreview":"背景与问题","textChars":5,"textLines":1,"bbox":[54,239,140,28]}
+{"kind":"textbox","id":"sh/v6psfil0","slide":7,"text":"快速看论文解决的痛点是否和本周主题一致。","textPreview":"快速看论文解决的痛点是否和本周主题一致。","textChars":20,"textLines":1,"bbox":[200,239,250,48]}
+{"kind":"shape","id":"sh/2lszqtcj","slide":7,"bbox":[54,301,392,0]}
+{"kind":"textbox","id":"sh/d0z61032","slide":7,"text":"方法与技术路线","textPreview":"方法与技术路线","textChars":7,"textLines":1,"bbox":[54,314,140,28]}
+{"kind":"textbox","id":"sh/kf6dcbul","slide":7,"text":"关注机制、工具调用、闭环和系统边界。","textPreview":"关注机制、工具调用、闭环和系统边界。","textChars":18,"textLines":1,"bbox":[200,314,250,48]}
+{"kind":"shape","id":"sh/vu9knih4","slide":7,"bbox":[54,376,392,0]}
+{"kind":"textbox","id":"sh/29gr2p8n","slide":7,"text":"贡献与证据","textPreview":"贡献与证据","textChars":5,"textLines":1,"bbox":[54,389,140,28]}
+{"kind":"textbox","id":"sh/donyd0z6","slide":7,"text":"核验实验、基线、消融和结论边界。","textPreview":"核验实验、基线、消融和结论边界。","textChars":16,"textLines":1,"bbox":[200,389,250,48]}
+{"kind":"shape","id":"sh/k3q5o7qp","slide":7,"bbox":[54,451,392,0]}
+{"kind":"textbox","id":"sh/kb6xkf6d","slide":7,"text":"价值与局限","textPreview":"价值与局限","textChars":5,"textLines":1,"bbox":[54,464,140,28]}
+{"kind":"textbox","id":"sh/9w3m94fu","slide":7,"text":"判断是否精读、复现或写入洞察稿","textPreview":"判断是否精读、复现或写入洞察稿","textChars":15,"textLines":1,"bbox":[200,464,250,48]}
+{"kind":"image","id":"im/yxobm58z","slide":7,"name":"","geometry":"roundRect","alt":"单篇分析详情页","bbox":[512,150,718,404]}
+{"kind":"notes","id":"nt/fkbkru","slide":7,"text":""}
+{"kind":"slide","id":"sl/fab0nr","slide":8,"title":"发布输出","textShapes":10}
+{"kind":"textbox","id":"sh/7adsji5s","slide":8,"text":"发布输出","textPreview":"发布输出","textChars":4,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/wval87ed","slide":8,"text":"每周精选报告是外部发布物","textPreview":"每周精选报告是外部发布物","textChars":12,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/pg3ex0nu","slide":8,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/e1w7mp0b","slide":8,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/7mp0bi9s","slide":8,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"shape","id":"sh/w7mp0bi9","slide":8,"bbox":[424,144,812,462]}
+{"kind":"shape","id":"sh/ed8bat47","slide":8,"bbox":[42,166,320,118]}
+{"kind":"textbox","id":"sh/7u54zido","slide":8,"text":"再次复评","textPreview":"再次复评","textChars":4,"textLines":1,"bbox":[60,184,284,34]}
+{"kind":"textbox","id":"sh/3q5o7qpg","slide":8,"text":"优先抓取 arXiv HTML 原文，失败时可降级为摘要和已有分析。","textPreview":"优先抓取 arXiv HTML 原文，失败时可降级为摘要和已有分析。","textChars":34,"textLines":1,"bbox":[60,228,284,38]}
+{"kind":"shape","id":"sh/e9cvixcz","slide":8,"bbox":[42,312,320,118]}
+{"kind":"textbox","id":"sh/lwval87e","slide":8,"text":"只收精选","textPreview":"只收精选","textChars":4,"textLines":1,"bbox":[60,330,284,34]}
+{"kind":"textbox","id":"sh/wb2hwfyx","slide":8,"text":"按入选阈值和保底篇数收口，推荐列表里的论文不会全部进入报告。","textPreview":"按入选阈值和保底篇数收口，推荐列表里的论文不会全部进入报告。","textChars":30,"textLines":1,"bbox":[60,374,284,38]}
+{"kind":"shape","id":"sh/3itgfmlk","slide":8,"bbox":[42,458,320,118]}
+{"kind":"textbox","id":"sh/ex0nuxc3","slide":8,"text":"面向读者","textPreview":"面向读者","textChars":4,"textLines":1,"bbox":[60,476,284,34]}
+{"kind":"textbox","id":"sh/loj2t83i","slide":8,"text":"生成 Markdown 后可复制或下载，重点讲为什么读、怎么读和局限在哪里。","textPreview":"生成 Markdown 后可复制或下载，重点讲为什么读、怎么读和局限在哪里。","textChars":38,"textLines":1,"bbox":[60,520,284,38]}
+{"kind":"image","id":"im/8z25kb6x","slide":8,"name":"","geometry":"roundRect","alt":"精选论文阅读清单弹窗","bbox":[430,150,800,450]}
+{"kind":"notes","id":"nt/fab0nr","slide":8,"text":""}
+{"kind":"slide","id":"sl/k2u8om","slide":9,"title":"优势在哪里","textShapes":14}
+{"kind":"textbox","id":"sh/65wjudg7","slide":9,"text":"优势在哪里","textPreview":"优势在哪里","textChars":5,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/hwfyxobm","slide":9,"text":"优势来自可视化的人机共控 Agentic 流程","textPreview":"优势来自可视化的人机共控 Agentic 流程","textChars":23,"textLines":1,"bbox":[42,70,980,68]}
+{"kind":"shape","id":"sh/obm58z25","slide":9,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/zed8v6ps","slide":9,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/6xkf6dcb","slide":9,"text":"09","textPreview":"09","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"textbox","id":"sh/hk3q5o7q","slide":9,"text":"Agentic Paper Insight 把研究跟踪拆成可见、可控、可恢复的关口：机器负责同步、提取、评分和成稿，人负责方向、边界和最终判断。","textPreview":"Agentic Paper Insight 把研究跟踪拆成可见、可控、可恢复的关口：机器负责同步、提取、评分和成稿，人负责方向、边界和最终判断。","textChars":72,"textLines":1,"bbox":[42,150,1030,56]}
+{"kind":"shape","id":"sh/oza1gvy9","slide":9,"bbox":[42,238,540,116]}
+{"kind":"textbox","id":"sh/z61032ls","slide":9,"text":"优势 1：全流程可视化","textPreview":"优势 1：全流程可视化","textChars":11,"textLines":1,"bbox":[60,256,504,34]}
+{"kind":"textbox","id":"sh/al87ed8b","slide":9,"text":"候选、确认、AI 分析、分数、详情和发布结果连续呈现，人能看见 Agent 走到哪一步、为什么这样判断。","textPreview":"候选、确认、AI 分析、分数、详情和发布结果连续呈现，人能看见 Agent 走到哪一步、为什么这样判断。","textChars":52,"textLines":1,"bbox":[60,300,504,36]}
+{"kind":"shape","id":"sh/k3q5o7qp","slide":9,"bbox":[640,238,540,116]}
+{"kind":"textbox","id":"sh/donyd0z6","slide":9,"text":"优势 2：人工参与是设计亮点","textPreview":"优势 2：人工参与是设计亮点","textChars":14,"textLines":1,"bbox":[658,256,504,34]}
+{"kind":"textbox","id":"sh/2x4nap4r","slide":9,"text":"候选确认、阈值调整、隐藏/推荐和阅读清单发布都留给人决策；Agent Loop 提供证据和建议。","textPreview":"候选确认、阈值调整、隐藏/推荐和阅读清单发布都留给人决策；Agent Loop 提供证据和建议。","textChars":48,"textLines":1,"bbox":[658,300,504,36]}
+{"kind":"shape","id":"sh/vixczed8","slide":9,"bbox":[42,380,540,116]}
+{"kind":"textbox","id":"sh/kre1w7mp","slide":9,"text":"优势 3：评分和横向校准更硬","textPreview":"优势 3：评分和横向校准更硬","textChars":14,"textLines":1,"bbox":[60,398,504,34]}
+{"kind":"textbox","id":"sh/dcbulwva","slide":9,"text":"四维质量评分与兴趣适配分离，同批候选再比较新意、证据和系统价值，避免“方向像”替代“质量高”。","textPreview":"四维质量评分与兴趣适配分离，同批候选再比较新意、证据和系统价值，避免“方向像”替代“质量高”。","textChars":47,"textLines":1,"bbox":[60,442,504,36]}
+{"kind":"shape","id":"sh/6psfil0r","slide":9,"bbox":[640,380,540,116]}
+{"kind":"textbox","id":"sh/val87ed8","slide":9,"text":"优势 4：长链路更稳","textPreview":"优势 4：长链路更稳","textChars":10,"textLines":1,"bbox":[658,398,504,34]}
+{"kind":"textbox","id":"sh/knih4byh","slide":9,"text":"增量同步、请求队列、429 冷却、失败续跑和 fallback 保底，让 Agentic 流程可恢复、可追踪。","textPreview":"增量同步、请求队列、429 冷却、失败续跑和 fallback 保底，让 Agentic 流程可恢复、可追踪。","textChars":55,"textLines":1,"bbox":[658,442,504,36]}
+{"kind":"shape","id":"sh/d8bat47y","slide":9,"bbox":[42,548,1138,72]}
+{"kind":"textbox","id":"sh/d4vmtwra","slide":9,"text":"Agentic 价值 = AI 扩展处理半径 + 全流程可视化 + 人在关键关口接管。\n系统不是替人做最终判断，而是把判断依据准备到足够清楚。","textPreview":"Agentic 价值 = AI 扩展处理半径 + 全流程可视化 + 人在关键关口接管。 | 系统不是替人做最终判断，而是把判断依据准备到足够清楚。","textChars":71,"textLines":2,"bbox":[70,560,1082,48]}
+{"kind":"notes","id":"nt/k2u8om","slide":9,"text":""}
+{"kind":"slide","id":"sl/wyj8h0","slide":10,"title":"未来优化","textShapes":16}
+{"kind":"textbox","id":"sh/032lszqt","slide":10,"text":"未来优化","textPreview":"未来优化","textChars":4,"textLines":1,"bbox":[42,40,420,24]}
+{"kind":"textbox","id":"sh/bi9s36hc","slide":10,"text":"从研究情报引擎扩展到团队 Agentic 系统","textPreview":"从研究情报引擎扩展到团队 Agentic 系统","textChars":23,"textLines":1,"bbox":[42,70,1120,68]}
+{"kind":"textbox","id":"sh/ixczed8v","slide":10,"text":"下一步不只是增加功能按钮，而是把论文跟踪、质量判断、团队协作和知识沉淀做成更完整的长期能力。","textPreview":"下一步不只是增加功能按钮，而是把论文跟踪、质量判断、团队协作和知识沉淀做成更完整的长期能力。","textChars":46,"textLines":1,"bbox":[42,150,1030,50]}
+{"kind":"shape","id":"sh/p0bi9s36","slide":10,"bbox":[42,232,356,132]}
+{"kind":"textbox","id":"sh/0fepkzup","slide":10,"text":"更强 Agent Loop","textPreview":"更强 Agent Loop","textChars":13,"textLines":1,"bbox":[60,250,320,34]}
+{"kind":"textbox","id":"sh/bulwval8","slide":10,"text":"把证据抽取、单篇复评、横向校准、成稿和 QA 做成可观察步骤，支持中间结果缓存和失败恢复。","textPreview":"把证据抽取、单篇复评、横向校准、成稿和 QA 做成可观察步骤，支持中间结果缓存和失败恢复。","textChars":45,"textLines":1,"bbox":[60,294,320,52]}
+{"kind":"shape","id":"sh/i9s36hcr","slide":10,"bbox":[440,232,356,132]}
+{"kind":"textbox","id":"sh/t47y1kre","slide":10,"text":"趋势雷达","textPreview":"趋势雷达","textChars":4,"textLines":1,"bbox":[458,250,320,34]}
+{"kind":"textbox","id":"sh/0je9cvix","slide":10,"text":"按主题、作者、机构和关键词聚类，持续追踪方向升温、交叉主题和异常高价值论文。","textPreview":"按主题、作者、机构和关键词聚类，持续追踪方向升温、交叉主题和异常高价值论文。","textChars":38,"textLines":1,"bbox":[458,294,320,52]}
+{"kind":"shape","id":"sh/a5gbq1or","slide":10,"bbox":[838,232,356,132]}
+{"kind":"textbox","id":"sh/3m94fu18","slide":10,"text":"团队协同","textPreview":"团队协同","textChars":4,"textLines":1,"bbox":[856,250,320,34]}
+{"kind":"textbox","id":"sh/s72x4nap","slide":10,"text":"支持多人标注、评论、收藏、入选理由和评分口径版本，让人工参与沉淀为团队资产。","textPreview":"支持多人标注、评论、收藏、入选理由和评分口径版本，让人工参与沉淀为团队资产。","textChars":38,"textLines":1,"bbox":[856,294,320,52]}
+{"kind":"shape","id":"sh/lszqtcj6","slide":10,"bbox":[42,394,540,124]}
+{"kind":"textbox","id":"sh/adsji5sn","slide":10,"text":"发布连接","textPreview":"发布连接","textChars":4,"textLines":1,"bbox":[60,412,504,34]}
+{"kind":"textbox","id":"sh/3ylc7u54","slide":10,"text":"对接洞察网站、飞书 / Notion / Git 等发布流，输出模板化 Markdown 和历史精选合集。","textPreview":"对接洞察网站、飞书 / Notion / Git 等发布流，输出模板化 Markdown 和历史精选合集。","textChars":53,"textLines":1,"bbox":[60,456,504,44]}
+{"kind":"shape","id":"sh/sji5snel","slide":10,"bbox":[640,394,540,124]}
+{"kind":"textbox","id":"sh/h4byhgn2","slide":10,"text":"质量治理","textPreview":"质量治理","textChars":4,"textLines":1,"bbox":[658,412,504,34]}
+{"kind":"textbox","id":"sh/ap4r65wj","slide":10,"text":"跟踪模型、提示词版本、评分一致性、成本和人工审核记录，让推荐质量可评估、可回滚。","textPreview":"跟踪模型、提示词版本、评分一致性、成本和人工审核记录，让推荐质量可评估、可回滚。","textChars":40,"textLines":1,"bbox":[658,456,504,44]}
+{"kind":"shape","id":"sh/za1gvy90","slide":10,"bbox":[42,548,1138,72]}
+{"kind":"textbox","id":"sh/ra5gbq1o","slide":10,"text":"未来方向：让系统从“帮人看一批论文”，升级为“持续维护一个可解释、可协作、可发布的研究情报流”。","textPreview":"未来方向：让系统从“帮人看一批论文”，升级为“持续维护一个可解释、可协作、可发布的研究情报流”。","textChars":48,"textLines":1,"bbox":[74,566,1074,36]}
+{"kind":"shape","id":"sh/2p8nqxs7","slide":10,"bbox":[42,650,1196,0]}
+{"kind":"textbox","id":"sh/9gr2p8nq","slide":10,"text":"Agentic Paper Insight 宣传材料","textPreview":"Agentic Paper Insight 宣传材料","textChars":26,"textLines":1,"bbox":[42,664,420,24]}
+{"kind":"textbox","id":"sh/gvy90je9","slide":10,"text":"10","textPreview":"10","textChars":2,"textLines":1,"bbox":[1170,662,68,26]}
+{"kind":"notes","id":"nt/wyj8h0","slide":10,"text":""}
