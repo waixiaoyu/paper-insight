@@ -1,8 +1,20 @@
 ﻿import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { extname, join, normalize, sep } from "node:path";
+import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import {
+  filterReadingListPapersByWeek,
+  readingListWeekRange,
+  selectReadingListPapers
+} from "./weekly-report/rules.js";
+import { assertWeeklyReportPublishable } from "./weekly-report/publish-guard.js";
+import {
+  assertSemanticReviewAllowsPublication,
+  normalizeSemanticReviewMode,
+  normalizeWeeklyReportSemanticReview,
+  semanticReviewUnavailable
+} from "./weekly-report/semantic-review.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(__dirname, "public");
@@ -13,7 +25,9 @@ const arxivCacheDir = join(__dirname, ".cache", "arxiv");
 const arxivCooldownPath = join(__dirname, ".cache", "arxiv-cooldown.json");
 const arxivPaperLibraryPath = join(__dirname, ".cache", "arxiv-papers.json");
 const arxivSyncHistoryPath = join(__dirname, ".cache", "arxiv-sync-history.json");
-const paperOriginalTextCacheDir = join(__dirname, ".cache", "paper-original-text");
+const paperOriginalTextCacheDir = resolve(
+  String(process.env.PAPER_ORIGINAL_TEXT_CACHE_DIR || join(__dirname, ".cache", "paper-original-text"))
+);
 const arxivMinIntervalMs = Number(process.env.ARXIV_MIN_INTERVAL_MS || 3500);
 const arxivFreshCacheMs = Number(process.env.ARXIV_CACHE_TTL_MS || 30 * 60 * 1000);
 const arxivStaleCacheMs = Number(process.env.ARXIV_STALE_CACHE_TTL_MS || 24 * 60 * 60 * 1000);
@@ -34,6 +48,18 @@ const candidateBatchMax = 100;
 const recommendationListMax = 100;
 const readingListCandidateMax = 100;
 const readingListReviewBatchSize = Math.min(Math.max(Number(process.env.READING_LIST_REVIEW_BATCH_SIZE || 1), 1), 20);
+const weeklyReportSemanticReviewMaxTokens = Math.min(
+  Math.max(Number(process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_MAX_TOKENS || 3000), 800),
+  8000
+);
+const weeklyReportSemanticReviewTimeoutMs = Math.min(
+  Math.max(Number(process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_TIMEOUT_MS || 180000), 30000),
+  llmRequestTimeoutMs
+);
+const weeklyReportSemanticEvidenceMaxChars = Math.min(
+  Math.max(Number(process.env.WEEKLY_REPORT_SEMANTIC_EVIDENCE_MAX_CHARS || 60000), 10000),
+  150000
+);
 const arxivAutoSyncEnabled = !/^(0|false|no)$/i.test(String(process.env.ARXIV_AUTO_SYNC || "1"));
 const arxivAutoSyncInitialDelayMs = Number(process.env.ARXIV_AUTO_SYNC_INITIAL_DELAY_MS || 30 * 1000);
 const arxivAutoSyncRetryMs = Number(process.env.ARXIV_AUTO_SYNC_RETRY_MS || 60 * 60 * 1000);
@@ -55,6 +81,11 @@ let arxivBlockedUntil = 0;
 let arxivCooldownLoaded = false;
 let arxivCooldownFailures = 0;
 let arxivAutoSyncTimer = null;
+
+const weeklyReportSemanticReviewMode = () => normalizeSemanticReviewMode(
+  process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_MODE,
+  "warn"
+);
 
 const defaultQuery = `("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
 "multi-agent" OR "agentic AI" OR "autonomous agent") AND
@@ -2683,6 +2714,8 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               date: report.date,
               month: report.month,
               weekOfMonth: report.weekOfMonth,
+              weekStart: report.weekStart,
+              weekEnd: report.weekEnd,
               sourceReport: report.sourceReport,
               paperCount: papers.length,
               candidateCount: report.candidateCount || papers.length,
@@ -2704,6 +2737,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
             instruction: [
               `请生成以「${titleBase}」开头的标题。`,
               "标题格式固定为：【精选论文】{yy}年{month}月第{weekOfMonth}周阅读清单：{一句话观点}。",
+              `本周论文范围固定为 [${report.weekStart}, ${report.weekEnd})；输入论文已经过服务端日期校验，不要把范围外论文或其他周报告内容写入正文。`,
               `标题冒号后必须直接写一句本周核心趋势或观点，控制在 18-32 个中文字符以内；必须绑定本周入选论文的具体主题，优先使用这些主题提示：${titleTopicHints.join("、") || "从入选论文标题和证据中提取具体主题"}。`,
               "标题不要只写“智能体赋能网络自治”“新范式”“值得关注”“重要趋势”“加速落地”“多点开花”这类每天都能套用的泛化表述。标题必须让读者看出本周具体在讨论什么问题或技术信号。",
               "输出必须包含 YAML front matter 和正文标题；YAML title 和正文一级标题必须完全一致，且都使用完整标题。",
@@ -2833,6 +2867,164 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
       const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
       const timeoutError = new Error(`LLM 请求超过 ${timeoutSeconds} 秒未完成，已自动中止。请稍后重试，或通过 LLM_REQUEST_TIMEOUT_MS 调大超时时间。`);
       timeoutError.code = "LLM_READING_LIST_TIMEOUT";
+      throw timeoutError;
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const semanticReviewPaperPayload = (paper, evidenceBudget) => ({
+  id: paper.id,
+  title: paper.title,
+  published: paper.published,
+  link: paper.absLink || paper.link || paper.id,
+  selectionReason: paper.readingListReview?.selectionReason || "threshold",
+  score: paper.readingListReview?.score ?? paper.analysis?.score,
+  matchedDimensions: paper.readingListReview?.matchedDimensions || paper.analysis?.matchedDimensions || [],
+  affiliations: paper.readingListReview?.affiliations || paper.analysis?.affiliations || [],
+  affiliationEvidence: truncate(
+    paper.readingListReview?.affiliationEvidence || paper.analysis?.affiliationEvidence,
+    Math.min(800, evidenceBudget)
+  ),
+  evidenceBasis: paper.readingListReview?.evidenceBasis
+    || (paper.originalText?.status === "available" ? "full-text" : "abstract-fallback"),
+  evidenceExcerpt: truncate(
+    paper.originalText?.status === "available"
+      ? paper.originalText.excerpt
+      : paper.summary,
+    evidenceBudget
+  ),
+  analysisEvidence: truncate([
+    paper.analysis?.problem,
+    paper.analysis?.method,
+    paper.analysis?.technicalDetails,
+    paper.analysis?.experiment,
+    paper.analysis?.limitations,
+    paper.readingListReview?.reviewReason
+  ].filter(Boolean).join("\n"), evidenceBudget)
+});
+
+const callLlmWeeklyReportSemanticReview = async ({ report, papers, markdown, llm, mode }) => {
+  const config = getLlmConfig(llm);
+
+  if (!config) {
+    const error = new Error("未配置周报语义评审所需的 LLM API key。");
+    error.code = "LLM_NOT_CONFIGURED";
+    throw error;
+  }
+
+  const { endpoint, model, disableThinking, protocol } = config;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), weeklyReportSemanticReviewTimeoutMs);
+  const evidenceBudget = Math.max(
+    500,
+    Math.min(2500, Math.floor(weeklyReportSemanticEvidenceMaxChars / Math.max(1, papers.length * 2)))
+  );
+
+  try {
+    const payload = {
+      model,
+      temperature: 0,
+      max_tokens: weeklyReportSemanticReviewMaxTokens,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是论文周报发布前的独立语义审稿人，只做事实一致性和发布风险检查，不改写周报。",
+            "必须逐篇对照输入证据和待发布 Markdown，检查是否忠于论文、是否跨论文串写、是否夸大实验、趋势是否有多篇支撑、评分语气是否匹配、发表单位是否有依据、ADN 启发是否具体。",
+            "不要因为文风偏好给出问题；只报告能够指出具体正文片段和输入证据边界的问题。",
+            "high 表示明确事实错误、跨论文污染、虚构结果/机构或严重证据越界；medium 表示需要人工核对的支撑不足、趋势过度概括或语气明显夸大；low 表示不阻止发布的小问题。",
+            "verdict=pass 只能在没有 high/medium 问题时使用；有 medium 使用 review；有 high 使用 reject。",
+            "只返回 JSON，不要输出 Markdown、解释性前言或思维过程。"
+          ].join("\n")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            task: "weekly_report_semantic_review",
+            report: {
+              date: report.date,
+              month: report.month,
+              weekOfMonth: report.weekOfMonth,
+              weekStart: report.weekStart,
+              weekEnd: report.weekEnd,
+              useOriginalText: report.useOriginalText,
+              paperCount: papers.length
+            },
+            reviewRubric: [
+              "逐篇事实必须能在对应论文 evidenceExcerpt 或 analysisEvidence 中找到依据。",
+              "不得把论文 A 的方法、结果、机构、链接或限制写入论文 B。",
+              "精确数字、数据集、基线、消融和实验结论不能超出输入证据。",
+              "报告导读和趋势判断应由至少两篇论文共同支撑；只有一篇支撑时要指出。",
+              "阅读层级和语气应与 score、matchedDimensions、selectionReason 一致，保底论文不能包装成强推荐。",
+              "affiliations 必须与 affiliationEvidence 一致，线索不足时不能猜测机构。",
+              "摘要降级论文不能使用已经阅读全文、实验已经充分验证等越界表述。",
+              "ADN 启发要与论文的方法或证据建立具体联系，不能只是通用口号。"
+            ],
+            outputSchema: {
+              verdict: "pass | review | reject",
+              score: "0-100，表示语义可信度",
+              summary: "简洁总结",
+              checks: {
+                paperGrounding: true,
+                crossPaperIsolation: true,
+                trendGrounding: true,
+                scoreToneConsistency: true,
+                affiliationGrounding: true,
+                evidenceBoundary: true,
+                adnSpecificity: true
+              },
+              issues: [
+                {
+                  severity: "high | medium | low",
+                  category: "unsupported_claim | cross_paper_contamination | trend_grounding | score_tone_mismatch | affiliation | adn_relevance | evidence_boundary | internal_process_leak | other",
+                  paperId: "相关论文 ID，无则空字符串",
+                  claim: "待发布正文中的具体问题片段",
+                  reason: "为什么有风险",
+                  evidence: "输入证据如何支持或不支持"
+                }
+              ]
+            },
+            papers: papers.map((paper) => semanticReviewPaperPayload(paper, evidenceBudget)),
+            markdown
+          })
+        }
+      ]
+    };
+
+    if (protocol === "anthropic") {
+      const [systemMessage, userMessage] = payload.messages;
+      payload.system = systemMessage.content;
+      payload.messages = [userMessage];
+    }
+
+    if (disableThinking && protocol === "openai") {
+      payload.thinking = { type: "disabled" };
+    }
+
+    const llmResponse = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: llmHeaders(config),
+      body: JSON.stringify(payload)
+    });
+
+    if (!llmResponse.ok) {
+      const errorText = await llmResponse.text();
+      throw new Error(`LLM semantic review failed with ${llmResponse.status}: ${truncate(redactSensitive(errorText), 300)}`);
+    }
+
+    const data = await llmResponse.json();
+    const content = ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol));
+    return normalizeWeeklyReportSemanticReview(extractJson(content), { mode });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error(`周报 LLM 语义评审超过 ${Math.round(weeklyReportSemanticReviewTimeoutMs / 1000)} 秒未完成。`);
+      timeoutError.code = "WEEKLY_REPORT_SEMANTIC_REVIEW_TIMEOUT";
       throw timeoutError;
     }
 
@@ -3011,54 +3203,6 @@ const applyReadingListReviews = (papers, reviews, { allowMissing = false } = {})
   return {
     papers: reviewedPapers,
     missing
-  };
-};
-
-const selectReadingListPapers = (papers, { threshold = 70, minSelectedCount = 3 } = {}) => {
-  const sorted = [...papers].sort((a, b) => (
-    b.readingListReview.score - a.readingListReview.score
-    || new Date(b.published || b.updated) - new Date(a.published || a.updated)
-  ));
-  const minimum = Math.max(1, Math.min(sorted.length, Number(minSelectedCount) || 3));
-  const selectedIds = new Set();
-  const selected = [];
-  const thresholdSelected = sorted.filter((paper) => paper.readingListReview.score >= threshold);
-
-  thresholdSelected.forEach((paper) => {
-    selectedIds.add(paper.id);
-    selected.push({
-      ...paper,
-      readingListReview: {
-        ...paper.readingListReview,
-        selectionReason: "threshold"
-      }
-    });
-  });
-
-  for (const paper of sorted) {
-    if (selected.length >= minimum) {
-      break;
-    }
-
-    if (selectedIds.has(paper.id)) {
-      continue;
-    }
-
-    selectedIds.add(paper.id);
-    selected.push({
-      ...paper,
-      readingListReview: {
-        ...paper.readingListReview,
-        selectionReason: "fallback"
-      }
-    });
-  }
-
-  return {
-    selected,
-    thresholdCount: thresholdSelected.length,
-    fallbackCount: selected.filter((paper) => paper.readingListReview.selectionReason === "fallback").length,
-    minSelectedCount: minimum
   };
 };
 
@@ -3579,12 +3723,33 @@ const handleReadingListRequest = async (request, response) => {
   try {
     const payload = await readJsonBody(request);
     requestId = truncate(payload.requestId, 100);
-    const papers = Array.isArray(payload.papers)
+    const submittedPapers = Array.isArray(payload.papers)
       ? payload.papers.slice(0, readingListCandidateMax).map(sanitizeReadingListPaper)
       : [];
 
-    if (!papers.length) {
+    if (!submittedPapers.length) {
       sendJson(response, 400, { error: "NO_READING_LIST_CANDIDATES", message: "No reading-list candidate papers were provided." });
+      return;
+    }
+
+    const weekRange = readingListWeekRange(payload);
+    const papers = filterReadingListPapersByWeek(submittedPapers, weekRange);
+    const serverExcludedCrossWeekCount = submittedPapers.length - papers.length;
+    const clientExcludedCrossWeekCount = Math.min(
+      Math.max(Number(payload.excludedCrossWeekCount) || 0, 0),
+      10000
+    );
+    const excludedCrossWeekCount = clientExcludedCrossWeekCount + serverExcludedCrossWeekCount;
+
+    if (!papers.length) {
+      sendJson(response, 400, {
+        error: "NO_READING_LIST_CANDIDATES_IN_WEEK",
+        message: "No papers belong to the selected report week.",
+        detail: `候选论文均不在周报自然周范围 ${weekRange.start} 至 ${weekRange.end} 内，已阻止跨周内容进入周报。`,
+        weekStart: weekRange.start,
+        weekEnd: weekRange.end,
+        excludedCrossWeekCount
+      });
       return;
     }
 
@@ -3593,11 +3758,19 @@ const handleReadingListRequest = async (request, response) => {
       date: String(payload.date || new Date().toISOString().slice(0, 10)),
       month: truncate(payload.month, 16),
       weekOfMonth: Math.min(Math.max(Number(payload.weekOfMonth || 1), 1), 6),
+      weekStart: weekRange.start,
+      weekEnd: weekRange.end,
       sourceReport: truncate(payload.sourceReport, 240),
       useOriginalText: booleanOption(payload.useOriginalText, true),
       reviewBeforeGenerate: booleanOption(payload.reviewBeforeGenerate, true),
       reviewScoreThreshold: clamp(payload.reviewScoreThreshold ?? 70),
       minSelectedCount: Math.min(Math.max(Number(payload.minSelectedCount || 3), 1), 20),
+      sourceCandidateCount: Math.min(
+        Math.max(Number(payload.sourceCandidateCount) || submittedPapers.length, submittedPapers.length),
+        10000
+      ),
+      submittedCandidateCount: submittedPapers.length,
+      excludedCrossWeekCount,
       candidateCount: papers.length
     };
     report.title = formatReadingListTitleBase(report);
@@ -3617,7 +3790,9 @@ const handleReadingListRequest = async (request, response) => {
     setPaperRequestStatus(
       requestId,
       "reading-list",
-      report.useOriginalText ? "准备抓取论文原文，随后进行周报复评。" : "已关闭原文抓取，正在准备基于摘要进行周报复评。",
+      report.useOriginalText
+        ? `自然周校验完成${excludedCrossWeekCount ? `，已排除 ${excludedCrossWeekCount} 篇跨周论文` : ""}；准备抓取论文原文，随后进行周报复评。`
+        : `自然周校验完成${excludedCrossWeekCount ? `，已排除 ${excludedCrossWeekCount} 篇跨周论文` : ""}；已关闭原文抓取，正在准备基于摘要进行周报复评。`,
       "running",
       {
         stage: report.useOriginalText ? "original-text" : "review",
@@ -3831,9 +4006,62 @@ const handleReadingListRequest = async (request, response) => {
     });
     const markdown = readingListResult.markdown;
     const generatedTitle = readingListResult.title || report.title;
+    setPaperRequestStatus(requestId, "reading-list", "周报正文已生成，正在执行发布质量检查。", "running", {
+      stage: "quality-gate",
+      reviewSummary: paperRequestStatuses.get(requestId)?.reviewSummary,
+      originalTextSummary: paperRequestStatuses.get(requestId)?.originalTextSummary,
+      originalTextItems: paperRequestStatuses.get(requestId)?.originalTextItems || []
+    });
+    const publishValidation = assertWeeklyReportPublishable({
+      markdown,
+      papers: selectedPapers,
+      report,
+      useOriginalText: report.useOriginalText,
+      footerNote: readingListFooterNote
+    });
+    const semanticMode = weeklyReportSemanticReviewMode();
+    let semanticReview = {
+      mode: "off",
+      status: "skipped",
+      verdict: "pass",
+      score: 0,
+      summary: "LLM 语义评审已关闭。",
+      issues: [],
+      checks: {},
+      publishable: true,
+      requiresManualReview: false
+    };
+
+    if (semanticMode !== "off") {
+      setPaperRequestStatus(requestId, "reading-list", "确定性质量检查已通过，正在执行 LLM 语义评审。", "running", {
+        stage: "semantic-review",
+        reviewSummary: paperRequestStatuses.get(requestId)?.reviewSummary,
+        originalTextSummary: paperRequestStatuses.get(requestId)?.originalTextSummary,
+        originalTextItems: paperRequestStatuses.get(requestId)?.originalTextItems || []
+      });
+
+      try {
+        semanticReview = await callLlmWeeklyReportSemanticReview({
+          report,
+          papers: selectedPapers,
+          markdown,
+          llm: requestLlm,
+          mode: semanticMode
+        });
+      } catch (error) {
+        semanticReview = semanticReviewUnavailable(error, { mode: semanticMode });
+      }
+
+      assertSemanticReviewAllowsPublication(semanticReview, { mode: semanticMode });
+    }
+
     const latestReadingListStatus = paperRequestStatuses.get(requestId);
-    setPaperRequestStatus(requestId, "reading-list", "周报生成完成。", "done", {
+    const semanticReviewMessage = semanticReview.requiresManualReview
+      ? "周报生成完成，但 LLM 语义评审建议人工复核。"
+      : "周报生成完成。";
+    setPaperRequestStatus(requestId, "reading-list", semanticReviewMessage, "done", {
       stage: "done",
+      semanticReview,
       originalTextSummary: latestReadingListStatus?.originalTextSummary || {
         total: papers.length,
         pending: 0,
@@ -3849,6 +4077,11 @@ const handleReadingListRequest = async (request, response) => {
       mode: llmProviderDefaults[inferLlmProvider(requestLlm)]?.mode || "llm",
       paperCount: selectedPapers.length,
       candidateCount: papers.length,
+      submittedCandidateCount: submittedPapers.length,
+      sourceCandidateCount: report.sourceCandidateCount,
+      excludedCrossWeekCount: report.excludedCrossWeekCount,
+      weekStart: report.weekStart,
+      weekEnd: report.weekEnd,
       reviewedPaperCount: reviewedPapers.length,
       reviewSkippedCount: report.reviewSkippedCount || 0,
       reviewScoreThreshold: report.reviewScoreThreshold,
@@ -3862,6 +4095,9 @@ const handleReadingListRequest = async (request, response) => {
         ? originalTextContext.unavailableCount
         : selectedPapers.filter((paper) => paper.originalText?.status !== "available").length,
       skippedOriginalTextPapers: originalTextContext.skippedPapers || [],
+      publishValidation,
+      semanticReview,
+      requiresManualReview: semanticReview.requiresManualReview,
       title: generatedTitle
     });
   } catch (error) {
@@ -3884,6 +4120,8 @@ const handleReadingListRequest = async (request, response) => {
       error: error.code || "READING_LIST_FAILED",
       message: "Could not generate the weekly reading list.",
       detail: error.message,
+      qualityGate: error.qualityGate || null,
+      semanticReview: error.semanticReview || null,
       retryable: error.code !== "LLM_NOT_CONFIGURED"
     });
   }
@@ -3952,8 +4190,15 @@ const server = createServer(async (request, response) => {
   await serveStatic(request, response);
 });
 
-server.listen(port, host || undefined, () => {
-  const visibleHost = host || "localhost";
-  console.log(`Paper Insight is running at http://${visibleHost}:${port}`);
-  startArxivAutoSync();
-});
+const isMainModule = Boolean(process.argv[1])
+  && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (isMainModule) {
+  server.listen(port, host || undefined, () => {
+    const visibleHost = host || "localhost";
+    console.log(`Paper Insight is running at http://${visibleHost}:${port}`);
+    startArxivAutoSync();
+  });
+}
+
+export { server };

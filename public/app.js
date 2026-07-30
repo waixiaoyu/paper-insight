@@ -1329,6 +1329,37 @@ function weekStart(date = new Date()) {
   return start;
 }
 
+function reportWeekRange(report = state.currentReport) {
+  const anchor = new Date(report?.createdAt || new Date());
+  const safeAnchor = Number.isNaN(anchor.getTime()) ? new Date() : anchor;
+  const start = weekStart(safeAnchor);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 7);
+  return { start, end };
+}
+
+function paperPublicationTime(paper) {
+  const timestamp = new Date(paper?.published || paper?.updated || "").getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function weeklyReportPapers(report = state.currentReport) {
+  const { start, end } = reportWeekRange(report);
+  const startTime = start.getTime();
+  const endTime = end.getTime();
+
+  return reportPapers(report).filter((paper) => {
+    const timestamp = paperPublicationTime(paper);
+    return timestamp !== null && timestamp >= startTime && timestamp < endTime;
+  });
+}
+
+function reportWeekLabel(report = state.currentReport) {
+  const { start, end } = reportWeekRange(report);
+  const inclusiveEnd = new Date(end.getTime() - 1);
+  return `${formatDate(start)}—${formatDate(inclusiveEnd)}`;
+}
+
 function isoDate(value = new Date()) {
   const date = new Date(value);
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
@@ -1780,6 +1811,24 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
     elements.readingListStatus.textContent = data.currentTitle
       ? `正在复评：${data.currentTitle}。已等待 ${elapsed} 秒。`
       : `${detail} 已等待 ${elapsed} 秒。`;
+    return true;
+  }
+
+  if (stage === "quality-gate") {
+    setReadingListProgress("loading", "发布质量检查", data.message || "正在核对周报结构、论文范围和发布字段。", {
+      step: "receive",
+      meta
+    });
+    elements.readingListStatus.textContent = data.message || "正在执行发布质量检查。";
+    return true;
+  }
+
+  if (stage === "semantic-review") {
+    setReadingListProgress("loading", "LLM 语义评审", data.message || "正在核对事实依据、跨论文污染、趋势支撑和评分语气。", {
+      step: "receive",
+      meta
+    });
+    elements.readingListStatus.textContent = data.message || "正在执行 LLM 语义评审。";
     return true;
   }
 
@@ -2509,12 +2558,15 @@ function readingListMetadata(report = state.currentReport) {
   const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
   const year = safeDate.getFullYear();
   const month = safeDate.getMonth() + 1;
+  const range = reportWeekRange(report);
 
   return {
     title: readingListTitle(report),
     date: isoDate(safeDate),
     month: `${year}-${String(month).padStart(2, "0")}`,
-    weekOfMonth: weekOfMonth(safeDate)
+    weekOfMonth: weekOfMonth(safeDate),
+    weekStart: range.start.toISOString(),
+    weekEnd: range.end.toISOString()
   };
 }
 
@@ -2568,7 +2620,7 @@ function readingListMinSelectedCount() {
 function readingListCandidatePapers(report = state.currentReport) {
   const floor = readingListCandidateFloor();
 
-  return reportPapers(report)
+  return weeklyReportPapers(report)
     .filter((paper) => paperScore(paper) >= floor)
     .sort((a, b) => (
       paperScore(b) - paperScore(a)
@@ -2601,6 +2653,8 @@ function updateReadingListReviewPreview(report = state.currentReadingListReport 
   const threshold = readingListReviewThreshold();
   const minSelected = readingListMinSelectedCount();
   const total = reportPapers(report).length;
+  const weeklyCount = weeklyReportPapers(report).length;
+  const excludedCrossWeekCount = Math.max(0, total - weeklyCount);
   const candidateCount = readingListCandidatePapers(report).length;
 
   if (elements.readingListCandidateFloorValue) {
@@ -2617,7 +2671,10 @@ function updateReadingListReviewPreview(report = state.currentReadingListReport 
 
   if (elements.readingListReviewPreview) {
     const effectiveMin = candidateCount ? Math.min(minSelected, candidateCount) : 0;
-    elements.readingListReviewPreview.textContent = `将从原列表 ${total} 篇中取 ${candidateCount} 篇进入周报复评；优先收录复评分达到 ${threshold} 分的论文，若不足 ${minSelected} 篇，则按复评分补足到 ${effectiveMin} 篇。`;
+    const scopeText = excludedCrossWeekCount
+      ? `原列表 ${total} 篇中有 ${weeklyCount} 篇属于 ${reportWeekLabel(report)}，已排除 ${excludedCrossWeekCount} 篇跨周论文`
+      : `原列表 ${total} 篇均属于 ${reportWeekLabel(report)}`;
+    elements.readingListReviewPreview.textContent = `${scopeText}；按候选下限 ${floor} 分取 ${candidateCount} 篇进入周报复评。优先收录复评分达到 ${threshold} 分的论文，若不足 ${minSelected} 篇，则按复评分补足到 ${effectiveMin} 篇。`;
   }
 }
 
@@ -2647,26 +2704,40 @@ function setReadingListUseOriginalText(useOriginalText = true) {
 
 function readingListGeneratedStatus(readingList, paperCount) {
   const count = readingList?.paperCount || paperCount;
+  const excludedText = readingList?.excludedCrossWeekCount
+    ? `，已排除 ${readingList.excludedCrossWeekCount} 篇跨周论文`
+    : "";
 
   if (!readingList) {
     return `准备从当前列表选择论文子集，全文复评后生成 Markdown。`;
   }
 
+  if (readingList.markdown && (!readingList.weekStart || !readingList.weekEnd)) {
+    return "这份周报生成于自然周过滤启用前，可能包含跨周论文，请点击“按自然周重新生成”。";
+  }
+
   const reviewedText = readingList.reviewedPaperCount
-    ? `，复评 ${readingList.reviewedPaperCount} 篇、入选 ${count} 篇${readingList.fallbackSelectedCount ? `，其中 ${readingList.fallbackSelectedCount} 篇保底补入` : ""}`
-    : `，入选 ${count} 篇`;
+    ? `${excludedText}，复评 ${readingList.reviewedPaperCount} 篇、入选 ${count} 篇${readingList.fallbackSelectedCount ? `，其中 ${readingList.fallbackSelectedCount} 篇保底补入` : ""}`
+    : `${excludedText}，入选 ${count} 篇`;
+  const semanticText = readingList.semanticReview?.status === "completed"
+    ? readingList.semanticReview.requiresManualReview
+      ? "，LLM 语义评审建议人工复核"
+      : "，LLM 语义评审通过"
+    : readingList.semanticReview?.status === "unavailable"
+      ? "，LLM 语义评审不可用，需人工复核"
+      : "";
 
   if (!readingList?.useOriginalText) {
-    return `已生成发布版 Markdown${reviewedText}，未启用论文原文抓取。`;
+    return `已生成发布版 Markdown${reviewedText}${semanticText}，未启用论文原文抓取。`;
   }
 
   const originalTextCount = readingList?.originalTextCount || 0;
   const skippedOriginalTextCount = readingList?.originalTextUnavailableCount || 0;
   if (originalTextCount) {
-    return `已生成发布版 Markdown${reviewedText}，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文${skippedOriginalTextCount ? `，${skippedOriginalTextCount} 篇因原文不可用被跳过` : ""}。`;
+    return `已生成发布版 Markdown${reviewedText}${semanticText}，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文${skippedOriginalTextCount ? `，${skippedOriginalTextCount} 篇因原文不可用被跳过` : ""}。`;
   }
 
-  return `已生成发布版 Markdown${reviewedText}，本次未获取到可用 arXiv HTML 原文。`;
+  return `已生成发布版 Markdown${reviewedText}${semanticText}，本次未获取到可用 arXiv HTML 原文。`;
 }
 
 function setReadingListBusy(busy) {
@@ -2726,17 +2797,31 @@ function openReadingListDialog(report = state.currentReport) {
   const candidateCount = readingListCandidatePapers(report).length;
   const paperCount = report.readingList?.paperCount || candidateCount;
   const generatedStatus = readingListGeneratedStatus(report.readingList, paperCount);
+  const needsNaturalWeekRegeneration = Boolean(
+    report.readingList?.markdown
+    && (!report.readingList.weekStart || !report.readingList.weekEnd)
+  );
   elements.readingListStatus.textContent = report.readingList?.generatedAt
     ? generatedStatus
     : "先确认周报候选范围和入选阈值，再开始全文复评与生成。";
-  elements.readingListRegenerate.textContent = report.readingList?.markdown ? "重新生成" : "开始生成周报";
+  elements.readingListRegenerate.textContent = needsNaturalWeekRegeneration
+    ? "按自然周重新生成"
+    : report.readingList?.markdown
+      ? "重新生成"
+      : "开始生成周报";
   setReadingListProgress(
-    report.readingList?.markdown ? "ready" : "idle",
-    report.readingList?.markdown ? "已生成" : "等待生成",
-    report.readingList?.markdown ? "可以复制 Markdown，或点击“重新生成”刷新内容。" : "确认候选和阈值后，点击“开始生成周报”。",
+    needsNaturalWeekRegeneration ? "idle" : report.readingList?.markdown ? "ready" : "idle",
+    needsNaturalWeekRegeneration ? "需要重新生成" : report.readingList?.markdown ? "已生成" : "等待生成",
+    needsNaturalWeekRegeneration
+      ? "旧版结果没有自然周范围记录；重新生成后会排除上一周及其他跨周论文。"
+      : report.readingList?.markdown
+        ? "可以复制 Markdown，或点击“重新生成”刷新内容。"
+        : "确认候选和阈值后，点击“开始生成周报”。",
     {
-      step: report.readingList?.markdown ? "save" : "",
-      meta: report.readingList?.markdown
+      step: needsNaturalWeekRegeneration ? "" : report.readingList?.markdown ? "save" : "",
+      meta: needsNaturalWeekRegeneration
+        ? "旧版周报 · 待更新"
+        : report.readingList?.markdown
         ? `${report.readingList.paperCount || paperCount} 篇 · 已保存`
         : "未开始"
     }
@@ -2759,10 +2844,16 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     return;
   }
 
+  const weeklyPapers = weeklyReportPapers(report);
   const papers = readingListCandidatePapers(report);
+  const sourceCandidateCount = reportPapers(report).length;
+  const excludedCrossWeekCount = Math.max(0, sourceCandidateCount - weeklyPapers.length);
 
   if (!papers.length) {
-    showStatus("当前周报候选范围内没有论文，请调低复评候选下限后再生成。", "warning");
+    const message = weeklyPapers.length
+      ? "本周论文均低于复评候选下限，请调低候选下限后再生成。"
+      : `当前列表没有发表于 ${reportWeekLabel(report)} 的论文，无法生成该周周报。`;
+    showStatus(message, "warning");
     return;
   }
 
@@ -2777,6 +2868,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   const candidateFloor = readingListCandidateFloor();
   const reviewScoreThreshold = readingListReviewThreshold();
   const minSelectedCount = readingListMinSelectedCount();
+  const previousReadingList = report.readingList?.markdown ? { ...report.readingList } : null;
   const requestId = `reading-list-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextModeText = useOriginalText
     ? "准备抓取 arXiv HTML 原文，并重新给出周报四维分数。"
@@ -2828,6 +2920,8 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         requestId,
         ...meta,
         sourceReport: reportDisplayTitle(report),
+        sourceCandidateCount,
+        excludedCrossWeekCount,
         useOriginalText,
         reviewBeforeGenerate: true,
         reviewScoreThreshold,
@@ -2865,8 +2959,13 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         mode: modeLabel(data.mode),
         paperCount: data.paperCount || papers.length,
         candidateFloor,
-        candidateCount: data.candidateCount || papers.length,
-        reviewedPaperCount: data.reviewedPaperCount || papers.length,
+        candidateCount: data.candidateCount ?? papers.length,
+        submittedCandidateCount: data.submittedCandidateCount ?? papers.length,
+        sourceCandidateCount: data.sourceCandidateCount ?? sourceCandidateCount,
+        excludedCrossWeekCount: data.excludedCrossWeekCount || 0,
+        weekStart: data.weekStart || meta.weekStart,
+        weekEnd: data.weekEnd || meta.weekEnd,
+        reviewedPaperCount: data.reviewedPaperCount ?? papers.length,
         reviewSkippedCount: data.reviewSkippedCount || 0,
         reviewScoreThreshold: data.reviewScoreThreshold ?? reviewScoreThreshold,
         minSelectedCount: data.minSelectedCount ?? minSelectedCount,
@@ -2876,7 +2975,10 @@ async function generateReadingListForReport(report = state.currentReport, { forc
         useOriginalText: data.useOriginalText ?? useOriginalText,
         originalTextCount: data.originalTextCount || 0,
         originalTextUnavailableCount: data.originalTextUnavailableCount || 0,
-        skippedOriginalTextPapers: Array.isArray(data.skippedOriginalTextPapers) ? data.skippedOriginalTextPapers : []
+        skippedOriginalTextPapers: Array.isArray(data.skippedOriginalTextPapers) ? data.skippedOriginalTextPapers : [],
+        publishValidation: data.publishValidation || null,
+        semanticReview: data.semanticReview || null,
+        requiresManualReview: Boolean(data.requiresManualReview)
       }
     });
 
@@ -2890,27 +2992,50 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     const reviewSkippedText = updatedReport.readingList.reviewSkippedCount
       ? `，${updatedReport.readingList.reviewSkippedCount} 篇复评未返回结果已跳过`
       : "";
-    const reviewMeta = `，全文/摘要复评 ${updatedReport.readingList.reviewedPaperCount || papers.length} 篇、入选 ${updatedReport.readingList.paperCount} 篇${fallbackText}${reviewSkippedText}`;
+    const crossWeekText = updatedReport.readingList.excludedCrossWeekCount
+      ? `，已排除 ${updatedReport.readingList.excludedCrossWeekCount} 篇跨周论文`
+      : "";
+    const reviewMeta = `${crossWeekText}，全文/摘要复评 ${updatedReport.readingList.reviewedPaperCount || papers.length} 篇、入选 ${updatedReport.readingList.paperCount} 篇${fallbackText}${reviewSkippedText}`;
     const originalTextSkippedCount = updatedReport.readingList.originalTextUnavailableCount || 0;
     const originalTextMeta = !updatedReport.readingList.useOriginalText
       ? "，未启用论文原文抓取"
       : originalTextCount
       ? `，其中 ${originalTextCount} 篇使用了 arXiv HTML 原文${originalTextSkippedCount ? `，${originalTextSkippedCount} 篇因原文不可用被跳过` : ""}`
       : "，本次未获取到可用 arXiv HTML 原文";
-    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${reviewMeta}${originalTextMeta}，约 ${charCount} 字符。`;
-    setReadingListProgress("ready", "生成完成", `已保存到当前列表的周报结果${reviewMeta}${originalTextMeta}。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
+    const semanticReview = updatedReport.readingList.semanticReview;
+    const semanticIssue = Array.isArray(semanticReview?.issues)
+      ? semanticReview.issues.find((issue) => issue?.severity === "high" || issue?.severity === "medium")
+      : null;
+    const semanticMeta = updatedReport.readingList.requiresManualReview
+      ? `，LLM 语义评审结论为“${semanticReview?.verdict || "review"}”，需人工复核${semanticIssue?.reason ? `：${semanticIssue.reason}` : ""}`
+      : semanticReview?.status === "completed"
+        ? `，LLM 语义评审通过（${semanticReview.score} 分）`
+        : "";
+    elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${reviewMeta}${originalTextMeta}${semanticMeta}，约 ${charCount} 字符。`;
+    setReadingListProgress("ready", updatedReport.readingList.requiresManualReview ? "生成完成 · 需人工复核" : "生成完成", `已保存到当前列表的周报结果${reviewMeta}${originalTextMeta}${semanticMeta}。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
       step: "save",
-      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 完成`
+      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · ${updatedReport.readingList.requiresManualReview ? "待复核" : "完成"}`
     });
     adjustReadingListOutputHeight();
     elements.generateReadingList.textContent = "查看发布版周报";
-    showStatus("发布版阅读清单已生成，可以复制到洞察网站。", "warning");
+    showStatus(
+      updatedReport.readingList.requiresManualReview
+        ? "发布版阅读清单已生成，但 LLM 语义评审建议人工复核后再发布。"
+        : "发布版阅读清单已生成，可以复制到洞察网站。",
+      "warning"
+    );
   } catch (error) {
-    elements.readingListStatus.textContent = `生成失败：${error.message}`;
+    if (previousReadingList) {
+      elements.readingListTitle.textContent = previousReadingList.title || meta.title;
+      elements.readingListOutput.value = previousReadingList.markdown || "";
+      adjustReadingListOutputHeight();
+    }
+    const preservedText = previousReadingList ? "上一份有效周报已保留。" : "";
+    elements.readingListStatus.textContent = `生成失败：${error.message}${preservedText}`;
     setReadingListProgress("failed", "生成失败", error.message, {
-      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${papers.length} 篇 · 失败`
+      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${papers.length} 篇 · 失败${previousReadingList ? " · 已保留旧版本" : ""}`
     });
-    showStatus(`阅读清单生成失败：${error.message}`, "error");
+    showStatus(`阅读清单生成失败：${error.message}${preservedText}`, "error");
   } finally {
     resetReadingListTimer();
     resetReadingListStatusTimer();

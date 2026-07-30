@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "description": "用于真实 LLM 周报语义评审的轻量人工标注样本。样本聚焦事实与阅读体验，不用于校验完整 Markdown 格式。",
+  "cases": [
+    {
+      "id": "grounded-two-paper-summary",
+      "focus": "clean",
+      "expectedVerdict": "pass",
+      "expectedIssueCategories": [],
+      "papers": [
+        {
+          "id": "paper-guardrail",
+          "title": "Guardrail Verification for Autonomous Network Agents",
+          "score": 82,
+          "selectionReason": "threshold",
+          "evidenceBasis": "abstract-fallback",
+          "affiliations": ["示例网络研究院"],
+          "evidence": "论文在仿真故障场景中比较无护栏与规则护栏方案，结果表明验证层能够减少危险动作，但没有提供真实网络部署结果。"
+        },
+        {
+          "id": "paper-twin",
+          "title": "Digital Twin Evaluation for Closed-Loop Network Control",
+          "score": 68,
+          "selectionReason": "fallback",
+          "evidenceBasis": "abstract-fallback",
+          "affiliations": ["示例通信大学"],
+          "evidence": "论文使用数字孪生评估闭环网络控制策略，展示少量仿真案例，缺少强基线与跨场景泛化实验。"
+        }
+      ],
+      "markdown": "本周论文共同关注策略上线前的风险控制。护栏论文基于仿真显示危险动作有所减少，但真实部署效果仍需验证；数字孪生论文提供闭环策略上线前的仿真评估流程，证据有限，适合快速扫读。",
+      "rationale": "所有事实、语气和阅读层级均能在对应论文证据中找到依据。"
+    },
+    {
+      "id": "grounded-abstract-boundary",
+      "focus": "clean",
+      "expectedVerdict": "pass",
+      "expectedIssueCategories": [],
+      "papers": [
+        {
+          "id": "paper-routing",
+          "title": "Agent Planning for Network Routing",
+          "score": 74,
+          "selectionReason": "threshold",
+          "evidenceBasis": "abstract-fallback",
+          "affiliations": ["单位线索不足"],
+          "evidence": "摘要介绍一种用于网络路由的智能体规划方法，并报告仿真环境中的初步可行性结果；未提供具体提升比例和作者机构。"
+        }
+      ],
+      "markdown": "基于摘要看，该工作把智能体规划用于网络路由，并在仿真环境给出初步可行性证据。摘要没有披露具体提升比例，发表单位线索也不足，因此结论仍需结合全文核对。",
+      "rationale": "正文主动声明摘要证据边界，没有补写精确数字或机构。"
+    },
+    {
+      "id": "cross-paper-method-contamination",
+      "focus": "cross_paper_contamination",
+      "expectedVerdict": "reject",
+      "expectedIssueCategories": ["cross_paper_contamination"],
+      "papers": [
+        {
+          "id": "paper-guardrail",
+          "title": "Guardrail Verification for Autonomous Network Agents",
+          "score": 82,
+          "selectionReason": "threshold",
+          "evidenceBasis": "full-text",
+          "affiliations": ["示例网络研究院"],
+          "evidence": "论文提出动作前策略护栏验证层，不涉及数字孪生。"
+        },
+        {
+          "id": "paper-twin",
+          "title": "Digital Twin Evaluation for Closed-Loop Network Control",
+          "score": 72,
+          "selectionReason": "threshold",
+          "evidenceBasis": "full-text",
+          "affiliations": ["示例通信大学"],
+          "evidence": "论文使用数字孪生评估闭环控制策略，没有提出动作前策略护栏。"
+        }
+      ],
+      "markdown": "Digital Twin Evaluation for Closed-Loop Network Control 由示例网络研究院提出，在规划器和执行器之间加入动作前策略护栏。",
+      "rationale": "把论文 A 的机构和核心方法同时写进论文 B，属于明确的跨论文污染。"
+    },
+    {
+      "id": "unsupported-precise-metric",
+      "focus": "unsupported_claim",
+      "expectedVerdict": "reject",
+      "expectedIssueCategories": ["unsupported_claim"],
+      "papers": [
+        {
+          "id": "paper-guardrail",
+          "title": "Guardrail Verification for Autonomous Network Agents",
+          "score": 82,
+          "selectionReason": "threshold",
+          "evidenceBasis": "abstract-fallback",
+          "affiliations": ["示例网络研究院"],
+          "evidence": "摘要只说明验证层减少危险动作，没有披露具体比例、样本数或显著性检验。"
+        }
+      ],
+      "markdown": "实验表明，该护栏将危险动作比例准确降低了 43.7%，并在 12 个生产网络中达到统计显著。",
+      "rationale": "精确比例、生产网络数量和统计结论都不在输入证据中。"
+    },
+    {
+      "id": "invented-affiliation",
+      "focus": "affiliation",
+      "expectedVerdict": "reject",
+      "expectedIssueCategories": ["affiliation"],
+      "papers": [
+        {
+          "id": "paper-agent",
+          "title": "Reliable Tool Use for Network Agents",
+          "score": 78,
+          "selectionReason": "threshold",
+          "evidenceBasis": "abstract-fallback",
+          "affiliations": ["单位线索不足"],
+          "evidence": "输入只有标题和摘要，没有作者区、机构脚注、邮箱域名或项目页面信息。"
+        }
+      ],
+      "markdown": "发表单位：斯坦福大学。该校团队提出面向网络智能体的可靠工具调用方法。",
+      "rationale": "输入明确表示单位线索不足，正文却猜测了具体机构。"
+    },
+    {
+      "id": "abstract-presented-as-full-text",
+      "focus": "evidence_boundary",
+      "expectedVerdict": "reject",
+      "expectedIssueCategories": ["evidence_boundary"],
+      "papers": [
+        {
+          "id": "paper-routing",
+          "title": "Agent Planning for Network Routing",
+          "score": 74,
+          "selectionReason": "threshold",
+          "evidenceBasis": "abstract-fallback",
+          "affiliations": ["单位线索不足"],
+          "evidence": "摘要介绍方法目标和一项仿真结论，没有提供完整实验表、消融设计或附录。"
+        }
+      ],
+      "markdown": "阅读全文和附录后可以确认，作者通过完整消融证明每个规划组件都不可替代，实验已经充分验证其生产可用性。",
+      "rationale": "摘要降级输入被包装成阅读全文结论，并虚构消融与生产可用性。"
+    },
+    {
+      "id": "single-paper-overgeneralized-trend",
+      "focus": "trend_grounding",
+      "expectedVerdict": "review",
+      "expectedIssueCategories": ["trend_grounding"],
+      "papers": [
+        {
+          "id": "paper-guardrail",
+          "title": "Guardrail Verification for Autonomous Network Agents",
+          "score": 82,
+          "selectionReason": "threshold",
+          "evidenceBasis": "full-text",
+          "affiliations": ["示例网络研究院"],
+          "evidence": "论文研究网络智能体动作护栏。"
+        },
+        {
+          "id": "paper-compression",
+          "title": "Efficient Compression for Edge Models",
+          "score": 71,
+          "selectionReason": "threshold",
+          "evidenceBasis": "full-text",
+          "affiliations": ["示例边缘计算实验室"],
+          "evidence": "论文研究边缘模型压缩，不涉及智能体护栏或策略验证。"
+        }
+      ],
+      "markdown": "本周多篇论文共同证明，动作护栏已经成为网络智能体研究的统一主线。",
+      "rationale": "只有一篇论文支撑动作护栏主题，趋势表述需要收敛或人工核对。"
+    },
+    {
+      "id": "generic-adn-relevance",
+      "focus": "adn_relevance",
+      "expectedVerdict": "review",
+      "expectedIssueCategories": ["adn_relevance"],
+      "papers": [
+        {
+          "id": "paper-cache",
+          "title": "General Cache Optimization with Language Models",
+          "score": 70,
+          "selectionReason": "threshold",
+          "evidenceBasis": "abstract-fallback",
+          "affiliations": ["示例系统实验室"],
+          "evidence": "论文使用语言模型优化通用缓存策略，没有讨论网络自治、意图闭环、数字孪生或自治运维。"
+        }
+      ],
+      "markdown": "ADN 启发：该论文对华为 ADN 具有重要意义，能够全面推动网络自治、闭环控制和智能运维落地。",
+      "rationale": "ADN 关联只是通用口号，没有指出论文机制如何迁移到具体网络问题。"
+    },
+    {
+      "id": "fallback-paper-overpromoted",
+      "focus": "score_tone_mismatch",
+      "expectedVerdict": "review",
+      "expectedIssueCategories": ["score_tone_mismatch"],
+      "papers": [
+        {
+          "id": "paper-twin",
+          "title": "Digital Twin Evaluation for Closed-Loop Network Control",
+          "score": 56,
+          "selectionReason": "fallback",
+          "evidenceBasis": "full-text",
+          "affiliations": ["示例通信大学"],
+          "evidence": "论文只展示少量仿真案例，方法创新、基线和泛化证据均有限。"
+        }
+      ],
+      "markdown": "本周必读：这是一项证据扎实、方法突破显著的里程碑工作，应作为本周最高优先级论文精读。",
+      "rationale": "低分保底论文被包装为强推荐，语气与评分、选择原因和证据强度明显冲突。"
+    }
+  ]
+}

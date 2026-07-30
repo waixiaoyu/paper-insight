@@ -5,7 +5,9 @@
   "description": "A dependency-free web app for discovering and recommending the latest research papers from arXiv.",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check public/app.js && node --test"
   },
   "engines": {
     "node": ">=20"

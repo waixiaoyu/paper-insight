@@ -1,0 +1,76 @@
+[
+  {
+    "id": "https://arxiv.org/abs/2607.11111",
+    "absLink": "https://arxiv.org/abs/2607.11111",
+    "title": "Guardrail Verification for Autonomous Network Agents",
+    "published": "2026-07-28T08:00:00.000Z",
+    "summary": "The paper evaluates guardrail verification for autonomous network agents in simulated failure scenarios.",
+    "readingListReview": {
+      "score": 86,
+      "selectionReason": "threshold",
+      "matchedDimensions": [
+        "方法新意 84",
+        "证据强度 82"
+      ],
+      "dimensionDetails": [
+        {
+          "label": "研究问题价值",
+          "score": 78
+        },
+        {
+          "label": "方法新意",
+          "score": 84
+        },
+        {
+          "label": "系统价值",
+          "score": 69
+        },
+        {
+          "label": "证据强度",
+          "score": 82
+        }
+      ],
+      "affiliations": [
+        "示例网络研究院"
+      ],
+      "affiliationEvidence": "作者机构字段显示为示例网络研究院。"
+    }
+  },
+  {
+    "id": "https://arxiv.org/abs/2607.22222",
+    "absLink": "https://arxiv.org/abs/2607.22222",
+    "title": "Digital Twin Evaluation for Closed-Loop Network Control",
+    "published": "2026-07-29T09:00:00.000Z",
+    "summary": "The paper uses a digital twin to evaluate closed-loop network control strategies in simulation.",
+    "readingListReview": {
+      "score": 68,
+      "selectionReason": "fallback",
+      "matchedDimensions": [
+        "研究问题价值 72",
+        "系统价值 70"
+      ],
+      "dimensionDetails": [
+        {
+          "label": "研究问题价值",
+          "score": 72
+        },
+        {
+          "label": "方法新意",
+          "score": 62
+        },
+        {
+          "label": "系统价值",
+          "score": 70
+        },
+        {
+          "label": "证据强度",
+          "score": 61
+        }
+      ],
+      "affiliations": [
+        "示例通信大学"
+      ],
+      "affiliationEvidence": "作者机构字段显示为示例通信大学。"
+    }
+  }
+]
