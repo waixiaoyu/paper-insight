@@ -146,11 +146,31 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
 
       if (url.startsWith("https://arxiv.org/html/")) {
         arxivRequests.push(url);
+
+        if (url.includes("2607.33333")) {
+          return new Response(`<html><body><h1>Abstract-only page</h1><h2>Abstract</h2><p>${"Only an abstract is available. ".repeat(80)}</p></body></html>`, {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" }
+          });
+        }
+
         const paperTopic = url.includes("2607.11111")
           ? "guardrail verification for autonomous network agents"
           : "digital twin evaluation for closed-loop network control";
-        const evidence = `${paperTopic}. The authors describe methods, experiments, limitations, and affiliation evidence. `.repeat(30);
-        return new Response(`<html><body><h1>${paperTopic}</h1><p>${evidence}</p></body></html>`, {
+        const evidenceParagraphs = (label, count) => Array.from({ length: count }, (_, index) => (
+          `<p>${`${paperTopic}. ${label} ${index} describes concrete assumptions, mechanisms, measurements, constraints, limitations, and affiliation evidence. `.repeat(8)}</p>`
+        )).join("");
+        const html = `<html><body><article>
+          <h1>${paperTopic}</h1>
+          <p>Example authors, Example institution.</p>
+          <h2>1 Introduction</h2>${evidenceParagraphs("introduction", 3)}
+          <h2>2 Method and System Architecture</h2>${evidenceParagraphs("method", 3)}
+          <h2>3 Experimental Evaluation</h2>${evidenceParagraphs("experiment", 3)}
+          <h2>4 Results and Discussion</h2>${evidenceParagraphs("results", 2)}
+          <h2>5 Limitations</h2>${evidenceParagraphs("limitations", 1)}
+          <h2>6 Conclusion</h2>${evidenceParagraphs("conclusion", 1)}
+        </article></body></html>`;
+        return new Response(html, {
           status: 200,
           headers: { "content-type": "text/html; charset=utf-8" }
         });
@@ -229,6 +249,34 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
     const semanticRequest = llmRequests.find((item) => item.task === "semantic-review");
     assert.equal(semanticRequest.payload.papers.length, 2);
     assert.ok(semanticRequest.payload.papers.every((paper) => paper.evidenceBasis === "full-text"));
+
+    const llmRequestCountBeforeInvalidContext = llmRequests.length;
+    const invalidContextResponse = await fetch(`http://127.0.0.1:${appAddress.port}/api/reading-list`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "invalid-full-text-test",
+        date: "2026-07-29",
+        month: "2026-07",
+        weekOfMonth: 5,
+        weekStart: "2026-07-26T16:00:00.000Z",
+        weekEnd: "2026-08-02T16:00:00.000Z",
+        useOriginalText: true,
+        reviewBeforeGenerate: true,
+        papers: [{
+          id: "https://arxiv.org/abs/2607.33333",
+          absLink: "https://arxiv.org/abs/2607.33333",
+          title: "Abstract-only candidate",
+          published: "2026-07-30T00:00:00.000Z",
+          summary: "This abstract must not be used as weekly-report evidence."
+        }]
+      })
+    });
+    const invalidContextPayload = await invalidContextResponse.json();
+
+    assert.equal(invalidContextResponse.status, 400);
+    assert.equal(invalidContextPayload.error, "NO_READING_LIST_ORIGINAL_TEXT");
+    assert.equal(llmRequests.length, llmRequestCountBeforeInvalidContext);
   } finally {
     globalThis.fetch = nativeFetch;
 

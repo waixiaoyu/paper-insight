@@ -216,7 +216,8 @@ const storageKeys = {
   legacyApiKey: "paper-insight:deepseek-key",
   provider: "paper-insight:llm-provider",
   model: "paper-insight:llm-model",
-  legacyModel: "paper-insight:deepseek-model"
+  legacyModel: "paper-insight:deepseek-model",
+  weeklyReportJob: "paper-insight:weekly-report-job"
 };
 
 const llmProviders = {
@@ -311,6 +312,7 @@ const elements = {
   readingListReviewThreshold: $("#readingListReviewThreshold"),
   readingListReviewThresholdValue: $("#readingListReviewThresholdValue"),
   readingListMinSelected: $("#readingListMinSelected"),
+  readingListMaxSelected: $("#readingListMaxSelected"),
   readingListReviewPreview: $("#readingListReviewPreview"),
   readingListProgress: $("#readingListProgress"),
   readingListProgressTitle: $("#readingListProgressTitle"),
@@ -326,6 +328,11 @@ const elements = {
   readingListRegenerate: $("#readingListRegenerate"),
   readingListDownload: $("#readingListDownload"),
   readingListCopy: $("#readingListCopy"),
+  weeklyReportTraceDialog: $("#weeklyReportTraceDialog"),
+  weeklyReportTraceSummary: $("#weeklyReportTraceSummary"),
+  weeklyReportTraceList: $("#weeklyReportTraceList"),
+  weeklyReportTraceClose: $("#weeklyReportTraceClose"),
+  weeklyReportTraceCancel: $("#weeklyReportTraceCancel"),
   generateReadingList: $("#generateReadingList"),
   breadcrumb: $("#breadcrumb"),
   pageEyebrow: $("#pageEyebrow"),
@@ -379,7 +386,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 
 const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
 const scoringRulesVersion = "research-quality-rubric-soft-interest-no-cap-v2026-07-21b";
-const readingListStepOrder = ["collect", "submit", "source", "review", "generate", "receive", "save"];
+const readingListStepOrder = ["collect", "evidence", "review", "calibrate", "select", "write", "qa", "save"];
 
 function normalizeQueryText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -453,6 +460,9 @@ const state = {
   readingListTimer: 0,
   readingListStatusTimer: 0,
   readingListStartedAt: 0,
+  readingListJobId: "",
+  readingListJobMonitor: null,
+  readingListTrace: null,
   readingListLiveStatus: null,
   readingListSourceExpanded: false,
   progressState: null,
@@ -1608,6 +1618,7 @@ function setReadingListProgress(type, title, detail, { step = "", meta = "" } = 
 
 function clearReadingListSourceStatus() {
   state.readingListLiveStatus = null;
+  state.readingListTrace = null;
   state.readingListSourceExpanded = false;
 
   if (elements.readingListSourcePanel) {
@@ -2570,6 +2581,76 @@ function readingListMetadata(report = state.currentReport) {
   };
 }
 
+function showWeeklyReportTracePanel(jobId, summary = "等待 Trace") {
+  if (!jobId || !elements.readingListSourcePanel) {
+    return;
+  }
+  state.readingListJobId = jobId;
+  elements.readingListSourcePanel.hidden = false;
+  elements.readingListSourceSummary.textContent = summary;
+  elements.readingListSourcePanel.classList.add("collapsed");
+  elements.readingListSourceList.hidden = true;
+  elements.readingListSourceToggle.textContent = "查看";
+  elements.readingListSourceToggle.setAttribute("aria-expanded", "false");
+}
+
+function appendWeeklyReportTraceItem(label, detail, kind = "事件", target = elements.weeklyReportTraceList) {
+  const row = document.createElement("li");
+  row.className = "weekly-report-trace-item";
+  const heading = document.createElement("div");
+  heading.className = "weekly-report-trace-heading";
+  const badge = document.createElement("span");
+  badge.className = "source-badge";
+  badge.textContent = kind;
+  const title = document.createElement("strong");
+  title.className = "source-title";
+  title.textContent = label;
+  heading.append(badge, title);
+  const body = document.createElement("pre");
+  body.className = "weekly-report-trace-json";
+  body.textContent = typeof detail === "string" ? detail : JSON.stringify(detail, null, 2);
+  row.append(heading, body);
+  target?.append(row);
+}
+
+async function loadWeeklyReportTrace(jobId = state.readingListJobId) {
+  if (!jobId || !elements.weeklyReportTraceList) {
+    return;
+  }
+
+  elements.readingListSourceSummary.textContent = "正在读取 Trace…";
+  elements.weeklyReportTraceSummary.textContent = "正在读取完整 Trace…";
+
+  try {
+    const trace = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(jobId)}/trace`);
+    state.readingListTrace = trace;
+    elements.weeklyReportTraceList.textContent = "";
+    const timeline = Array.isArray(trace?.timeline) ? trace.timeline : [];
+    const artifacts = trace?.artifacts && typeof trace.artifacts === "object" ? trace.artifacts : {};
+
+    timeline.forEach((event) => {
+      const time = event.timestamp ? new Date(event.timestamp).toLocaleTimeString("zh-CN", { hour12: false }) : "";
+      const title = [time, event.stage, event.type].filter(Boolean).join(" · ");
+      const { timestamp: _timestamp, ...detail } = event;
+      appendWeeklyReportTraceItem(title, detail, event.outcome || "事件");
+    });
+    Object.entries(artifacts).forEach(([name, artifact]) => {
+      appendWeeklyReportTraceItem(`阶段产物 · ${name}`, artifact, "产物");
+    });
+    elements.readingListSourceSummary.textContent = `${timeline.length} 个事件 · ${Object.keys(artifacts).length} 份阶段产物`;
+    elements.weeklyReportTraceSummary.textContent = `Trace ID：${trace?.meta?.traceId || "-"} · ${timeline.length} 个事件 · ${Object.keys(artifacts).length} 份阶段产物`;
+
+    if (!timeline.length && !Object.keys(artifacts).length) {
+      appendWeeklyReportTraceItem("Trace 已创建", "尚无阶段事件，任务可能刚刚开始。", "等待");
+    }
+  } catch (error) {
+    elements.readingListSourceSummary.textContent = "Trace 读取失败";
+    elements.weeklyReportTraceSummary.textContent = "Trace 读取失败";
+    elements.weeklyReportTraceList.textContent = "";
+    appendWeeklyReportTraceItem("无法读取 Trace", error.message, "错误");
+  }
+}
+
 function roundedScoreStep(value, fallback = 70) {
   const numeric = Number.isFinite(Number(value)) ? Number(value) : fallback;
   return Math.max(0, Math.min(95, Math.round(numeric / 5) * 5));
@@ -2605,6 +2686,11 @@ function defaultReadingListMinSelected(report = state.currentReport) {
   return 3;
 }
 
+function defaultReadingListMaxSelected(report = state.currentReport) {
+  const saved = report?.readingList?.maxSelectedCount;
+  return Number.isFinite(Number(saved)) ? Math.max(3, Math.min(20, Math.round(Number(saved)))) : 10;
+}
+
 function readingListCandidateFloor() {
   return roundedScoreStep(elements.readingListCandidateFloor?.value, 60);
 }
@@ -2617,10 +2703,15 @@ function readingListMinSelectedCount() {
   return Math.max(1, Math.min(20, Math.round(Number(elements.readingListMinSelected?.value) || 3)));
 }
 
+function readingListMaxSelectedCount() {
+  return Math.max(3, Math.min(20, Math.round(Number(elements.readingListMaxSelected?.value) || 10)));
+}
+
 function readingListCandidatePapers(report = state.currentReport) {
   const floor = readingListCandidateFloor();
 
   return weeklyReportPapers(report)
+    .filter((paper) => isRecommendedPaper(paper, report))
     .filter((paper) => paperScore(paper) >= floor)
     .sort((a, b) => (
       paperScore(b) - paperScore(a)
@@ -2632,6 +2723,7 @@ function setReadingListReviewControls(report = state.currentReport) {
   const floor = defaultReadingListCandidateFloor(report);
   const threshold = defaultReadingListReviewThreshold(report);
   const minSelected = defaultReadingListMinSelected(report);
+  const maxSelected = defaultReadingListMaxSelected(report);
 
   if (elements.readingListCandidateFloor) {
     elements.readingListCandidateFloor.value = String(floor);
@@ -2645,17 +2737,23 @@ function setReadingListReviewControls(report = state.currentReport) {
     elements.readingListMinSelected.value = String(minSelected);
   }
 
+  if (elements.readingListMaxSelected) {
+    elements.readingListMaxSelected.value = String(maxSelected);
+  }
+
   updateReadingListReviewPreview(report);
 }
 
 function updateReadingListReviewPreview(report = state.currentReadingListReport || state.currentReport) {
   const floor = readingListCandidateFloor();
   const threshold = readingListReviewThreshold();
-  const minSelected = readingListMinSelectedCount();
+  const maxSelected = readingListMaxSelectedCount();
+  const minSelected = Math.min(readingListMinSelectedCount(), maxSelected);
   const total = reportPapers(report).length;
   const weeklyCount = weeklyReportPapers(report).length;
   const excludedCrossWeekCount = Math.max(0, total - weeklyCount);
   const candidateCount = readingListCandidatePapers(report).length;
+  const visibleWeeklyCount = weeklyReportPapers(report).filter((paper) => isRecommendedPaper(paper, report)).length;
 
   if (elements.readingListCandidateFloorValue) {
     elements.readingListCandidateFloorValue.textContent = String(floor);
@@ -2670,11 +2768,11 @@ function updateReadingListReviewPreview(report = state.currentReadingListReport 
   }
 
   if (elements.readingListReviewPreview) {
-    const effectiveMin = candidateCount ? Math.min(minSelected, candidateCount) : 0;
+    const effectiveMin = visibleWeeklyCount ? Math.min(minSelected, visibleWeeklyCount) : 0;
     const scopeText = excludedCrossWeekCount
       ? `原列表 ${total} 篇中有 ${weeklyCount} 篇属于 ${reportWeekLabel(report)}，已排除 ${excludedCrossWeekCount} 篇跨周论文`
       : `原列表 ${total} 篇均属于 ${reportWeekLabel(report)}`;
-    elements.readingListReviewPreview.textContent = `${scopeText}；按候选下限 ${floor} 分取 ${candidateCount} 篇进入周报复评。优先收录复评分达到 ${threshold} 分的论文，若不足 ${minSelected} 篇，则按复评分补足到 ${effectiveMin} 篇。`;
+    elements.readingListReviewPreview.textContent = `${scopeText}；按候选下限 ${floor} 分取 ${candidateCount} 篇进入主池，其余可见推荐作为增补池。优先收录复评分达到 ${threshold} 分的论文，若不足 ${minSelected} 篇则尽量补足到 ${effectiveMin} 篇，最终不超过 ${maxSelected} 篇。`;
   }
 }
 
@@ -2747,10 +2845,10 @@ function setReadingListBusy(busy) {
   elements.readingListDownload.disabled = busy || !hasMarkdown;
   elements.readingListCopy.disabled = busy || !hasMarkdown;
   if (elements.readingListUseOriginalText) {
-    elements.readingListUseOriginalText.disabled = busy;
+    elements.readingListUseOriginalText.disabled = true;
   }
   if (elements.readingListInlineUseOriginalText) {
-    elements.readingListInlineUseOriginalText.disabled = busy;
+    elements.readingListInlineUseOriginalText.disabled = true;
   }
   if (elements.readingListCandidateFloor) {
     elements.readingListCandidateFloor.disabled = busy;
@@ -2760,6 +2858,9 @@ function setReadingListBusy(busy) {
   }
   if (elements.readingListMinSelected) {
     elements.readingListMinSelected.disabled = busy;
+  }
+  if (elements.readingListMaxSelected) {
+    elements.readingListMaxSelected.disabled = busy;
   }
   elements.readingListClose.disabled = false;
 }
@@ -2790,6 +2891,10 @@ function openReadingListDialog(report = state.currentReport) {
   const useOriginalText = report.readingList?.useOriginalText ?? true;
   state.currentReadingListReport = report;
   clearReadingListSourceStatus();
+  state.readingListJobId = report.readingList?.jobId || "";
+  if (state.readingListJobId) {
+    showWeeklyReportTracePanel(state.readingListJobId, "点击展开查看完整流程");
+  }
   setReadingListUseOriginalText(useOriginalText);
   setReadingListReviewControls(report);
   elements.readingListTitle.textContent = report.readingList?.title || meta.title;
@@ -2835,7 +2940,193 @@ function openReadingListDialog(report = state.currentReport) {
   window.requestAnimationFrame(adjustReadingListOutputHeight);
 }
 
-async function generateReadingListForReport(report = state.currentReport, { force = false } = {}) {
+const weeklyReportJobStageView = Object.freeze({
+  create_job: ["collect", "创建后台任务"],
+  prepare_candidate_pool: ["collect", "整理主候选池与增补池"],
+  prepare_context: ["collect", "抓取原文并执行全文质量门"],
+  extract_evidence: ["evidence", "Evidence Agent：逐篇提取可追溯证据"],
+  review: ["review", "Review Agent：逐篇独立复评"],
+  calibrate: ["calibrate", "Calibration Agent：横向校准"],
+  select: ["select", "服务端规则：确定性选稿"],
+  editorial_plan: ["write", "Editorial Agent：制定编辑计划"],
+  write_paper_sections: ["write", "Paper Section Writer：逐篇撰写"],
+  write_head_tail: ["write", "Editorial Agent：生成周报首尾"],
+  assemble: ["qa", "服务端规则：拼装发布稿"],
+  deterministic_qa: ["qa", "服务端规则：确定性质量检查"],
+  paper_semantic_qa: ["qa", "Paper QA Agent：逐篇语义检查"],
+  report_semantic_qa: ["qa", "Report QA Agent：整稿语义检查"],
+  repair_once: ["qa", "一次定向修正并重新检查"]
+});
+
+function weeklyReportJobElapsed(job) {
+  const startedAt = new Date(job?.createdAt || "").getTime();
+  return Number.isFinite(startedAt) ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : 0;
+}
+
+function renderWeeklyReportJobProgress(job) {
+  const counts = job?.counts || {};
+  const [step, label] = weeklyReportJobStageView[job?.agentStage] || ["collect", job?.agentStage || "处理中"];
+  const processed = counts.reviewed || counts.fullTextEligible || 0;
+  const total = (counts.primary || 0) + (counts.reserve || 0);
+  const selectedText = counts.selected ? `，已选 ${counts.selected} 篇` : "";
+  const excludedText = counts.excluded ? `，排除 ${counts.excluded} 篇` : "";
+  const rawWarning = Array.isArray(job?.warnings) && job.warnings.length ? job.warnings[0] : "";
+  const warningText = rawWarning && typeof rawWarning === "object" ? JSON.stringify(rawWarning) : String(rawWarning || "");
+  const warning = warningText ? `；提醒：${warningText}` : "";
+  showWeeklyReportTracePanel(job?.jobId, warningText ? `管理员提醒：${warningText}` : `${label} · 点击查看 Trace`);
+  if (elements.weeklyReportTraceCancel) {
+    elements.weeklyReportTraceCancel.hidden = job?.state !== "running";
+  }
+
+  setReadingListProgress(
+    job?.state === "reject" ? "failed" : job?.state === "publish" ? "ready" : "loading",
+    job?.state === "publish" ? "质量门通过，允许发布" : job?.state === "reject" ? "质量门拒绝发布" : label,
+    job?.state === "running"
+      ? `Agent Loop 正在后台执行。已处理 ${processed}/${total || "?"} 篇${selectedText}${excludedText}${warning}`
+      : job?.state === "publish"
+        ? "最终稿已通过全部确定性与语义质量门。"
+        : `任务已拒绝发布：${job?.error?.detail || job?.error?.message || job?.result?.reason || "未通过质量门"}`,
+    {
+      step: job?.state === "publish" ? "save" : step,
+      meta: `${weeklyReportJobElapsed(job)} 秒 · ${label} · ${job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`
+    }
+  );
+}
+
+async function readWeeklyReportJobResponse(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.detail || data.message || "周报后台任务请求失败。");
+  }
+
+  return data;
+}
+
+function rememberWeeklyReportJob(job) {
+  if (!job?.jobId) {
+    return;
+  }
+  localStorage.setItem(storageKeys.weeklyReportJob, JSON.stringify({
+    jobId: job.jobId,
+    reportKey: job.reportKey || ""
+  }));
+}
+
+function rememberedWeeklyReportJob() {
+  try {
+    const value = JSON.parse(localStorage.getItem(storageKeys.weeklyReportJob) || "null");
+    return value?.jobId ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function forgetWeeklyReportJob(jobId = "") {
+  const remembered = rememberedWeeklyReportJob();
+  if (!remembered || !jobId || remembered.jobId === jobId) {
+    localStorage.removeItem(storageKeys.weeklyReportJob);
+  }
+}
+
+async function waitForWeeklyReportJob(job) {
+  if (state.readingListJobMonitor?.jobId === job.jobId) {
+    return state.readingListJobMonitor.promise;
+  }
+
+  const promise = (async () => {
+    let current = job;
+    renderWeeklyReportJobProgress(current);
+
+    while (current.state === "running") {
+      await waitForReadingListStep(900);
+      current = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(current.jobId)}`);
+      renderWeeklyReportJobProgress(current);
+    }
+
+    return current;
+  })();
+  state.readingListJobMonitor = { jobId: job.jobId, promise };
+
+  try {
+    return await promise;
+  } finally {
+    if (state.readingListJobMonitor?.promise === promise) {
+      state.readingListJobMonitor = null;
+    }
+  }
+}
+
+function savePublishedWeeklyReport(report, job, payload, settings = {}) {
+  const result = payload.result || {};
+  const counts = result.counts || job.counts || {};
+  const meta = readingListMetadata(report);
+  const paperCount = result.paperCount || counts.selected || 0;
+
+  return replaceStoredReport({
+    ...report,
+    readingList: {
+      title: result.title || meta.title,
+      markdown: payload.markdown || "",
+      generatedAt: job.completedAt || new Date().toISOString(),
+      mode: "Agent Loop",
+      paperCount,
+      candidateFloor: settings.candidateFloor ?? defaultReadingListCandidateFloor(report),
+      candidateCount: (counts.primary || 0) + (counts.reserve || 0),
+      submittedCandidateCount: (counts.primary || 0) + (counts.reserve || 0),
+      sourceCandidateCount: reportPapers(report).length,
+      excludedCrossWeekCount: settings.excludedCrossWeekCount || 0,
+      weekStart: meta.weekStart,
+      weekEnd: meta.weekEnd,
+      reviewedPaperCount: counts.reviewed || 0,
+      reviewSkippedCount: 0,
+      reviewScoreThreshold: settings.reviewScoreThreshold ?? defaultReadingListReviewThreshold(report),
+      minSelectedCount: job.options?.minSelectedCount || settings.minSelectedCount || 3,
+      maxSelectedCount: job.options?.maxSelectedCount || settings.maxSelectedCount || 10,
+      thresholdSelectedCount: paperCount,
+      fallbackSelectedCount: 0,
+      reviewBeforeGenerate: true,
+      useOriginalText: true,
+      originalTextCount: counts.fullTextEligible || 0,
+      originalTextUnavailableCount: counts.excluded || 0,
+      skippedOriginalTextPapers: [],
+      publishValidation: result.qaReport || null,
+      semanticReview: null,
+      requiresManualReview: false,
+      jobId: job.jobId,
+      traceId: job.traceId,
+      warnings: result.warnings || job.warnings || [],
+      reason: payload.reason || result.reason || "quality_gates_passed"
+    }
+  });
+}
+
+async function finishWeeklyReportJob(job, report, settings = {}) {
+  const finalJob = await waitForWeeklyReportJob(job);
+  const payload = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(finalJob.jobId)}/result`);
+
+  if (payload.state !== "publish") {
+    const error = new Error(payload.error?.detail || payload.error?.message || payload.reason || "最终质量门拒绝发布。");
+    error.code = payload.error?.code || "READING_LIST_PUBLISH_REJECTED";
+    error.weeklyReportTerminal = true;
+    throw error;
+  }
+
+  const updatedReport = savePublishedWeeklyReport(report, finalJob, payload, settings);
+  elements.readingListTitle.textContent = updatedReport.readingList.title;
+  elements.readingListOutput.value = updatedReport.readingList.markdown;
+  elements.readingListStatus.textContent = `Agent Loop 已通过全部质量门，发布稿包含 ${updatedReport.readingList.paperCount} 篇论文，约 ${updatedReport.readingList.markdown.length} 字符。`;
+  setReadingListProgress("ready", "质量门通过，允许发布", "最终稿已保存。管理员可查看本任务的 Agent Loop 过程，或复制 Markdown 发布。", {
+    step: "save",
+    meta: `${weeklyReportJobElapsed(finalJob)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 发布`
+  });
+  adjustReadingListOutputHeight();
+  elements.generateReadingList.textContent = "查看发布版周报";
+  return updatedReport;
+}
+
+async function generateReadingListForReportLegacy(report = state.currentReport, { force = false } = {}) {
   if (!report) {
     return;
   }
@@ -2867,7 +3158,8 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   const useOriginalText = readingListUseOriginalText();
   const candidateFloor = readingListCandidateFloor();
   const reviewScoreThreshold = readingListReviewThreshold();
-  const minSelectedCount = readingListMinSelectedCount();
+  const maxSelectedCount = readingListMaxSelectedCount();
+  const minSelectedCount = Math.min(readingListMinSelectedCount(), maxSelectedCount);
   const previousReadingList = report.readingList?.markdown ? { ...report.readingList } : null;
   const requestId = `reading-list-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextModeText = useOriginalText
@@ -3040,6 +3332,178 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     resetReadingListTimer();
     resetReadingListStatusTimer();
     setReadingListBusy(false);
+  }
+}
+
+async function generateReadingListForReport(report = state.currentReport, { force = false } = {}) {
+  if (!report) {
+    return;
+  }
+
+  if (!ensureApiKey(`请先输入 ${providerLabel()} API Key，然后再生成发布版周报。`)) {
+    return;
+  }
+
+  if (report.readingList?.markdown && !force) {
+    openReadingListDialog(report);
+    return;
+  }
+
+  const weeklyPapers = weeklyReportPapers(report);
+  const visibleWeeklyPapers = weeklyPapers.filter((paper) => isRecommendedPaper(paper, report));
+  const primaryPapers = readingListCandidatePapers(report);
+  const primaryIds = new Set(primaryPapers.map((paper) => paper.id));
+  const reservePapers = visibleWeeklyPapers.filter((paper) => !primaryIds.has(paper.id));
+  const sourceCandidateCount = reportPapers(report).length;
+  const excludedCrossWeekCount = Math.max(0, sourceCandidateCount - weeklyPapers.length);
+
+  if (!visibleWeeklyPapers.length) {
+    const message = weeklyPapers.length
+      ? "本周没有可见推荐论文；隐藏论文不会进入周报 Agent Loop。"
+      : `当前列表没有发表于 ${reportWeekLabel(report)} 的论文，无法生成该周周报。`;
+    showStatus(message, "warning");
+    return;
+  }
+
+  const meta = readingListMetadata(report);
+  const provider = providerLabel();
+  const candidateFloor = readingListCandidateFloor();
+  const reviewScoreThreshold = readingListReviewThreshold();
+  const maxSelectedCount = readingListMaxSelectedCount();
+  const minSelectedCount = Math.min(readingListMinSelectedCount(), maxSelectedCount);
+  let targetReport = report;
+  let previousReadingList = report.readingList?.markdown ? { ...report.readingList } : null;
+
+  openReadingListDialog(report);
+  setReadingListUseOriginalText(true);
+  clearReadingListSourceStatus();
+  elements.readingListTitle.textContent = meta.title;
+  elements.readingListOutput.value = "";
+  elements.readingListOutput.style.height = "";
+  elements.readingListStatus.textContent = `准备启动后台 Agent Loop：主池 ${primaryPapers.length} 篇，增补池 ${reservePapers.length} 篇。`;
+  setReadingListProgress("loading", "整理周报候选", `主池 ${primaryPapers.length} 篇；若全文门或复评后数量不足，将从 ${reservePapers.length} 篇可见推荐论文中增补。隐藏论文不会进入任务。`, {
+    step: "collect",
+    meta: `0 秒 · ${visibleWeeklyPapers.length} 篇 · ${provider}`
+  });
+  setReadingListBusy(true);
+  state.readingListStartedAt = performance.now();
+
+  try {
+    const job = await readWeeklyReportJobResponse("/api/reading-list/jobs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...meta,
+        reportKey: report.key,
+        sourceReport: reportDisplayTitle(report),
+        sourceCandidateCount,
+        excludedCrossWeekCount,
+        reviewScoreThreshold,
+        minSelectedCount,
+        maxSelectedCount,
+        primaryPapers: primaryPapers.map(readingListPaperPayload),
+        reservePapers: reservePapers.map(readingListPaperPayload),
+        ...llmPayload()
+      })
+    });
+    state.readingListJobId = job.jobId;
+    rememberWeeklyReportJob(job);
+    targetReport = state.reports.find((item) => item.key === job.reportKey) || report;
+    previousReadingList = targetReport.readingList?.markdown ? { ...targetReport.readingList } : null;
+
+    if (targetReport.key !== report.key) {
+      openReadingListDialog(targetReport);
+      setReadingListBusy(true);
+      showStatus("全局已有另一个周报任务运行，已切换到该任务。", "warning");
+    }
+
+    await finishWeeklyReportJob(job, targetReport, {
+      candidateFloor,
+      reviewScoreThreshold,
+      minSelectedCount,
+      maxSelectedCount,
+      excludedCrossWeekCount
+    });
+    forgetWeeklyReportJob(job.jobId);
+    showStatus("周报 Agent Loop 已通过质量门，可以发布。", "warning");
+  } catch (error) {
+    if (previousReadingList) {
+      elements.readingListTitle.textContent = previousReadingList.title || readingListMetadata(targetReport).title;
+      elements.readingListOutput.value = previousReadingList.markdown || "";
+      adjustReadingListOutputHeight();
+    }
+    const preservedText = previousReadingList ? "上一份已发布周报已保留。" : "";
+    elements.readingListStatus.textContent = `拒绝发布：${error.message}${preservedText}`;
+    setReadingListProgress("failed", "质量门拒绝发布", error.message, {
+      meta: `${secondsSince(state.readingListStartedAt)} 秒 · 拒绝${previousReadingList ? " · 已保留旧版本" : ""}`
+    });
+    showStatus(`周报未发布：${error.message}${preservedText}`, "error");
+    if (error.weeklyReportTerminal && state.readingListJobId) {
+      forgetWeeklyReportJob(state.readingListJobId);
+    }
+  } finally {
+    setReadingListBusy(false);
+  }
+}
+
+async function restoreActiveWeeklyReportJob() {
+  try {
+    let job = await readWeeklyReportJobResponse("/api/reading-list/jobs/active");
+    const remembered = rememberedWeeklyReportJob();
+
+    if (!job?.jobId && remembered?.jobId) {
+      try {
+        job = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(remembered.jobId)}`);
+      } catch {
+        forgetWeeklyReportJob(remembered.jobId);
+        job = null;
+      }
+    }
+
+    if (!job?.jobId) {
+      return;
+    }
+
+    rememberWeeklyReportJob(job);
+    const reportKey = job.reportKey || remembered?.reportKey || "";
+    const report = state.reports.find((item) => item.key === reportKey);
+    if (!report) {
+      state.readingListJobId = job.jobId;
+      if (typeof elements.weeklyReportTraceDialog?.showModal === "function" && !elements.weeklyReportTraceDialog.open) {
+        elements.weeklyReportTraceDialog.showModal();
+      }
+      void loadWeeklyReportTrace(job.jobId);
+      showStatus(`检测到周报任务 ${job.jobId}，但本地对应推荐列表已被删除；未回挂到其他列表。`, "warning");
+      return;
+    }
+
+    state.readingListJobId = job.jobId;
+    state.currentReadingListReport = report;
+    openReadingListDialog(report);
+    setReadingListBusy(true);
+    elements.readingListOutput.value = report.readingList?.markdown || "";
+    renderWeeklyReportJobProgress(job);
+
+    let terminalHandled = false;
+    try {
+      await finishWeeklyReportJob(job, report);
+      terminalHandled = true;
+      showStatus("后台周报任务已恢复并完成发布。", "warning");
+    } catch (error) {
+      terminalHandled = Boolean(error.weeklyReportTerminal);
+      elements.readingListStatus.textContent = `后台任务拒绝发布：${error.message}`;
+      setReadingListProgress("failed", "质量门拒绝发布", error.message, {
+        meta: `${weeklyReportJobElapsed(job)} 秒 · 拒绝`
+      });
+      showStatus(`后台周报任务未发布：${error.message}`, "error");
+    } finally {
+      if (terminalHandled) {
+        forgetWeeklyReportJob(job.jobId);
+      }
+      setReadingListBusy(false);
+    }
+  } catch (error) {
+    console.warn("Could not restore active weekly report Job.", error);
   }
 }
 
@@ -4444,8 +4908,40 @@ elements.readingListDownload.addEventListener("click", downloadReadingListMarkdo
 elements.readingListCopy.addEventListener("click", copyReadingListMarkdown);
 
 elements.readingListSourceToggle?.addEventListener("click", () => {
-  setReadingListSourceExpanded(!state.readingListSourceExpanded);
-  renderReadingListSourceStatus(state.readingListLiveStatus);
+  if (state.readingListJobId) {
+    if (typeof elements.weeklyReportTraceDialog?.showModal === "function" && !elements.weeklyReportTraceDialog.open) {
+      elements.weeklyReportTraceDialog.showModal();
+    }
+    void loadWeeklyReportTrace(state.readingListJobId);
+  } else {
+    const expanded = !state.readingListSourceExpanded;
+    setReadingListSourceExpanded(expanded);
+    renderReadingListSourceStatus(state.readingListLiveStatus);
+  }
+});
+
+elements.weeklyReportTraceClose?.addEventListener("click", () => {
+  if (elements.weeklyReportTraceDialog.open) {
+    elements.weeklyReportTraceDialog.close();
+  }
+});
+
+elements.weeklyReportTraceCancel?.addEventListener("click", async () => {
+  if (!state.readingListJobId) {
+    return;
+  }
+  elements.weeklyReportTraceCancel.disabled = true;
+  try {
+    const job = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}/cancel`, {
+      method: "POST"
+    });
+    renderWeeklyReportJobProgress(job);
+    await loadWeeklyReportTrace(job.jobId);
+  } catch (error) {
+    showStatus(`取消周报任务失败：${error.message}`, "error");
+  } finally {
+    elements.weeklyReportTraceCancel.disabled = false;
+  }
 });
 
 elements.readingListUseOriginalText?.addEventListener("change", () => {
@@ -4465,6 +4961,10 @@ elements.readingListReviewThreshold?.addEventListener("input", () => {
 });
 
 elements.readingListMinSelected?.addEventListener("input", () => {
+  updateReadingListReviewPreview();
+});
+
+elements.readingListMaxSelected?.addEventListener("input", () => {
   updateReadingListReviewPreview();
 });
 
@@ -4643,6 +5143,7 @@ persistReports();
 updateApiStatus();
 showHome();
 refreshArxivSyncStatus({ autoSync: true });
+void restoreActiveWeeklyReportJob();
 
 if (!state.runtimeApiKey && typeof elements.apiDialog.showModal === "function") {
   elements.apiDialog.showModal();

@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "gray:weekly-report": "node scripts/run-weekly-report-gray.mjs",
     "test": "node --test",
     "check": "node --check server.js && node --check public/app.js && node --test"
   },

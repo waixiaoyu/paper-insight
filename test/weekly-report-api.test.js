@@ -139,7 +139,16 @@ test("首页和静态资源仍可访问", async () => {
   const page = await fetch(`${baseUrl}/`);
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-type") || "", /text\/html/);
-  assert.match(await page.text(), /weekly-semantic-review-v2026-07-30/);
+  const html = await page.text();
+  assert.match(html, /weekly-semantic-review-v2026-07-30/);
+  assert.match(html, /id="weeklyReportTraceDialog"/);
+  assert.match(html, /id="readingListMaxSelected"/);
+
+  const app = await fetch(`${baseUrl}/app.js`);
+  assert.equal(app.status, 200);
+  const source = await app.text();
+  assert.match(source, /\/api\/reading-list\/jobs\/active/);
+  assert.match(source, /weekly-report-job/);
 });
 
 test("周报 API 在调用 LLM 前拒绝全部跨周候选", async () => {

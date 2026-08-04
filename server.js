@@ -15,6 +15,10 @@ import {
   normalizeWeeklyReportSemanticReview,
   semanticReviewUnavailable
 } from "./weekly-report/semantic-review.js";
+import { buildContextPacket } from "./weekly-report/context-builder.js";
+import { WeeklyReportJobManager } from "./weekly-report/job-manager.js";
+import { runWeeklyReportAgentLoop } from "./weekly-report/pipeline-runner.js";
+import { WeeklyReportTraceStore } from "./weekly-report/trace-store.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(__dirname, "public");
@@ -25,6 +29,12 @@ const arxivCacheDir = join(__dirname, ".cache", "arxiv");
 const arxivCooldownPath = join(__dirname, ".cache", "arxiv-cooldown.json");
 const arxivPaperLibraryPath = join(__dirname, ".cache", "arxiv-papers.json");
 const arxivSyncHistoryPath = join(__dirname, ".cache", "arxiv-sync-history.json");
+const weeklyReportJobsDir = resolve(
+  String(process.env.WEEKLY_REPORT_JOBS_DIR || join(__dirname, ".cache", "weekly-report-jobs"))
+);
+const weeklyReportTracesDir = resolve(
+  String(process.env.WEEKLY_REPORT_TRACES_DIR || join(__dirname, ".cache", "weekly-report-traces"))
+);
 const paperOriginalTextCacheDir = resolve(
   String(process.env.PAPER_ORIGINAL_TEXT_CACHE_DIR || join(__dirname, ".cache", "paper-original-text"))
 );
@@ -37,8 +47,12 @@ const arxivCooldownMs = Number(process.env.ARXIV_429_COOLDOWN_MS || 30 * 60 * 10
 const arxivMaxCooldownMs = Number(process.env.ARXIV_429_MAX_COOLDOWN_MS || 2 * 60 * 60 * 1000);
 const paperOriginalTextCacheTtlMs = Number(process.env.PAPER_ORIGINAL_TEXT_CACHE_TTL_MS || 7 * 24 * 60 * 60 * 1000);
 const paperOriginalTextFetchTimeoutMs = Number(process.env.PAPER_ORIGINAL_TEXT_FETCH_TIMEOUT_MS || 30000);
-const paperOriginalTextStoredMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_STORED_MAX_CHARS || 50000), 8000), 150000);
-const paperOriginalTextMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_MAX_CHARS || 9000), 2500), 20000);
+const paperOriginalTextStoredMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_STORED_MAX_CHARS || 120000), 8000), 200000);
+const readingListContextMaxChars = Math.min(Math.max(Number(process.env.READING_LIST_CONTEXT_MAX_CHARS || 80000), 10000), 120000);
+const paperOriginalTextMaxChars = Math.min(
+  Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_MAX_CHARS || readingListContextMaxChars), 2500),
+  120000
+);
 const paperOriginalTextTotalMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_TOTAL_MAX_CHARS || 120000), 20000), 500000);
 const paperOriginalTextConcurrency = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_CONCURRENCY || 2), 1), 5);
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
@@ -1010,14 +1024,39 @@ const arxivCacheAgeSeconds = (entry) => Math.max(0, Math.round((Date.now() - Num
 
 const paperOriginalTextCacheAgeMs = (entry) => Math.max(0, Date.now() - Number(entry?.fetchedAt || 0));
 
-const paperOriginalTextResult = (entry, maxChars) => ({
-  status: "available",
-  source: entry.source || "arxiv-html",
-  url: entry.url || "",
-  fetchedAt: entry.fetchedAt ? new Date(entry.fetchedAt).toISOString() : "",
-  chars: Math.max(0, Number(entry.textChars) || String(entry.text || "").length),
-  excerpt: paperOriginalTextExcerpt(entry.text, maxChars)
-});
+const paperOriginalTextResult = (entry, maxChars) => {
+  const contextPacket = buildContextPacket({
+    paperId: entry.paperId || "",
+    source: entry.source || "",
+    url: entry.url || "",
+    httpStatus: 200,
+    text: entry.text || "",
+    compatibility: {
+      legacyOriginalText: Number(entry.version) < 2
+    }
+  }, {
+    storedMaxChars: paperOriginalTextStoredMaxChars,
+    inputMaxChars: maxChars
+  });
+  const base = {
+    status: contextPacket.status,
+    source: contextPacket.source,
+    url: contextPacket.url,
+    fetchedAt: entry.fetchedAt ? new Date(entry.fetchedAt).toISOString() : "",
+    chars: Math.max(0, Number(entry.textChars) || contextPacket.cleanChars),
+    excerpt: contextPacket.qualityGate.passed ? contextPacket.inputText : "",
+    contextPacket
+  };
+
+  if (contextPacket.qualityGate.passed) {
+    return base;
+  }
+
+  return {
+    ...base,
+    message: `原文质量门未通过：${contextPacket.qualityGate.reasons.join(", ")}`
+  };
+};
 
 const readPaperOriginalTextCache = async (key, maxChars) => {
   const memoryEntry = paperOriginalTextMemoryCache.get(key);
@@ -1101,22 +1140,35 @@ const fetchPaperOriginalText = async (paper, maxChars) => {
       }
 
       const html = await response.text();
-      const text = stripHtmlToText(html);
+      const resolvedUrl = response.url || url;
+      const contextPacket = buildContextPacket({
+        paperId: arxivId,
+        source: "arxiv-html",
+        url: resolvedUrl,
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type") || "",
+        html
+      }, {
+        storedMaxChars: paperOriginalTextStoredMaxChars,
+        inputMaxChars: Math.min(paperOriginalTextStoredMaxChars, Math.max(maxChars, 8000))
+      });
 
-      if (text.length < 800) {
-        throw new Error("arXiv HTML 原文内容过短，可能尚未生成 HTML 版本。");
+      if (!contextPacket.qualityGate.passed) {
+        const error = new Error(`arXiv HTML 原文质量门未通过：${contextPacket.qualityGate.reasons.join(", ")}`);
+        error.code = contextPacket.status === "unavailable"
+          ? "READING_LIST_CONTEXT_FAILED"
+          : "READING_LIST_CONTEXT_INSUFFICIENT";
+        throw error;
       }
 
-      const storedText = text.length > paperOriginalTextStoredMaxChars
-        ? `${text.slice(0, paperOriginalTextStoredMaxChars)}...`
-        : text;
       const entry = {
-        version: 1,
+        version: 2,
+        paperId: arxivId,
         source: "arxiv-html",
-        url,
+        url: resolvedUrl,
         fetchedAt: Date.now(),
-        textChars: text.length,
-        text: storedText
+        textChars: contextPacket.cleanChars,
+        text: contextPacket.cleanText
       };
       await writePaperOriginalTextCache(cacheKey, entry);
       return entry;
@@ -1439,124 +1491,6 @@ const decodeXml = (value) => String(value || "")
   .replace(/&lt;/g, "<")
   .replace(/&gt;/g, ">")
   .replace(/&amp;/g, "&");
-
-const decodeHtml = (value) => decodeXml(value)
-  .replace(/&nbsp;/gi, " ")
-  .replace(/&ndash;/gi, "-")
-  .replace(/&mdash;/gi, "-")
-  .replace(/&lsquo;|&rsquo;/gi, "'")
-  .replace(/&ldquo;|&rdquo;/gi, "\"")
-  .replace(/&[a-z][a-z0-9]+;/gi, " ");
-
-const stripHtmlToText = (html) => decodeHtml(String(html || "")
-  .replace(/<script[\s\S]*?<\/script>/gi, " ")
-  .replace(/<style[\s\S]*?<\/style>/gi, " ")
-  .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
-  .replace(/<header[\s\S]*?<\/header>/gi, " ")
-  .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
-  .replace(/<figcaption[\s\S]*?<\/figcaption>/gi, " ")
-  .replace(/<(?:h[1-6]|title)[^>]*>/gi, "\n\n")
-  .replace(/<\/(?:h[1-6]|title)>/gi, "\n\n")
-  .replace(/<\/(?:p|li|section|article|div|tr)>/gi, "\n\n")
-  .replace(/<br\s*\/?>/gi, "\n")
-  .replace(/<[^>]+>/g, " "))
-  .replace(/\u00a0/g, " ")
-  .replace(/[ \t]+/g, " ")
-  .replace(/\n[ \t]+/g, "\n")
-  .replace(/[ \t]+\n/g, "\n")
-  .replace(/\n{3,}/g, "\n\n")
-  .trim();
-
-const paperOriginalTextExcerpt = (text, maxChars = paperOriginalTextMaxChars) => {
-  const budget = Math.max(1200, Number(maxChars) || paperOriginalTextMaxChars);
-  const clean = String(text || "")
-    .replace(/\n\s*(references|bibliography)\s*\n[\s\S]*$/i, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  if (clean.length <= budget) {
-    return clean;
-  }
-
-  const paragraphs = clean
-    .split(/\n{2,}/)
-    .map((item) => item.replace(/\s+/g, " ").trim())
-    .filter((item) => item.length >= 40);
-  const selected = new Map();
-  let used = 0;
-  const addParagraph = (index) => {
-    if (index < 0 || index >= paragraphs.length || selected.has(index)) {
-      return;
-    }
-
-    const paragraph = paragraphs[index];
-    if (used + paragraph.length > budget && selected.size > 0) {
-      return;
-    }
-
-    selected.set(index, paragraph);
-    used += paragraph.length + 2;
-  };
-
-  for (let index = 0; index < paragraphs.length && used < budget * 0.35; index += 1) {
-    addParagraph(index);
-  }
-
-  const sectionKeywords = [
-    "abstract",
-    "introduction",
-    "affiliation",
-    "affiliations",
-    "institution",
-    "university",
-    "institute",
-    "department",
-    "author",
-    "email",
-    "method",
-    "approach",
-    "framework",
-    "architecture",
-    "system",
-    "design",
-    "model",
-    "agent",
-    "experiment",
-    "evaluation",
-    "benchmark",
-    "dataset",
-    "result",
-    "ablation",
-    "discussion",
-    "limitation",
-    "acknowledg",
-    "conclusion"
-  ];
-  const scored = paragraphs
-    .map((paragraph, index) => {
-      const lower = paragraph.toLowerCase();
-      const keywordScore = sectionKeywords.reduce((score, keyword) => score + (lower.includes(keyword) ? 1 : 0), 0);
-      const headingScore = paragraph.length < 160 && /^[0-9ivx. ]*[a-z][a-z0-9 ,:()/&-]+$/i.test(paragraph) ? 1 : 0;
-      return { index, score: keywordScore * 2 + headingScore };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.index - b.index);
-
-  for (const item of scored) {
-    if (used >= budget) {
-      break;
-    }
-
-    addParagraph(item.index);
-    addParagraph(item.index + 1);
-  }
-
-  const excerpt = [...selected.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, paragraph]) => paragraph)
-    .join("\n\n");
-  return excerpt.length > budget ? `${excerpt.slice(0, budget)}...` : excerpt;
-};
 
 const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -2320,6 +2254,98 @@ const llmHeaders = (config) => config.protocol === "anthropic"
       "authorization": `Bearer ${config.apiKey}`,
       "content-type": "application/json"
     };
+
+const callWeeklyReportAgentModel = async (prompt, {
+  signal,
+  role = "weekly_report_agent",
+  attemptType = "initial",
+  llm = {}
+} = {}) => {
+  const config = getLlmConfig(llm);
+  if (!config) {
+    const error = new Error("未配置新版周报 Agent Loop 所需的 LLM API key。");
+    error.code = "LLM_NOT_CONFIGURED";
+    error.retryable = false;
+    throw error;
+  }
+
+  const { endpoint, model, disableThinking, protocol } = config;
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromJob = () => controller.abort();
+  signal?.addEventListener("abort", abortFromJob, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, llmRequestTimeoutMs);
+
+  try {
+    const payload = {
+      model,
+      temperature: 0.1,
+      max_tokens: llmMaxOutputTokens,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是论文周报 Agent Loop 中的受约束组件。",
+            `当前角色：${role}；调用类型：${attemptType}。`,
+            "严格遵循用户消息中的 JSON 任务、输入边界、规则和输出 Schema。",
+            "只返回一个 JSON 对象，不要使用 Markdown 代码围栏，不要添加解释。"
+          ].join("\n")
+        },
+        {
+          role: "user",
+          content: String(prompt || "")
+        }
+      ]
+    };
+
+    if (protocol === "anthropic") {
+      const [systemMessage, userMessage] = payload.messages;
+      payload.system = systemMessage.content;
+      payload.messages = [userMessage];
+    }
+    if (disableThinking && protocol === "openai") {
+      payload.thinking = { type: "disabled" };
+    }
+
+    const llmResponse = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: llmHeaders(config),
+      body: JSON.stringify(payload)
+    });
+    if (!llmResponse.ok) {
+      const errorText = await llmResponse.text();
+      const error = new Error(`周报 Agent 模型调用失败（${llmResponse.status}）：${truncate(redactSensitive(errorText), 300)}`);
+      error.code = "READING_LIST_AGENT_CALL_FAILED";
+      error.retryable = llmResponse.status === 429 || llmResponse.status >= 500;
+      throw error;
+    }
+
+    const data = await llmResponse.json();
+    return ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol));
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      if (signal?.aborted && !timedOut) {
+        const cancelled = new Error("周报任务已由管理员取消。");
+        cancelled.name = "AbortError";
+        cancelled.code = "READING_LIST_JOB_CANCELLED";
+        cancelled.retryable = true;
+        throw cancelled;
+      }
+      const timeoutError = new Error(`周报 Agent 模型调用超过 ${Math.round(llmRequestTimeoutMs / 1000)} 秒未完成。`);
+      timeoutError.code = "READING_LIST_AGENT_CALL_TIMEOUT";
+      timeoutError.retryable = true;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromJob);
+  }
+};
 
 const callLlmAnalyzer = async ({ query, papers, llm }) => {
   const config = getLlmConfig(llm);
@@ -4127,6 +4153,203 @@ const handleReadingListRequest = async (request, response) => {
   }
 };
 
+const weeklyReportTraceStore = new WeeklyReportTraceStore({
+  rootDir: weeklyReportTracesDir,
+  maxJobs: 20,
+  retentionDays: 30
+});
+
+const weeklyReportJobManager = new WeeklyReportJobManager({
+  jobsDir: weeklyReportJobsDir,
+  traceStore: weeklyReportTraceStore,
+  execute: async (input, context) => {
+    const requestLlm = {
+      apiKey: input.llmApiKey,
+      provider: input.llmProvider,
+      model: input.llmModel
+    };
+    const config = getLlmConfig(requestLlm);
+    await context.writeTrace("model-config", config ? {
+      provider: config.provider,
+      model: config.model,
+      endpoint: config.endpoint,
+      protocol: config.protocol,
+      temperature: 0.1,
+      maxOutputTokens: llmMaxOutputTokens,
+      requestTimeoutMs: llmRequestTimeoutMs
+    } : {
+      configured: false
+    });
+
+    return runWeeklyReportAgentLoop(input, context, {
+      buildContext: async (paper) => {
+        const originalText = await fetchPaperOriginalText(paper, paperOriginalTextMaxChars);
+        return originalText.contextPacket || {
+          paperId: arxivPaperRawId(paper).replace(/v\d+$/i, ""),
+          source: originalText.source || "",
+          status: "unavailable",
+          qualityGate: {
+            passed: false,
+            reasons: ["original_text_unavailable"]
+          }
+        };
+      },
+      callModel: (prompt, options) => callWeeklyReportAgentModel(prompt, {
+        ...options,
+        llm: requestLlm
+      })
+    });
+  }
+});
+
+let weeklyReportJobManagerReady = null;
+const ensureWeeklyReportJobManager = async () => {
+  if (!weeklyReportJobManagerReady) {
+    weeklyReportJobManagerReady = weeklyReportJobManager.initialize();
+  }
+  return weeklyReportJobManagerReady;
+};
+
+const weeklyReportJobInput = (payload = {}) => {
+  const date = String(payload.date || new Date().toISOString().slice(0, 10));
+  const weekOfMonth = Math.min(Math.max(Math.trunc(Number(payload.weekOfMonth) || 1), 1), 6);
+  const sanitizeCandidates = (values) => (Array.isArray(values) ? values : [])
+    .slice(0, readingListCandidateMax)
+    .map((paper) => ({
+      ...sanitizeReadingListPaper(paper),
+      hidden: paper?.hidden === true,
+      status: String(paper?.status || "")
+    }));
+  const primaryPapers = sanitizeCandidates(
+    Array.isArray(payload.primaryPapers) ? payload.primaryPapers : payload.papers
+  );
+  const reservePapers = sanitizeCandidates(payload.reservePapers);
+  const papers = [...primaryPapers, ...reservePapers];
+  return {
+    ...payload,
+    reportKey: truncate(payload.reportKey, 160) || `${date}-week-${weekOfMonth}`,
+    date,
+    month: truncate(payload.month, 16) || date.slice(0, 7),
+    weekOfMonth,
+    papers,
+    primaryPapers,
+    reservePapers,
+    sourceSnapshot: papers,
+    useOriginalText: true,
+    outputLanguage: "zh-CN",
+    options: {
+      ...(payload.options && typeof payload.options === "object" ? payload.options : {}),
+      paperConcurrency: payload.paperConcurrency ?? payload.options?.paperConcurrency,
+      calibrationMaxPapers: payload.calibrationMaxPapers ?? payload.options?.calibrationMaxPapers,
+      minSelectedCount: payload.minSelectedCount ?? payload.options?.minSelectedCount,
+      maxSelectedCount: payload.maxSelectedCount ?? payload.options?.maxSelectedCount
+    }
+  };
+};
+
+const handleWeeklyReportJobsRequest = async (request, response, url) => {
+  try {
+    await ensureWeeklyReportJobManager();
+    const pathname = url.pathname;
+
+    if (pathname === "/api/reading-list/jobs") {
+      if (request.method !== "POST") {
+        sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        return;
+      }
+      const payload = await readJsonBody(request);
+      const input = weeklyReportJobInput(payload);
+      if (!input.papers.length) {
+        sendJson(response, 400, {
+          error: "NO_READING_LIST_CANDIDATES",
+          message: "No weekly-report candidate papers were provided."
+        });
+        return;
+      }
+      const job = await weeklyReportJobManager.createOrReuse(input);
+      sendJson(response, 202, job);
+      return;
+    }
+
+    if (pathname === "/api/reading-list/jobs/active") {
+      if (request.method !== "GET") {
+        sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        return;
+      }
+      sendJson(response, 200, await weeklyReportJobManager.getActive());
+      return;
+    }
+
+    const match = pathname.match(/^\/api\/reading-list\/jobs\/([^/]+)(?:\/(trace|result|cancel))?$/);
+    if (!match) {
+      sendJson(response, 404, { error: "READING_LIST_JOB_NOT_FOUND" });
+      return;
+    }
+    const jobId = decodeURIComponent(match[1]);
+    const action = match[2] || "job";
+    const job = await weeklyReportJobManager.getJob(jobId);
+    if (!job) {
+      sendJson(response, 404, {
+        error: "READING_LIST_JOB_NOT_FOUND",
+        message: "Weekly report Job was not found."
+      });
+      return;
+    }
+
+    if (action === "job") {
+      if (request.method !== "GET") {
+        sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        return;
+      }
+      sendJson(response, 200, job);
+      return;
+    }
+    if (action === "trace") {
+      if (request.method !== "GET") {
+        sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        return;
+      }
+      sendJson(response, 200, await weeklyReportTraceStore.readTrace(job.traceId));
+      return;
+    }
+    if (action === "result") {
+      if (request.method !== "GET") {
+        sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        return;
+      }
+      if (job.state === "running") {
+        sendJson(response, 202, { state: "running", jobId, agentStage: job.agentStage });
+        return;
+      }
+      const trace = await weeklyReportTraceStore.readTrace(job.traceId);
+      sendJson(response, 200, {
+        jobId,
+        traceId: job.traceId,
+        state: job.state,
+        reason: job.result?.reason || "",
+        result: job.result,
+        error: job.error,
+        markdown: trace?.resultMarkdown || ""
+      });
+      return;
+    }
+    if (action === "cancel") {
+      if (request.method !== "POST") {
+        sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        return;
+      }
+      sendJson(response, 200, await weeklyReportJobManager.cancel(jobId));
+      return;
+    }
+  } catch (error) {
+    sendJson(response, 500, {
+      error: error?.code || "READING_LIST_JOB_API_FAILED",
+      message: "Weekly report Job API failed.",
+      detail: error?.message || "Unknown Job API error."
+    });
+  }
+};
+
 const serveStatic = async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
   const requestedPath = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
@@ -4179,6 +4402,12 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === "/api/translate") {
     await handleTranslateRequest(request, response);
+    return;
+  }
+
+  if (url.pathname === "/api/reading-list/jobs"
+    || url.pathname.startsWith("/api/reading-list/jobs/")) {
+    await handleWeeklyReportJobsRequest(request, response, url);
     return;
   }
 

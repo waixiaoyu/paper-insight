@@ -1,0 +1,496 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import {
+  assertWeeklyReportJob,
+  createWeeklyReportJob,
+  finalizeWeeklyReportJob
+} from "./schema.js";
+import { redactTraceValue } from "./trace-store.js";
+
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+const readJsonIfPresent = async (path, fallback = null) => {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return fallback;
+    }
+    throw error;
+  }
+};
+
+const writeJsonAtomic = async (path, value) => {
+  await mkdir(dirname(path), { recursive: true });
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+
+  try {
+    await rename(temporaryPath, path);
+  } catch (error) {
+    if (["EEXIST", "EPERM"].includes(error?.code)) {
+      await rm(path, { force: true });
+      await rename(temporaryPath, path);
+    } else {
+      await rm(temporaryPath, { force: true });
+      throw error;
+    }
+  }
+};
+
+const publicJob = (job, reusedActiveJob = false) => ({
+  ...clone(job),
+  reusedActiveJob
+});
+
+const persistedResult = (value = {}) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const { state: _state, markdown: _markdown, ...rest } = value;
+  return redactTraceValue(rest);
+};
+
+const errorRecord = (error) => redactTraceValue({
+  code: String(error?.code || "READING_LIST_PUBLISH_REJECTED"),
+  message: String(error?.message || "Weekly report Job failed."),
+  stage: String(error?.stage || ""),
+  paperId: String(error?.paperId || ""),
+  retryable: Boolean(error?.retryable),
+  traceId: String(error?.traceId || ""),
+  detail: String(error?.detail || error?.message || "Weekly report Job failed."),
+  rejectJob: Boolean(error?.rejectJob)
+});
+
+export class WeeklyReportJobManager {
+  constructor({
+    jobsDir,
+    traceStore,
+    execute = async () => ({ state: "reject", reason: "not_implemented" }),
+    publish = async () => {}
+  } = {}) {
+    if (!String(jobsDir || "").trim()) {
+      throw new TypeError("Weekly report jobsDir is required.");
+    }
+
+    if (!traceStore) {
+      throw new TypeError("Weekly report traceStore is required.");
+    }
+
+    this.jobsDir = jobsDir;
+    this.traceStore = traceStore;
+    this.execute = execute;
+    this.publish = publish;
+    this.activeJob = null;
+    this.jobs = new Map();
+    this.abortControllers = new Map();
+    this.completions = new Map();
+    this.finalizations = new Map();
+  }
+
+  get activePath() {
+    return join(this.jobsDir, "active.json");
+  }
+
+  jobPath(jobId) {
+    return join(this.jobsDir, `job-${String(jobId)}.json`);
+  }
+
+  async initialize() {
+    await mkdir(this.jobsDir, { recursive: true });
+    const persistedActive = await readJsonIfPresent(this.activePath);
+
+    if (!persistedActive) {
+      this.activeJob = null;
+      return null;
+    }
+
+    assertWeeklyReportJob(persistedActive);
+
+    if (persistedActive.state !== "running") {
+      await rm(this.activePath, { force: true });
+      this.jobs.set(persistedActive.jobId, persistedActive);
+      this.activeJob = null;
+      return null;
+    }
+
+    const interrupted = finalizeWeeklyReportJob(persistedActive, {
+      state: "reject",
+      reason: "agent_interrupted",
+      error: {
+        code: "READING_LIST_JOB_INTERRUPTED",
+        message: "The service restarted before the weekly report Job completed.",
+        retryable: true
+      }
+    });
+    await this.persistJob(interrupted, { active: false });
+    this.jobs.set(interrupted.jobId, interrupted);
+    this.activeJob = null;
+    const existingTrace = await this.traceStore.readTrace(interrupted.traceId);
+
+    if (!existingTrace) {
+      await this.traceStore.createTrace({
+        traceId: interrupted.traceId,
+        jobId: interrupted.jobId,
+        input: {
+          recoveredAfterInterruption: true,
+          originalCreatedAt: persistedActive.createdAt,
+          reportKey: persistedActive.reportKey
+        }
+      });
+    }
+
+    await this.traceStore.appendTimeline(interrupted.traceId, {
+      type: "job_interrupted",
+      stage: persistedActive.agentStage,
+      outcome: "reject",
+      reason: "agent_interrupted"
+    });
+    await this.traceStore.updateMeta(interrupted.traceId, {
+      state: "reject",
+      result: interrupted.result,
+      completedAt: interrupted.completedAt
+    });
+    return publicJob(interrupted);
+  }
+
+  async createOrReuse(input = {}) {
+    if (this.activeJob?.state === "running") {
+      return publicJob(this.activeJob, true);
+    }
+
+    const jobId = `weekly-report-job-${randomUUID()}`;
+    const traceId = `weekly-report-trace-${randomUUID()}`;
+    const job = createWeeklyReportJob({
+      jobId,
+      traceId,
+      reportKey: input.reportKey,
+      options: input.options || input
+    });
+    const controller = new AbortController();
+    let resolveCompletion;
+    const completion = new Promise((resolve) => {
+      resolveCompletion = resolve;
+    });
+
+    this.activeJob = job;
+    this.jobs.set(jobId, job);
+    this.abortControllers.set(jobId, controller);
+    this.completions.set(jobId, { promise: completion, resolve: resolveCompletion });
+
+    try {
+      await this.persistJob(job, { active: true });
+      await this.traceStore.createTrace({
+        traceId,
+        jobId,
+        input,
+        createdAt: job.createdAt
+      });
+      await this.traceStore.appendTimeline(traceId, {
+        type: "job_started",
+        stage: "create_job",
+        outcome: "continue"
+      });
+    } catch (error) {
+      this.activeJob = null;
+      this.jobs.delete(jobId);
+      this.abortControllers.delete(jobId);
+      this.completions.delete(jobId);
+      await rm(this.activePath, { force: true });
+      throw error;
+    }
+
+    void this.run(jobId, input, controller.signal);
+    return publicJob(job, false);
+  }
+
+  async run(jobId, input, signal) {
+    try {
+      const output = await this.execute(input, {
+        jobId,
+        traceId: this.jobs.get(jobId)?.traceId,
+        signal,
+        updateStage: (stage, patch) => this.updateStage(jobId, stage, patch),
+        recordTrace: (event) => this.recordTrace(jobId, event),
+        writeTrace: (name, value) => this.writeTrace(jobId, name, value)
+      });
+
+      if (!this.isActiveRunning(jobId)) {
+        return;
+      }
+
+      if (this.activeJob.cancelRequested || signal.aborted) {
+        await this.finish(jobId, {
+          state: "reject",
+          reason: "admin_cancelled"
+        });
+        return;
+      }
+
+      if (output?.state === "publish") {
+        await this.finish(jobId, {
+          state: "publish",
+          reason: output.reason || "completed",
+          result: persistedResult(output),
+          markdown: output.markdown,
+          publishOutput: output,
+          publishInput: input,
+          publishSignal: signal
+        });
+        return;
+      }
+
+      if (output?.state === "reject") {
+        await this.finish(jobId, {
+          state: "reject",
+          reason: output.reason || "rejected",
+          result: persistedResult(output),
+          markdown: output.markdown
+        });
+        return;
+      }
+
+      await this.finish(jobId, {
+        state: "reject",
+        reason: "invalid_job_result",
+        error: {
+          code: "READING_LIST_PUBLISH_REJECTED",
+          message: "Agent Loop returned a final state other than publish or reject.",
+          retryable: false
+        },
+        markdown: output?.markdown
+      });
+    } catch (error) {
+      if (!this.isActiveRunning(jobId)) {
+        return;
+      }
+
+      await this.finish(jobId, {
+        state: "reject",
+        reason: error?.code === "READING_LIST_JOB_CANCELLED"
+          ? "admin_cancelled"
+          : error?.rejectJob && error?.code
+            ? String(error.code)
+            : "execution_failed",
+        error: errorRecord(error),
+        markdown: error?.markdown
+      });
+    }
+  }
+
+  isActiveRunning(jobId) {
+    return this.activeJob?.jobId === jobId && this.activeJob.state === "running";
+  }
+
+  async updateStage(jobId, stage, patch = {}) {
+    if (!this.isActiveRunning(jobId)) {
+      return this.getJob(jobId);
+    }
+
+    if (!String(stage || "").trim()) {
+      throw new TypeError("Weekly report agentStage is required.");
+    }
+
+    const safePatch = redactTraceValue(patch);
+    const next = {
+      ...this.activeJob,
+      ...safePatch,
+      jobId: this.activeJob.jobId,
+      traceId: this.activeJob.traceId,
+      reportKey: this.activeJob.reportKey,
+      state: "running",
+      agentStage: String(stage),
+      updatedAt: new Date().toISOString(),
+      counts: safePatch.counts
+        ? { ...this.activeJob.counts, ...safePatch.counts }
+        : this.activeJob.counts,
+      result: null,
+      completedAt: ""
+    };
+    assertWeeklyReportJob(next);
+    this.activeJob = next;
+    this.jobs.set(jobId, next);
+    await this.persistJob(next, { active: true });
+    await this.traceStore.appendTimeline(next.traceId, {
+      type: "stage_updated",
+      stage: next.agentStage,
+      outcome: "continue"
+    });
+    return publicJob(next);
+  }
+
+  async recordTrace(jobId, event) {
+    const job = this.jobs.get(jobId) || await this.getJob(jobId);
+    if (!job) {
+      return null;
+    }
+    return this.traceStore.appendTimeline(job.traceId, event);
+  }
+
+  async writeTrace(jobId, name, value) {
+    const job = this.jobs.get(jobId) || await this.getJob(jobId);
+    if (!job) {
+      return null;
+    }
+    return this.traceStore.writeJson(job.traceId, name, value);
+  }
+
+  async cancel(jobId) {
+    const existingFinalization = this.finalizations.get(jobId);
+
+    if (existingFinalization) {
+      return existingFinalization;
+    }
+
+    if (!this.isActiveRunning(jobId)) {
+      return this.getJob(jobId);
+    }
+
+    const cancelling = {
+      ...this.activeJob,
+      cancelRequested: true,
+      updatedAt: new Date().toISOString()
+    };
+    this.activeJob = cancelling;
+    this.jobs.set(jobId, cancelling);
+    await this.persistJob(cancelling, { active: true });
+    this.abortControllers.get(jobId)?.abort();
+    await this.traceStore.appendTimeline(cancelling.traceId, {
+      type: "job_cancel_requested",
+      stage: cancelling.agentStage,
+      outcome: "reject",
+      reason: "admin_cancelled"
+    });
+    return this.finish(jobId, {
+      state: "reject",
+      reason: "admin_cancelled",
+      error: {
+        code: "READING_LIST_JOB_CANCELLED",
+        message: "The weekly report Job was cancelled by the administrator.",
+        retryable: true
+      }
+    });
+  }
+
+  async finish(jobId, options = {}) {
+    const existingFinalization = this.finalizations.get(jobId);
+
+    if (existingFinalization) {
+      return existingFinalization;
+    }
+
+    const operation = this.finishOnce(jobId, options);
+    this.finalizations.set(jobId, operation);
+    return operation;
+  }
+
+  async finishOnce(jobId, {
+    state,
+    reason,
+    result,
+    error,
+    markdown,
+    publishOutput,
+    publishInput,
+    publishSignal
+  } = {}) {
+    if (!this.isActiveRunning(jobId)) {
+      return this.getJob(jobId);
+    }
+
+    let finalState = state;
+    let finalReason = reason;
+    let finalResult = result;
+    let finalError = error;
+
+    if (state === "publish") {
+      try {
+        await this.publish(publishOutput, {
+          job: publicJob(this.activeJob),
+          input: publishInput,
+          signal: publishSignal
+        });
+      } catch (publishError) {
+        finalState = "reject";
+        finalReason = "publish_failed";
+        finalResult = {};
+        finalError = errorRecord(publishError);
+      }
+    }
+
+    const job = finalizeWeeklyReportJob(this.activeJob, {
+      state: finalState,
+      reason: finalReason,
+      result: finalResult,
+      error: finalError ? redactTraceValue(finalError) : null
+    });
+
+    if (markdown) {
+      await this.traceStore.writeResult(job.traceId, markdown);
+    }
+
+    await this.traceStore.appendTimeline(job.traceId, {
+      type: "job_completed",
+      stage: finalState,
+      outcome: finalState,
+      reason: job.result.reason
+    });
+    await this.traceStore.updateMeta(job.traceId, {
+      state: finalState,
+      result: job.result,
+      error: job.error,
+      completedAt: job.completedAt
+    });
+    await this.persistJob(job, { active: false });
+    this.jobs.set(jobId, job);
+    this.activeJob = null;
+    this.abortControllers.delete(jobId);
+    const completion = this.completions.get(jobId);
+    completion?.resolve(publicJob(job));
+    this.completions.delete(jobId);
+    return publicJob(job);
+  }
+
+  async persistJob(job, { active }) {
+    assertWeeklyReportJob(job);
+    const persisted = redactTraceValue(job);
+    await writeJsonAtomic(this.jobPath(job.jobId), persisted);
+
+    if (active) {
+      await writeJsonAtomic(this.activePath, persisted);
+    } else {
+      await rm(this.activePath, { force: true });
+    }
+  }
+
+  async getActive() {
+    return this.activeJob?.state === "running" ? publicJob(this.activeJob) : null;
+  }
+
+  async getJob(jobId) {
+    const memoryJob = this.jobs.get(jobId);
+    if (memoryJob) {
+      return publicJob(memoryJob);
+    }
+
+    const persisted = await readJsonIfPresent(this.jobPath(jobId));
+    if (!persisted) {
+      return null;
+    }
+
+    assertWeeklyReportJob(persisted);
+    this.jobs.set(jobId, persisted);
+    return publicJob(persisted);
+  }
+
+  async waitForCompletion(jobId) {
+    const completion = this.completions.get(jobId);
+    if (completion) {
+      return completion.promise;
+    }
+
+    return this.getJob(jobId);
+  }
+}

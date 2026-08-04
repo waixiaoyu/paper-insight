@@ -195,6 +195,35 @@ button {
   background: rgba(23, 32, 43, 0.32);
 }
 
+.weekly-report-trace-dialog {
+  width: min(960px, calc(100vw - 32px));
+  height: min(820px, calc(100dvh - 40px));
+  max-height: calc(100dvh - 40px);
+  padding: 0;
+  overflow: hidden;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.weekly-report-trace-dialog::backdrop {
+  background: rgba(23, 32, 43, 0.38);
+}
+
+.weekly-report-trace-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.weekly-report-trace-list {
+  max-height: none;
+  padding: 14px 20px 20px;
+}
+
 .reading-list-shell {
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
@@ -443,7 +472,7 @@ button {
 
 .reading-list-steps {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   margin: 10px 0 0;
   padding: 0;
@@ -556,11 +585,33 @@ button {
 .reading-list-source-list {
   display: grid;
   gap: 6px;
-  max-height: min(150px, 22dvh);
+  max-height: min(360px, 42dvh);
   margin: 0;
   padding: 0;
   overflow: auto;
   list-style: none;
+}
+
+.reading-list-source-list li.weekly-report-trace-item {
+  display: block;
+}
+
+.weekly-report-trace-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.weekly-report-trace-json {
+  margin: 7px 0 0;
+  padding: 7px;
+  overflow: auto;
+  color: var(--ink);
+  background: rgba(244, 248, 250, 0.9);
+  border-radius: 6px;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .reading-list-source-list[hidden] {

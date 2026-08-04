@@ -1,5 +1,7 @@
 # 周报发布 Agent Loop 重构规格
 
+真实灰度问题及其用例/防护网见 `WEEKLY_REPORT_GRAY_ISSUE_REGISTRY.md`；该台账是本规格验收记录的一部分。
+
 状态：已确认，作为第一阶段实现的权威规格
 更新时间：2026-08-01
 适用范围：Paper Insight 的周报发布链路
@@ -287,7 +289,7 @@ create_job
 → targeted_rereview
 → select
 → editorial_plan
-→ write_papers
+→ write_paper_sections
 → write_head_tail
 → assemble
 → deterministic_qa
@@ -552,14 +554,16 @@ evidenceCard 不只是总结，必须保存原文来源定位。
 }
 ~~~
 
-problem、method、systemDesign、experiments、results、limitations 使用相同结构。
+problem、method、systemDesign、experiments、results、limitations 使用相同结构。problem 字段的 supported 摘录必须直接陈述研究问题、缺口、挑战、风险、需求或被测能力；仅有 “We introduce X” 等贡献声明时不能作为问题证据。
 
 证据规则：
 
 - excerpt 必须是原文中的短句或短段落，不允许模型改写。
+- excerpt 必须足以独立识别事实主语、比较对象和指标；不能以未解析的 `It also`、`They also` 等代词承接开头，必要时连同相邻的先行句一起摘录。
 - 服务端归一化空白和 HTML 实体后，验证 excerpt 确实存在于缓存原文。
 - section 和 anchor 必须存在于解析后的章节结构。
 - 精确数字必须同时存在于绑定 excerpt 中。
+- `F1`、`V4` 等由拉丁字母直接前缀的指标或版本标识不拆成独立数字；完整标识及其事实含义仍由 Evidence 复核和后续语义 QA 检查。
 - 找不到依据时返回 not_present 或 insufficient，不能补写。
 - 摘录匹配失败或必填证据缺失时，Evidence Agent 获得一次定向修正机会。
 - 一次修正后仍不合格，排除并增补。
@@ -595,6 +599,7 @@ valueSignals 用于解释“为什么值得读”，必须绑定 evidenceCard。
 - claim 不能是泛化宣传语。
 - evidenceRefs 必须存在。
 - ADN relevance = none 时，发布稿不硬写 ADN。
+- `closed_loop` 只表示闭环评测或反馈结构，读者展示标签使用中性的“闭环评估”，不能据此写成“闭环自治”或网络自治。
 - 方向匹配不能替代研究质量。
 
 ### 8.4 reviewResult
@@ -665,6 +670,14 @@ Calibration 不返回分数调整。
 - Calibration 再确认。
 - 仍 unresolved 则排除、增补，并在运维对话框告警。
 
+流程状态以 suspectedMisjudgments 是否为空为准，避免模型同时返回互相矛盾的状态和内容：
+
+- 首次 Calibration 中列表非空时，服务端将 `consistent` 归一化为 `rereview_required`。
+- 确认 Calibration 中列表仍非空时，服务端将 `consistent` 或 `repaired` 归一化为 `unresolved`。
+- 归一化只修正流程状态，不修改误判内容、四维分或阅读层级，也不增加定向 Review 次数。
+- 原始响应、归一化结果及 `calibration_status_normalized` 事件全部写入 Trace。
+- `rereview_required` 或 `unresolved` 但列表为空仍属于不完整响应，按一次结构化修正规则处理。
+
 ### 8.6 editorialPlan
 
 报告头尾写作前必须形成结构化编辑计划。
@@ -697,25 +710,132 @@ Calibration 不返回分数调整。
 - 只能引用最终入选论文。
 - 本周趋势至少有两篇论文支持。
 - 单篇支持只能进入 singlePaperObservations，不能写成本周趋势。
+- 跨论文趋势必须说明共同的具体评测设计、机制、指标纪律、比较边界或工程含义；仅陈述“多篇论文都构建基准”或“都指出旧评测不足”不具备足够阅读信息量，必须修正。
 - evidenceRefs 必须存在。
+- 中文稿中的阿拉伯数字可与绑定英文 Evidence 中的 `zero`–`twelve` 直接数词等价匹配，例如 `two of five` 支持 `2/5`；其他数字仍要求精确出现。
 - readingOrder 必须与最终分数和 readingTier 一致。
+- 必须保留原文中的总体、子集和比较限定；“最强”“最佳”或点名模型的结果不能改写为“前沿大模型”或“模型整体”的结论。
+- 必须保留受测对象类型；同时包含 VLM、开源抽取工具、编码代理和专用 API 的 cohort 只能称为“方法”或“系统”，不能统一改为“前沿模型”。
+- 趋势中的共同设计和 caveat 均要由当前 evidenceRefs 直接支持；“多维度评测指标”需要每篇支撑论文的摘录明确给出维度、轴或多指标，“未涵盖通用表格处理”等边界也不得从常识补全。
+- coreTheme、titleAngle、趋势、单篇观察和阅读理由全部执行中性技术文风检查，中文和英文等价修辞模式都不能继续传给后续 Writer；“而非仅追求”“具有较高的直接参考价值”等泛化对比或价值判断也必须改为具体技术信息。
+- 中文条件句保持语法完整；例如使用“在奖励函数未知的情况下”，不得写成缺少介词的“旨在奖励函数未知的情况下”。
 
 ### 8.7 paperDraft
 
 每篇论文独立生成一个 paperDraft。
 
+~~~json
+{
+  "paperId": "...",
+  "oneSentenceTakeaway": { "text": "...", "evidenceRefs": ["method:0"] },
+  "researchProblem": { "text": "...", "evidenceRefs": ["problem:0"] },
+  "coreContribution": { "text": "...", "evidenceRefs": ["method:0"] },
+  "methodFramework": { "text": "...", "evidenceRefs": ["method:0", "systemDesign:0"] },
+  "experimentsAndResults": { "text": "...", "evidenceRefs": ["experiments:0", "results:0"] },
+  "limitationsAndConstraints": [
+    { "text": "...", "evidenceRefs": ["limitations:0"] },
+    { "text": "...", "evidenceRefs": ["experiments:0"] }
+  ],
+  "adnInsight": { "text": "...", "evidenceRefs": ["method:0"] },
+  "readingValue": {
+    "whyWorthReading": { "text": "...", "evidenceRefs": ["method:0"] },
+    "recommendedFocus": { "text": "...", "evidenceRefs": ["method:0"] },
+    "evidenceBoundary": { "text": "...", "evidenceRefs": ["limitations:0"] }
+  }
+}
+~~~
+
 Writer 输入只包含该论文：
 
-- evidenceCard
-- valueSignals
-- reviewResult
-- calibrationResult
+- evidenceCard 中带 `field:index` 的原文短摘录；不发送 summary 作为事实输入
+- valueSignals 的维度、evidenceRefs、ADN relevance/angle 路由；不发送 claim、readerImplication、insight 等事实文本
+- reviewResult 的四维分数和 interestFit；不发送 scoreReason、weakness、uncertainty 或 interestReason
+- calibrationResult 的状态和 readingTier；不发送 relativePosition 或 calibrationReason
 - 被引用的原文短摘录
 - 最终评分和 selection 信息
 
 Writer 不能读取其他论文原文，不能新增 evidenceCard 之外的事实。
 
-### 8.8 qaReport
+服务端校验并补充 publicationMeta，包括可信标题、链接、机构线索、最终评分、readingTier、rank 和四维 Review 分数。模型不得生成或修改这些字段，也不直接输出 Markdown。
+
+paperDraft 质量门：
+
+- 所有正文单元必须绑定当前论文中存在的 evidenceRefs。
+- 精确数字必须存在于该正文单元绑定的原文摘录中。
+- 数字提取不得把 `F1`、`V4` 等由拉丁字母直接前缀的指标或版本标识拆成独立精确数字；该规则必须同时用于 Paper Section、Editorial Plan 和 Head/Tail。
+- 数字归一化支持英文 `zero`–`twelve` 与阿拉伯数字的直接等价，以及英文月份与中文数字月份的日期等价；不做任意语义换算。
+- limitationsAndConstraints 至少两条，并分别绑定证据；性能下降或任务失败是实验结果，不自动构成独立研究局限，两条限制必须分别描述范围、数据、场景、种子、对手、模型版本、比较设置、缺失验证或适用边界。
+- 两条限制必须在语义上独立；不得把同一个 word-level grounding/精确证据关联问题拆成两条并重复引用同一 Evidence。第二条应从受测对象、数据、种子、比较设置、任务范围或缺失验证中选择另一受支持边界。
+- 精确模型数量必须与其 cohort/track 限定保留在同一子句；例如原文只说明 Encounter 赛道评估五个模型时，不能概括为整篇实验使用五个模型版本；`该赛道/本赛道/this track` 等指向紧邻已命名赛道的明确回指可以接受。
+- 单一 track 的模型数量不能同时挂到 Encounter 与 Day；零结果也必须保留测量对象，例如 Day 结果中的 `clears none` 只能写成未通过任何 Day 场景，不能写成未通过任何赛道。
+- `score zero at both grounding levels` 中的 zero 是得分，不是层级名称；不得据此生成“零级/zero-level grounding”，层级名必须由绑定摘录直接提供。
+- `state tracking/状态追踪` 等具体失败维度必须直接出现在当前字段绑定的 Evidence 摘录中；`resource budgeting/资源预算` 可以由原词支持，也可以由明确的跨阶段资源清单与当前收益/未来生存权衡直接蕴含。单独的 Encounter/Day 迁移结果、Evidence summary、Value Signal 或场景常识不能补全这些原因。
+- 不得引用其他 arXiv 论文，不得泄漏 selection、Review、Calibration 或 Agent Loop 内部过程。
+- 必须保留“最强”“最佳”“部分”或点名模型等范围限定，不能把子集结果推广为整个模型群体的表现；即使模型返回英文中间稿，`strongest/best-performing/named models` 也不得改写为 `frontier LLMs/models as a whole`。
+- 正文使用中性、直接的技术描述，平铺直叙研究对象、方法、结果和限制，不使用比喻、拟人、口号式对比、夸张宣传或明显的 AI 生成腔；“坚实量化证据”等主观提升证据强度的措辞由确定性门拦截。
+- 不使用无明确结果边界的“有效解决”“有效方法”“有效暴露”“有效测试”；改为陈述具体测量结果、对比对象和适用范围。
+- 保留指标和术语：F1 不改写为准确率，`scanned forms` 写为“扫描表单”；绑定摘录只描述其他基准缺少某能力时，不能反推当前方法具备该能力。
+- 百分比标为准确率时，实际包含该百分比的绑定摘录也必须明确给出 accuracy 指标；不能借用同字段其他数字的指标名称。
+- 点名模型、最佳系统或特定评估对象的负面结果不得推广为“现有前沿模型”整体结论，必须保留“所评估方法”“部分模型”或具体名称。
+- “参与测试的模型”“接受测试的系统”属于有效评估对象限定，修正后不应因限定词同义表达产生误报。
+- 本次评测最高值不能写成内在“上限/ceiling”，除非原文明确给出上界；应写为“本次评测的最高值”。
+- “显著下降/显著差距/significant”必须由同一结果的绑定摘录明确支持，不能把普通下降或迁移不顺加强为显著结论。
+- ADN 迁移表达使用“自主决策系统”，非通信网络研究不写生硬的“自主决策网络”。
+- 单篇结构校验失败时允许一次定向修正；修正后仍失败则整份周报 reject。
+
+### 8.8 headTailDraft
+
+Editorial Agent 在逐篇 paperDraft 完成后执行第二次独立调用，生成结构化头尾稿：
+
+~~~json
+{
+  "titleAngle": "18-32 字符的具体技术观点",
+  "description": "不超过 55 字符的报告描述",
+  "tags": ["..."],
+  "reportIntroduction": "...",
+  "trendJudgments": [
+    {
+      "trendIndex": 0,
+      "claim": "...",
+      "caveat": "..."
+    }
+  ],
+  "singlePaperObservations": [
+    {
+      "observationIndex": 0,
+      "claim": "...",
+      "caveat": "..."
+    }
+  ],
+  "readingOrder": [
+    {
+      "paperId": "...",
+      "reason": "..."
+    }
+  ],
+  "closingSummary": "..."
+}
+~~~
+
+质量门：
+
+- 只读取已校验 editorialPlan 和 paperDraft 的精简读者价值字段，不读取多篇原文或 Evidence 摘录。
+- trendJudgments 和 singlePaperObservations 必须逐项映射回 editorialPlan，模型不能增加、删除或把单篇观察提升为周趋势。
+- readingOrder 必须保持 Selection 的确定性顺序。
+- 标题观点必须具体，拒绝“新范式”“值得关注”“加速落地”等泛化套话。
+- 标题观点必须是独立的技术判断，不以入选论文、基准或产品名加冒号开头。
+- 标题、description、tags、导读、趋势、单篇观察、阅读理由和结语全部使用中性、直接的技术表述，不使用“X 不等于 Y”式修辞、“揭示”等修辞化动词、比喻、拟人或宣传性表达；服务端逐字段确定性检查。
+- 导读等综合字段不得保留“旨在奖励函数未知的情况下”等缺少介词的句式；修正后仍需通过逐字段校验。
+- Head/Tail 再次对照入选论文原文 Evidence 的总体与子集限定，不能把“最强”“最佳”或点名模型的结果改写为模型整体结论。
+- Head/Tail 中的事实前提必须能够回到入选论文的原文 Evidence 摘录；Editorial Plan、Evidence summary、Value Signal 和 Review 只作编辑输入，不能替代摘录成为事实来源。
+- Head/Tail 继续保留综合 cohort 的对象类型；一旦入选论文包含工具、代理和 API 等混合方法，标题、导读、趋势和结语不得用“前沿模型”概括全部论文。
+- `resource budgeting` 保留为“资源预算”；“确定性引擎”“持久状态/生命值/短休”“基础规则解析隔离”等具体设置，只有原文 Evidence 摘录直接支持时才能进入综合表述。
+- 不能新增来源中没有的精确数字、未入选论文或内部流程信息。
+- Head/Tail 的数字提取与前置写作阶段使用相同口径，`F1`、`V4` 等标识中的数字不单独触发精确数字门。
+- 模型不生成 YAML、完整论文清单、固定页尾、逐篇正文、评分或链接；这些由服务端负责。
+- 结构校验失败时允许一次定向修正；修正后仍失败则整份周报 reject。
+
+### 8.9 qaReport
 
 ~~~json
 {
@@ -729,7 +849,7 @@ Writer 不能读取其他论文原文，不能新增 evidenceCard 之外的事�
 }
 ~~~
 
-### 8.9 Agent Trace
+### 8.10 Agent Trace
 
 Trace 是运维数据，不是用户周报数据。
 
@@ -797,7 +917,8 @@ Trace 是运维数据，不是用户周报数据。
 ### 9.4 review
 
 - 一篇论文一次调用。
-- 先验证 Evidence 语义，再给四维绝对分。
+- 先逐句验证 Evidence summary 和 Value Signal 的事实前提是否被各自绑定摘录支持，再给四维绝对分。
+- `target_network_autonomy` 只用于主问题域直接属于通信网络、电信基础设施、网络运维或网络自治的论文；仅具有迁移可能的通用 AI/Agent 评测仍归为 `general_ai_system`。服务端对缺少直接领域证据的 target 标签确定性降级，并记录 Trace。
 - 服务端计算 rawScore。
 - Evidence 误读时返回 Evidence 修正一次。
 - Review 网络、限流、JSON 或 schema 失败时重试或修正一次。
@@ -838,19 +959,37 @@ Selection 由服务端确定性执行。
 ### 9.8 editorial_plan
 
 - 使用最终 selectedPapers 和结构化 artifacts。
+- 模型的事实输入只包含带 ref 的原文 Evidence 短摘录；不发送 Evidence summary、Value Signal 事实文本、Review 理由或 Calibration 理由，避免编辑提示进入发布事实。
 - 生成 coreTheme、trends 和 readingOrder。
+- titleAngle 在 Editorial Plan 阶段就必须满足 18–32 Unicode 字符，安全目标为 20–28 字符；不能把超长标题留给 Head/Tail 的唯一修正机会处理。ASCII 字母逐个计数，titleAngle 不添加论文、基准或产品名加冒号的前缀；若模型仍返回“论文/系统名：标题正文”且仅正文已满足 18–32 字符，服务端可确定性移除该前缀；若正文过短，则进入一次定向修正，不得因整串仍在 18–32 字符内而接受前缀，也不得直接截断其他长标题。
 - 趋势绑定至少两篇论文和具体 evidenceRefs。
+- 趋势除多篇支撑外，还必须包含具体共同设计、机制、指标或工程边界；低信息的“都做基准、都发现旧评测不足”不进入发布稿。
+- 事实前提仍须由各论文原文 Evidence 摘录支持；Evidence summary、Value Signal 和 Review 不替代摘录，不得把其中的编辑提示直接写成主题、判断、限制或阅读理由。
+- 保留来源限定词和概念边界，例如 `resource budgeting` 只能写为“资源预算”；具体系统设置没有直接摘录时必须删除或改为摘录实际支持的表述。
+- 每篇最多生成一条 singlePaperObservation，把该论文最重要的单篇发现和一个实质证据边界合并，不能用多条重复论文标题和正文。
+- caveat 描述当前实验、数据、模型、指标或适用范围，不写“不排除未来改进”等泛化可能性。
 - 服务端先校验计划，再允许写头尾。
 
-### 9.9 write_papers
+### 9.9 write_paper_sections
 
 - 每篇独立调用。
 - 默认并发 2。
 - 生成该论文正文块。
+- 模型的事实输入只包含当前论文带 ref 的原文 Evidence 短摘录；Value Signal 仅保留维度和方向路由，Review/Calibration 仅保留评分与层级元数据。
 - 事实范围不得超出 evidenceCard。
+- 每个正文单元中的精确数字必须由该单元绑定的 evidenceRefs 覆盖；结构化修正重生成完整 paperDraft 后必须复查全部字段，不能把未绑定数字移动到其他字段。
+- 数字提取必须忽略 `F1`、`V4` 等字母数字标识内部的数字，避免将指标名误报为未绑定数字事实。
+- 时间跨度限定不得扩大：`medium-horizon` 或跨多场任务只允许写为“中期”或具体任务跨度，没有直接证据时不能写成“中长期”“长期”或“长周期”。
+- `single-encounter` 保持为“单场战斗/单次遭遇”，不得缩成“单步/单步骤”。D&D 场景中 `persistent hit points` 写为“跨战斗保留的生命值”，`cleared days/encounter days` 写为“战斗日”或“Day 场景”，不使用“持续生命值”或“日程”。
+- 不同 track 的指标不得合并：Encounter 胜率和 Day 通过的战斗日数是两种测量；没有 Day win-rate 直接摘录时，不得写“跨战斗日场景中的胜率差异”。
+- Value Signal 只作为编辑提示，不替代 Evidence；ADN 启发中的完整观察、可观察性、隐藏信息和对手控制器等事实前提仍必须出现在当前字段绑定摘录中。
+- 设置与资源限定按原意保留：`same heuristic planner` 写为“同一个启发式规划器”，不能增强为“固定的”；`resource budgeting` 写为“资源预算”，不能扩大为“资源管理”。
+- `field:index` 引用只允许出现在结构化 `evidenceRefs` 数组，不能写入读者正文；数字门忽略被识别的内部引用索引，并单独报告引用泄漏。
 - 只表达最终分数和阅读层级，不泄漏复评、校准、fallback 等内部词。
 
 ### 9.10 write_head_tail
+
+这是已存在 Editorial Agent 的第二次独立调用，不新增 Agent 角色；与 editorial_plan 分别记录 prompt、响应、耗时、校验和修正 Trace。
 
 综合模型只负责：
 
@@ -861,6 +1000,8 @@ Selection 由服务端确定性执行。
 - 必要的跨论文总结。
 
 它只读取 editorialPlan 和精简 artifacts，不读取多篇长原文。
+
+服务端仍使用入选论文的原文 Evidence 摘录校验 Head/Tail 的事实前提；综合写作不能因输入精简而降低事实门槛。
 
 ### 9.11 assemble
 
@@ -879,7 +1020,23 @@ H1 标题
 
 完整论文清单和固定页尾由服务端生成，不交给 LLM 自由发挥。
 
+拼装规则：
+
+- 标题固定前缀、date、month、week_of_month、category 和 paper_count 来自服务端 reportMeta。
+- must_read、worth_reading、skim、background_only 分别映射为「本周必读」「值得跟进」「快速扫读」「背景参考」，不得合并或提升。
+- 逐篇标题、链接、机构、最终评分、四维分数、readingTier 和 rank 只读取服务端可信 artifacts，忽略模型返回的同名字段。
+- paperDraft 必须与 Selection 中的 paperId 一一对应；缺失、重复或混入未知论文立即 reject。
+- 逐篇正文按照 Selection rank 拼装，不依赖 paperDraft 的输入数组顺序。
+- 推荐阅读顺序必须与 Selection 顺序一致。
+- 合并逐篇阅读价值字段时先清理字段尾部重复句号/分号，使用中文分号连接后补齐句末标点，不能产生 `。；` 或无句末标点的长条目。
+- 趋势和单篇观察的 claim/caveat 由服务端使用“；边界：”直接连接，先清理 claim 尾部标点，不产生“。 边界：”或其他标点后空格。
+- 完整论文清单固定为「论文、一句话介绍、阅读级别、链接」四列，并对表格字符执行转义。
+- 固定页尾始终由服务端追加到最后一行。
+- assemble 不调用 LLM；Markdown 全稿写入 Trace 后进入 deterministic_qa。
+
 ### 9.12 deterministic_qa
+
+deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LLM。它只基于服务端可信 artifacts 对 assemble 产出的完整 Markdown 做一致性校验，并把原有 guard 的错误统一归一化为结构化 qaReport。
 
 检查：
 
@@ -895,17 +1052,45 @@ H1 标题
 - fallback 是否被写成强推荐。
 - 是否泄漏 Agent、artifact、prompt、阈值、旧分数或内部 JSON。
 
+输出与路由：
+
+- qaReport 至少包含 status、deterministicIssues、paperIssues、reportIssues、repairAttempted、repairResults、warnings 和底层 validation 结果。
+- 每个 issue 必须包含 code、path、message、severity、scope、paperId（适用时）、repairTarget 和 repairable。
+- 服务端拥有的评分、维度、机构、readingTier、发布元数据和 Markdown 结构问题定向到 assemble，由可信 artifacts 重新拼装，不调用 Writer。
+- 论文事实、数字、局限或跨论文串写问题定向到对应 paper_section；报告标题、导读、趋势、阅读顺序或头尾问题定向到 head_tail。
+- 首次失败返回 repair_required，记录完整 Trace 和管理员告警，任务继续进入 repair_once；这不是第三种发布状态。
+- 一次修正后仍失败返回 rejected，记录失败 Trace 并整体 reject，不允许第二次修正。
+- 输入缺失或无法执行校验时直接 reject，不能绕过质量门进入语义 QA。
+- 全部通过后才进入 paper_semantic_qa。
+
 ### 9.13 paper_semantic_qa
 
+- 这是逐篇语义 QA Agent，不与 deterministic_qa 合并。
 - 一篇论文一次调用。
-- 输入该论文 paperDraft、evidenceCard 和来源摘录。
+- 输入仅包含该论文 paperDraft、服务端发布元数据、evidenceCard 和绑定的来源摘录；不得输入摘要、完整原文、旧分析、选择原因或其他论文。
 - 检查事实、方法、实验、数字、机构、局限和推荐语气。
 - 默认并发 2。
 - 不一次混合多篇长正文。
 
+输出与路由：
+
+- 每篇 qaResult 包含 paperId、status、verdict、summary、checks、issues 和 repairTarget。
+- checks 必须分别覆盖事实、方法、实验、精确数字、机构、局限和推荐语气，不允许只给一个总分或笼统结论。
+- 证据边界按完整 `paperDraft` 判断；如果 `limitationsAndConstraints` 或 `readingValue.evidenceBoundary` 已明确说明某项限制，不要求在 `experimentsAndResults` 中重复同一限制，也不得据此报告限制缺失。
+- QA 必须以绑定摘录而不是 Evidence summary 或 Value Signal 文本作为事实依据；逐句检查设置、可观察性、控制器类型和时间跨度限定，引用存在不等于事实被支持。
+- 每个语义 issue 必须包含 code、severity、field、claim、reason、evidenceRefs、paperId、scope、repairTarget 和 repairable。
+- 每个为 false 的 check 必须有对应 check-specific code 的详细 issue；缺失时视为 QA 响应契约错误，走一次响应结构修正，不得生成笼统内容问题并消耗正文 repair_once。
+- 服务端根据 checks 和 issues 计算最终 status；模型声明 pass 不能覆盖失败检查或已有 issue。
+- QA 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，并且这不消耗正文唯一一次 repair_once。
+- QA 模型调用最终不可用或响应修正后仍无效时 fail closed，整体 reject，不能跳过该论文继续发布。
+- 任一论文发现内容问题时，把问题定向到对应 paper_section 并进入 repair_once；不得重写其他论文或整篇报告。
+- 一次正文修正后同类问题仍存在则整体 reject，不允许第二次正文修正。
+- 每次模型调用、响应修正、逐篇结论、聚合结果、耗时和最终路由全部写入 Trace。
+- 全部论文通过后才进入 report_semantic_qa。
+
 ### 9.14 report_semantic_qa
 
-只检查报告级内容：
+这是报告级语义 QA Agent，只检查报告级内容，不重复逐篇事实 QA：
 
 - 标题是否由本周入选论文支撑。
 - 导读是否准确。
@@ -913,6 +1098,24 @@ H1 标题
 - 单篇观察是否被夸大为趋势。
 - 阅读顺序是否符合分数、层级和价值信号。
 - 头尾是否串入未入选或其他周论文。
+
+输入与输出：
+
+- 输入仅包含服务端最终标题和 description、已验证 editorialPlan、最终 headTailDraft，以及逐篇精简阅读价值 artifacts。
+- 不输入摘要、完整原文、Evidence 全量内容或摘录、旧分析、选择原因和未入选论文。
+- qaResult 至少包含 status、verdict、summary、checks、issues 和 repairTarget。
+- checks 必须分别覆盖标题、导读、跨论文趋势、单篇观察边界、阅读顺序和头尾隔离。
+- 每个 issue 必须包含 code、severity、field、claim、reason、supportingPaperIds、scope、paperId、repairTarget 和 repairable。
+- 服务端根据 checks 和 issues 计算最终 status；模型声明 pass 不能覆盖失败检查或已有 issue。
+
+响应与路由：
+
+- 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，也不消耗正文 repair_once。
+- 模型最终不可用或响应修正后仍无效时 fail closed，整体 reject，并在管理员告警区明确显示「报告级语义质量检查不可用」。
+- 首次发现报告级内容问题时，只定向到 head_tail 并进入唯一一次 repair_once。
+- 一次正文修正后仍有报告级问题则整体 reject，不允许第二次正文修正。
+- 全部检查通过后进入 publish，不需要经过 repair_once，也不存在第三种发布状态。
+- 模型调用、响应修正、qaResult、耗时、管理员告警和最终路由全部写入 Trace。
 
 ### 9.15 repair_once
 
@@ -926,6 +1129,32 @@ QA 发现可修复问题时允许一次修正机会：
 - 修正后重新执行相关语义 QA，并最终重新跑确定性 QA。
 
 仍不通过则 reject。
+
+阶段边界：
+
+- repair_once 是一次性定向编排阶段，不是新的 Agent；它只调用已有 Paper Section Writer 或 Editorial Agent 的 Head/Tail 能力。
+- 汇总并去重 deterministicIssues、paperIssues 和 reportIssues，只接受 assemble、paper_section、head_tail 三类 repairTarget。
+- repairable=false、未知 repairTarget、缺少目标论文 artifacts 或没有任何 issue 时直接 reject，不允许猜测修正范围。
+- 同一论文的多个 issue 合并为一次完整 paperDraft 重写；不同论文可按 paperConcurrency 有限并发，默认 2、范围 1–5。
+- 同时存在 paper_section 和 head_tail 问题时，先修正目标论文，再用修正后的精简 paperDrafts 修正 Head/Tail。
+- 未被点名的 paperDraft 必须原样保留，不因一个局部问题重写其他论文。
+
+修正输入与校验：
+
+- 论文修正 prompt 仅包含当前论文 draft、该论文绑定 Evidence、服务端评分/层级和规范化 QA issues，不包含其他论文、摘要、完整原文或旧分析。
+- Head/Tail 修正 prompt 仅包含当前 Head/Tail、editorialPlan、精简逐篇阅读价值 artifacts 和规范化报告级 issues。
+- 规范化 issue 可以携带 code、path、claim、reason、evidenceRefs 和 supportingPaperIds；不携带 QA 原始响应。
+- 修正必须返回完整 artifact，并继续通过原 Paper Section 或 Head/Tail Schema、Evidence 和边界校验。
+- 修正响应本身 JSON 或 Schema 无效时允许一次响应格式纠正；这仍属于同一次内容修正，不产生第二次 repair_once。
+
+结果与回路：
+
+- 服务端拼装问题记录 method=server_reassemble，不调用 LLM。
+- 每个 repairResult 记录 repairTarget、method、paperId、issueCodes、changed、changedFields 和 responseRepairAttempted。
+- 修正 prompt、原始响应、校验结果、前后差异、耗时和失败原因全部写入 Trace。
+- 修正完成后 qaReport.repairAttempted 固定为 true，保留 repairResults，并返回 assemble 重新生成完整 Markdown。
+- 重新拼装后重跑 deterministic_qa、paper_semantic_qa 和 report_semantic_qa；这些阶段不修改内容，因此确定性门检查的仍是最终修正版 artifacts。
+- 修正后任一强制质量门仍失败则 reject，不允许再次进入 repair_once。
 
 ## 10. 重试、修正和排除规则
 
@@ -1240,8 +1469,21 @@ READING_LIST_REVIEW_EVIDENCE_DISPUTED
 READING_LIST_CALIBRATION_FAILED
 READING_LIST_CALIBRATION_UNRESOLVED
 READING_LIST_EDITORIAL_PLAN_FAILED
+READING_LIST_PAPER_SECTION_FAILED
+READING_LIST_PAPER_SECTION_UNSUPPORTED
+READING_LIST_HEAD_TAIL_FAILED
+READING_LIST_HEAD_TAIL_UNSUPPORTED
+READING_LIST_ASSEMBLY_FAILED
+READING_LIST_ASSEMBLY_METADATA_INVALID
+READING_LIST_ASSEMBLY_ARTIFACT_MISMATCH
+READING_LIST_ASSEMBLY_CONTENT_INVALID
+READING_LIST_DETERMINISTIC_QA_INPUT_INVALID
+READING_LIST_DETERMINISTIC_QA_REPAIR_REQUIRED
+READING_LIST_DETERMINISTIC_QA_FAILED
 READING_LIST_WRITE_FAILED
+READING_LIST_PAPER_QA_REPAIR_REQUIRED
 READING_LIST_PAPER_QA_FAILED
+READING_LIST_REPORT_QA_REPAIR_REQUIRED
 READING_LIST_REPORT_QA_FAILED
 READING_LIST_QA_REPAIR_FAILED
 READING_LIST_PUBLISH_REJECTED
@@ -1629,3 +1871,23 @@ Mock arXiv 和 Mock LLM 走完：
 ~~~
 
 管理员通过完整 Trace 观察全过程；普通读者只看到干净、可信、有明确阅读价值的最终发布稿。
+
+## 27. 2026-08-03 实现检查点
+
+本检查点只记录当前代码落地状态，不改变前述规范和验收标准。
+
+已完成：
+
+- 新版有限状态 Pipeline Runner 已串联全文质量门、Evidence、Review、Calibration、Selection、Editorial Plan、逐篇 Writer、Head/Tail、服务端拼装、三层 QA、一次定向修正和 publish/reject 终局。
+- 新版前端使用异步 Job API；旧 `POST /api/reading-list` 仅作为服务级回滚入口保留，不再被新版生成按钮调用。
+- 全局只允许一个 running Job；创建、复用、查询、结果、Trace 和取消 API 已接通。
+- 浏览器关闭不影响后台执行。前端在本地只保存当前 `jobId/reportKey` 指针，重新打开后会先查询 active Job；若任务已经完成，再按该指针读取终态并按 `reportKey` 回挂。
+- publish 才覆盖 `report.readingList`；reject、取消和异常不覆盖上一份已发布周报。
+- 前端只提交同周可见推荐论文：候选下限以上进入 primary，其余可见推荐进入 reserve，隐藏论文不提交。
+- 新版界面不再提供摘要降级或关闭全文门的开关；原文质量门由服务端强制执行。
+- `minSelectedCount` 和 `maxSelectedCount` 均可配置，最终不足时按实际可用数量发布，不因篇数不足整体拒绝。
+- 周报窗口展示当前 Agent stage；独立管理员 Trace 对话框延迟加载 Timeline、模型调用记录、阶段 artifacts、耗时、修正和决策。
+- Job/Trace 持久化、认证字段脱敏、最近 20 次与 30 天保留、管理员取消和服务重启标记 interrupted 已实现。
+- 当前自动化回归覆盖 213 个用例并全部通过。
+
+真实周报灰度已经启动，运行结论和全部问题防护网记录在 `WEEKLY_REPORT_GRAY_ISSUE_REGISTRY.md`。当前尚未达到最终人工验收标准：下一步继续使用同一批真实论文复跑，只有获得 publish 稿且逐篇人工核验事实、数字、实验 cohort、模型版本、分层、阅读建议和 Trace 可解释性均通过后，才完成旧稿对照验收。

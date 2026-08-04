@@ -201,14 +201,12 @@
         </header>
         <section class="reading-list-options" aria-label="周报生成选项">
           <div class="reading-list-option-grid">
-            <label class="reading-list-toggle">
-              <input id="readingListUseOriginalText" type="checkbox" checked>
-              <span class="reading-list-toggle-switch" aria-hidden="true"></span>
+            <div class="reading-list-toggle">
               <span class="reading-list-toggle-copy">
-                <strong>基于论文原文复评</strong>
-                <em>抓取 arXiv HTML 原文后重新给四维分数</em>
+                <strong>强制基于论文原文复评</strong>
+                <em>只有通过 arXiv HTML 全文质量门的论文才能进入周报</em>
               </span>
-            </label>
+            </div>
             <label class="reading-list-range">
               <span>复评候选下限</span>
               <input id="readingListCandidateFloor" type="range" min="0" max="95" value="60" step="5">
@@ -226,6 +224,11 @@
               <input id="readingListMinSelected" type="number" min="1" max="20" value="3" step="1">
               <em>达标不足时按复评分补足</em>
             </label>
+            <label class="reading-list-number">
+              <span>最多入选篇数</span>
+              <input id="readingListMaxSelected" type="number" min="3" max="20" value="10" step="1">
+              <em>最终发布稿最多收录 3–20 篇</em>
+            </label>
           </div>
           <p id="readingListReviewPreview" class="reading-list-review-preview">等待选择周报候选。</p>
         </section>
@@ -238,17 +241,18 @@
             </div>
             <p id="readingListProgressDetail">点击“开始生成周报”后会显示进度。</p>
             <ol id="readingListSteps" class="reading-list-steps" aria-label="阅读清单生成阶段">
-              <li data-reading-step="collect"><span>1</span><em>准备上下文</em></li>
-              <li data-reading-step="submit"><span>2</span><em>发送请求</em></li>
-              <li data-reading-step="source"><span>3</span><em>抓取原文</em></li>
-              <li data-reading-step="review"><span>4</span><em>全文复评</em></li>
-              <li data-reading-step="generate"><span>5</span><em>模型生成中</em></li>
-              <li data-reading-step="receive"><span>6</span><em>接收结果</em></li>
-              <li data-reading-step="save"><span>7</span><em>保存完成</em></li>
+              <li data-reading-step="collect"><span>1</span><em>候选与全文门</em></li>
+              <li data-reading-step="evidence"><span>2</span><em>Evidence Agent</em></li>
+              <li data-reading-step="review"><span>3</span><em>Review Agent</em></li>
+              <li data-reading-step="calibrate"><span>4</span><em>横向校准</em></li>
+              <li data-reading-step="select"><span>5</span><em>确定性选稿</em></li>
+              <li data-reading-step="write"><span>6</span><em>策划与写作</em></li>
+              <li data-reading-step="qa"><span>7</span><em>QA 与一次修正</em></li>
+              <li data-reading-step="save"><span>8</span><em>发布</em></li>
             </ol>
             <div id="readingListSourcePanel" class="reading-list-source-panel" hidden>
               <div class="reading-list-source-heading">
-                <strong>原文抓取明细</strong>
+                <strong>Agent Loop Trace</strong>
                 <div class="reading-list-source-actions">
                   <span id="readingListSourceSummary">等待开始</span>
                   <button id="readingListSourceToggle" class="reading-list-source-toggle" type="button" aria-expanded="false">展开</button>
@@ -270,6 +274,23 @@
           <button id="readingListDownload" class="secondary-action" type="button">下载 Markdown</button>
           <button id="readingListCopy" class="primary-action" type="button">复制 Markdown</button>
         </footer>
+      </div>
+    </dialog>
+
+    <dialog id="weeklyReportTraceDialog" class="weekly-report-trace-dialog">
+      <div class="weekly-report-trace-shell">
+        <header class="reading-list-header">
+          <div>
+            <p class="eyebrow">管理员运维</p>
+            <h2>Agent Loop Trace</h2>
+            <p id="weeklyReportTraceSummary">等待读取当前任务。</p>
+          </div>
+          <div class="reading-list-source-actions">
+            <button id="weeklyReportTraceCancel" class="ghost-button warning-action" type="button" hidden>取消任务</button>
+            <button id="weeklyReportTraceClose" class="ghost-button" type="button">关闭</button>
+          </div>
+        </header>
+        <ol id="weeklyReportTraceList" class="reading-list-source-list weekly-report-trace-list" aria-label="Agent Loop 完整流程"></ol>
       </div>
     </dialog>
 

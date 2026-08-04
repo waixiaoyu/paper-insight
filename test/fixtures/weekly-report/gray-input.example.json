@@ -1,0 +1,23 @@
+{
+  "reportKey": "replace-with-real-week-key",
+  "date": "2026-08-03",
+  "month": "2026-08",
+  "weekOfMonth": 1,
+  "weekStart": "2026-08-02T16:00:00.000Z",
+  "weekEnd": "2026-08-09T16:00:00.000Z",
+  "sourceReport": "真实周推荐列表",
+  "reviewScoreThreshold": 70,
+  "minSelectedCount": 3,
+  "maxSelectedCount": 10,
+  "paperConcurrency": 2,
+  "calibrationMaxPapers": 30,
+  "primaryPapers": [
+    {
+      "id": "replace.with.real.arxiv.id",
+      "title": "Replace with a real visible recommended paper",
+      "absLink": "https://arxiv.org/abs/replace.with.real.arxiv.id",
+      "published": "2026-08-03T00:00:00.000Z"
+    }
+  ],
+  "reservePapers": []
+}
