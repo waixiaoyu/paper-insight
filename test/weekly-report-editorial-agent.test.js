@@ -358,10 +358,12 @@ test("Editorial Plan keeps an Encounter-only model count off the combined Encoun
   const validation = validateEditorialPlan(plan, { selectedItems: scopedItems });
 
   assert.equal(validation.valid, false);
-  assert.equal(validation.issues.some((issue) => (
+  const validationIssue = validation.issues.find((issue) => (
     issue.code === "model_count_track_scope_mismatch"
     && issue.path === "readingOrder[2].reason"
-  )), true);
+  ));
+  assert.ok(validationIssue);
+  assert.deepEqual(validationIssue.repairKinds, ["track_scoped_model_count"]);
 });
 
 test("Editorial Plan does not turn a zero Day result into failure on every track", () => {
@@ -393,6 +395,54 @@ test("Editorial Plan keeps Encounter win rate separate from Day clear counts", (
   const validationIssue = validation.issues.find((entry) => entry.code === "track_metric_scope_mismatch");
   assert.equal(validationIssue?.path, "singlePaperObservations[0].claim");
   assert.deepEqual(validationIssue?.repairKinds, ["encounter_day_metric_scope"]);
+});
+
+test("Editorial Plan accepts Encounter win rate and Day clear count in separate semicolon clauses", () => {
+  const scopedItems = structuredClone(selectedItems);
+  scopedItems[2].evidenceCard.results.sources = [
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  ];
+  const plan = validPlan();
+  plan.singlePaperObservations[0].claim = "Encounter 以胜率衡量；Day 以通过的战斗日数衡量。";
+  plan.singlePaperObservations[0].evidenceRefs = ["2607.50003:results:0", "2607.50003:results:1"];
+
+  const validation = validateEditorialPlan(plan, { selectedItems: scopedItems });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
+});
+
+test("Editorial Plan accepts Encounter win rate and Day clear count in separate comma clauses", () => {
+  const scopedItems = structuredClone(selectedItems);
+  scopedItems[2].evidenceCard.results.sources = [
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  ];
+  const plan = validPlan();
+  plan.singlePaperObservations[0].claim = "Encounter 以胜率衡量，Day 以通过的战斗日数衡量。";
+  plan.singlePaperObservations[0].evidenceRefs = ["2607.50003:results:0", "2607.50003:results:1"];
+
+  const validation = validateEditorialPlan(plan, { selectedItems: scopedItems });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
+});
+
+test("Editorial Plan accepts an explicit comparison of Encounter win rate and Day completion count", () => {
+  const scopedItems = structuredClone(selectedItems);
+  scopedItems[2].evidenceCard.results.sources = [
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  ];
+  const plan = validPlan();
+  plan.singlePaperObservations[0].claim = "建议比较 Encounter 胜率与 Day 场景完成数之间的差异。";
+  plan.singlePaperObservations[0].evidenceRefs = ["2607.50003:results:0", "2607.50003:results:1"];
+
+  const validation = validateEditorialPlan(plan, { selectedItems: scopedItems });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
 });
 
 test("Head/Tail keeps strongest-model performance scoped to that subset", () => {
@@ -511,11 +561,12 @@ test("Editorial Plan rejects rhetorical contrast and generic reference-value wor
   const plan = validPlan();
   plan.trends[0].claim = "多篇研究评估具体约束，而非仅追求任务完成率。";
   plan.readingOrder[1].reason = "该论文具有较高的直接参考价值。";
+  plan.singlePaperObservations[0].claim = "单场高胜率并不等同于连续场景表现稳定。";
 
   const validation = validateEditorialPlan(plan, { selectedItems });
 
   assert.equal(validation.valid, false);
-  assert.equal(validation.issues.filter((issue) => issue.code === "rhetorical_prose_style").length, 2);
+  assert.equal(validation.issues.filter((issue) => issue.code === "rhetorical_prose_style").length, 3);
 });
 
 test("Editorial Plan preserves schema, form, and grounding metric semantics", () => {
@@ -675,7 +726,9 @@ test("Editorial repair prompt includes issue paths but not issue details", () =>
         "state_tracking",
         "multidimensional_evaluation_design",
         "generic_table_scope",
-        "mixed_method_cohort_subject"
+        "mixed_method_cohort_subject",
+        "track_scoped_model_count",
+        "encounter_day_metric_scope"
       ]
     }]
   });
@@ -687,6 +740,8 @@ test("Editorial repair prompt includes issue paths but not issue details", () =>
   assert.match(prompt, /Remove the multidimensional-evaluation claim/i);
   assert.match(prompt, /Remove the general-purpose table-processing boundary/i);
   assert.match(prompt, /cohort spanning VLMs, extraction tools, coding agents, and APIs/i);
+  assert.match(prompt, /Attach a model count only to the track that supplied it/i);
+  assert.match(prompt, /write Encounter: win rate; Day: cleared-day count/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
 });
 
@@ -746,6 +801,40 @@ const validHeadTail = () => ({
   closingSummary: "Read the mechanism first, compare the evaluation boundary second, and treat production transfer as an open question."
 });
 
+const validSinglePaperPlan = () => ({
+  coreTheme: "奖励函数未知时的多目标权衡",
+  titleAngle: "偏好反馈支持未知奖励下的多目标策略学习",
+  trends: [],
+  singlePaperObservations: [{
+    paperId: "2607.50001",
+    claim: "该方法在未知奖励下学习多目标权衡。",
+    evidenceRefs: ["2607.50001:method:0"],
+    caveat: "现有评估仍以仿真场景为主。"
+  }],
+  readingOrder: [{
+    paperId: "2607.50001",
+    reason: "重点核对方法流程和仿真评估边界。"
+  }]
+});
+
+const validSinglePaperHeadTail = () => ({
+  titleAngle: "偏好反馈支持未知奖励下的多目标策略学习",
+  description: "关注方法流程、主要结果和现有评估边界。",
+  tags: ["偏好反馈", "多目标强化学习"],
+  reportIntroduction: "本期关注奖励函数未知时的多目标权衡问题，并说明阅读时需要核对的方法入口。",
+  trendJudgments: [],
+  singlePaperObservations: [{
+    observationIndex: 0,
+    claim: "该方法在未知奖励下学习多目标权衡。",
+    caveat: "现有评估仍以仿真场景为主。"
+  }],
+  readingOrder: [{
+    paperId: "2607.50001",
+    reason: "重点核对方法流程和仿真评估边界。"
+  }],
+  closingSummary: "阅读时重点检查反馈如何形成训练信号。"
+});
+
 test("Head/Tail prompt uses only editorialPlan and compact trusted artifacts", () => {
   const prompt = buildHeadTailPrompt({
     editorialPlan: validPlan(),
@@ -771,6 +860,7 @@ test("Head/Tail prompt uses only editorialPlan and compact trusted artifacts", (
     preferredMaximum: 28
   });
   assert.match(payload.rules.join(" "), /Count titleAngle by Unicode characters/i);
+  assert.match(payload.rules.join(" "), /For a one-paper report, assign distinct roles/i);
   assert.doesNotMatch(prompt, /SECRET_EXCERPT|LONG_ORIGINAL_TEXT|LONG_SECTION|ABSTRACT_MUST|OLD_TITLE_MUST|SERVER_META_SECRET|selectionReason|fallback/);
 });
 
@@ -791,6 +881,91 @@ test("a valid Head/Tail draft is bound back to Editorial Plan trends, observatio
     validation.headTailDraft.trendJudgments[0].evidenceRefs,
     ["2607.50001:method:0", "2607.50002:results:0"]
   );
+});
+
+test("one-paper Head/Tail keeps introduction, observation, and closing roles distinct", () => {
+  const validation = validateHeadTailDraft(validSinglePaperHeadTail(), {
+    editorialPlan: validSinglePaperPlan(),
+    selectedItems: [selectedItems[0]],
+    paperDrafts: [paperDrafts[0]]
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((issue) => issue.code === "head_tail_repeated_content"), false);
+});
+
+test("Head/Tail canonicalizes an omitted collection only when Editorial Plan expects it empty", () => {
+  const onePaperDraft = validSinglePaperHeadTail();
+  delete onePaperDraft.trendJudgments;
+  const emptyExpected = validateHeadTailDraft(onePaperDraft, {
+    editorialPlan: validSinglePaperPlan(),
+    selectedItems: [selectedItems[0]],
+    paperDrafts: [paperDrafts[0]]
+  });
+
+  assert.equal(emptyExpected.valid, true);
+  assert.deepEqual(emptyExpected.headTailDraft.trendJudgments, []);
+
+  const multiPaperDraft = validHeadTail();
+  delete multiPaperDraft.trendJudgments;
+  const entriesExpected = validateHeadTailDraft(multiPaperDraft, {
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts
+  });
+  assert.equal(entriesExpected.valid, false);
+  assert.equal(entriesExpected.issues.some((entry) => entry.code === "head_tail_collection_invalid"), true);
+});
+
+test("one-paper Head/Tail rejects a long repeated method or result phrase across reader fields", () => {
+  const draft = validSinglePaperHeadTail();
+  const repeated = "该框架通过无监督预训练、偏好反馈奖励学习与多目标强化学习训练三个阶段处理未知奖励函数";
+  draft.reportIntroduction = `本期关注多目标权衡。${repeated}。`;
+  draft.singlePaperObservations[0].claim = `${repeated}，并给出实验结果。`;
+  draft.closingSummary = `阅读时重点核对：${repeated}。`;
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validSinglePaperPlan(),
+    selectedItems: [selectedItems[0]],
+    paperDrafts: [paperDrafts[0]]
+  });
+
+  assert.equal(validation.valid, false);
+  const validationIssue = validation.issues.find((issue) => issue.code === "head_tail_repeated_content");
+  assert.equal(validationIssue?.path, "headTailDraft");
+  assert.deepEqual(validationIssue?.repairKinds, ["single_paper_head_tail_repetition"]);
+});
+
+test("one-paper Head/Tail does not treat a repeated long technical identifier as repeated content", () => {
+  const draft = validSinglePaperHeadTail();
+  draft.singlePaperObservations[0].claim = "LlamaExtract Agentic Plus 在长文档场景中保持稳定表现。";
+  draft.closingSummary = "阅读时重点核对 LlamaExtract Agentic Plus 在成本与评估指标间的取舍。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validSinglePaperPlan(),
+    selectedItems: [selectedItems[0]],
+    paperDrafts: [paperDrafts[0]]
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((issue) => issue.code === "head_tail_repeated_content"), false);
+});
+
+test("one-paper Head/Tail cannot copy the paper recommended focus into the closing", () => {
+  const draft = validSinglePaperHeadTail();
+  const scopedPaperDrafts = [structuredClone(paperDrafts[0])];
+  const repeated = "建议关注长文档场景下各系统的性能差异以及成本与价值指标之间的权衡数据";
+  scopedPaperDrafts[0].readingValue.recommendedFocus.text = repeated;
+  draft.closingSummary = repeated;
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validSinglePaperPlan(),
+    selectedItems: [selectedItems[0]],
+    paperDrafts: scopedPaperDrafts
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((issue) => issue.code === "head_tail_repeated_content"), true);
 });
 
 test("Head/Tail cannot omit Editorial Plan entries or reorder selected papers", () => {
@@ -894,6 +1069,27 @@ test("Head/Tail keeps a mixed methods cohort out of collective frontier-model wo
   assert.deepEqual(validationIssue?.repairKinds, ["mixed_method_cohort_subject"]);
 });
 
+test("Head/Tail allows frontier-model ensembles as a grounded construction method", () => {
+  const scopedItems = structuredClone(selectedItems);
+  scopedItems[1].evidenceCard.experiments.sources[0].excerpt = "We evaluate 14 frontier methods spanning commercial VLMs, open-source extraction, coding agents, and specialized APIs.";
+  scopedItems[1].evidenceCard.systemDesign.sources = [source(
+    "S2",
+    "2 ExtractBench",
+    "We combine three sources, using frontier-model ensembles for real documents, programmatic generation for synthetic lists, and human labelers for scanned forms."
+  )];
+  const draft = validHeadTail();
+  draft.closingSummary = "建议关注该基准如何结合前沿模型集成、程序化生成与人工标注处理不同来源文档。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems: scopedItems,
+    paperDrafts
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "mixed_method_cohort_recast_as_models"), false);
+});
+
 test("Head/Tail does not attach Encounter win rate to cross-day outcomes", () => {
   const scopedItems = structuredClone(selectedItems);
   scopedItems[2].evidenceCard.results.sources = [
@@ -914,6 +1110,63 @@ test("Head/Tail does not attach Encounter win rate to cross-day outcomes", () =>
     entry.code === "track_metric_scope_mismatch" && entry.path === "closingSummary"
   ));
   assert.deepEqual(validationIssue?.repairKinds, ["encounter_day_metric_scope"]);
+});
+
+test("Head/Tail accepts Encounter win rate and Day clear count in separate semicolon clauses", () => {
+  const scopedItems = structuredClone(selectedItems);
+  scopedItems[2].evidenceCard.results.sources = [
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  ];
+  const draft = validHeadTail();
+  draft.closingSummary = "Encounter 以胜率衡量；Day 以通过的战斗日数衡量。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems: scopedItems,
+    paperDrafts
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
+});
+
+test("Head/Tail accepts Encounter win rate and Day clear count in separate comma clauses", () => {
+  const scopedItems = structuredClone(selectedItems);
+  scopedItems[2].evidenceCard.results.sources = [
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  ];
+  const draft = validHeadTail();
+  draft.closingSummary = "Encounter 以胜率衡量，Day 以通过的战斗日数衡量。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems: scopedItems,
+    paperDrafts
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
+});
+
+test("Head/Tail accepts an explicit comparison of Encounter win rate and Day completion count", () => {
+  const scopedItems = structuredClone(selectedItems);
+  scopedItems[2].evidenceCard.results.sources = [
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  ];
+  const draft = validHeadTail();
+  draft.closingSummary = "建议比较 Encounter 胜率与 Day 场景完成数之间的差异。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems: scopedItems,
+    paperDrafts
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
 });
 
 test("Head/Tail rejects rhetorical body prose and broadens neither strongest-model evidence nor its subject", () => {
@@ -1015,7 +1268,14 @@ test("Head/Tail repair prompt carries issue codes and paths but not issue detail
     }, {
       code: "specific_setup_claim_not_in_evidence",
       path: "reportIntroduction",
-      repairKinds: ["resource_management", "paper_title_prefix", "missing_zai_before_condition"]
+      repairKinds: [
+        "resource_management",
+        "paper_title_prefix",
+        "missing_zai_before_condition",
+        "track_scoped_model_count",
+        "encounter_day_metric_scope",
+        "single_paper_head_tail_repetition"
+      ]
     }]
   });
 
@@ -1028,5 +1288,10 @@ test("Head/Tail repair prompt carries issue codes and paths but not issue detail
   assert.match(prompt, /remove resource management\/资源管理/i);
   assert.match(prompt, /standalone 18-32 character technical claim/i);
   assert.match(prompt, /在奖励函数未知的情况下/i);
+  assert.match(prompt, /Attach a model count only to the track that supplied it/i);
+  assert.match(prompt, /write Encounter: win rate; Day: cleared-day count/i);
+  assert.match(prompt, /keep reportIntroduction to the problem and reading entry/i);
+  assert.match(prompt, /choose a different supplied reading dimension/i);
+  assert.match(prompt, /do not preserve or lightly paraphrase/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
 });

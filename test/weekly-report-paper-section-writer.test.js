@@ -337,14 +337,14 @@ test("Paper Section does not rewrite a single-encounter result as single-step pe
 
 test("Paper Section keeps Encounter win rate separate from Day clear counts", () => {
   const scopedItem = structuredClone(item);
-  scopedItem.evidenceCard.results.sources = [
+  scopedItem.evidenceCard.results.sources.push(
     source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
     source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
-  ];
+  );
   const draft = validDraft();
   draft.readingValue.recommendedFocus = grounded(
     "建议关注不同模型在单次遭遇与跨战斗日场景中的胜率差异。",
-    ["results:0", "results:1"]
+    ["results:1", "results:2"]
   );
 
   const validation = validatePaperDraft(draft, { item: scopedItem });
@@ -353,6 +353,60 @@ test("Paper Section keeps Encounter win rate separate from Day clear counts", ()
   const validationIssue = validation.issues.find((entry) => entry.code === "track_metric_scope_mismatch");
   assert.equal(validationIssue?.path, "readingValue.recommendedFocus.text");
   assert.deepEqual(validationIssue?.repairKinds, ["encounter_day_metric_scope"]);
+});
+
+test("Paper Section accepts Encounter win rate and Day clear count in separate semicolon clauses", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.results.sources.push(
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  );
+  const draft = validDraft();
+  draft.readingValue.recommendedFocus = grounded(
+    "Encounter 以胜率衡量；Day 以通过的战斗日数衡量。",
+    ["results:1", "results:2"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
+});
+
+test("Paper Section accepts Encounter win rate and Day clear count in separate comma clauses", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.results.sources.push(
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  );
+  const draft = validDraft();
+  draft.readingValue.recommendedFocus = grounded(
+    "Encounter 以胜率衡量，Day 以通过的战斗日数衡量。",
+    ["results:1", "results:2"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
+});
+
+test("Paper Section accepts an explicit comparison of Encounter win rate and Day completion count", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.results.sources.push(
+    source("S4", "4 Results", "On the Encounter track, the strongest models have win rates of 83 and 82."),
+    source("S4", "4 Results", "GPT-5.5 clears two of five days, while Grok 4.3 clears none.")
+  );
+  const draft = validDraft();
+  draft.readingValue.recommendedFocus = grounded(
+    "建议关注 Encounter 胜率与 Day 场景完成数之间的差异。",
+    ["results:1", "results:2"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "track_metric_scope_mismatch"), false);
 });
 
 test("Paper Section uses domain-appropriate Chinese for persistent hit points and encounter days", () => {
@@ -470,10 +524,12 @@ test("Paper Section keeps a track-scoped model count in the same clause", () => 
 
   const invalidValidation = validatePaperDraft(draft, { item: scopedItem });
   assert.equal(invalidValidation.valid, false);
-  assert.equal(invalidValidation.issues.some((issue) => (
+  const validationIssue = invalidValidation.issues.find((issue) => (
     issue.code === "model_count_track_scope_missing"
     && issue.path === "readingValue.evidenceBoundary.text"
-  )), true);
+  ));
+  assert.ok(validationIssue);
+  assert.deepEqual(validationIssue.repairKinds, ["track_scoped_model_count"]);
 
   draft.readingValue.evidenceBoundary.text = "遭遇赛道的实验结果基于五个模型版本。";
   const validValidation = validatePaperDraft(draft, { item: scopedItem });
@@ -571,6 +627,21 @@ test("Paper Section rejects unqualified effectiveness wording", () => {
   )), true);
 });
 
+test("Paper Section rejects the rhetorical contrast phrase 并不等同于", () => {
+  const draft = validDraft();
+  draft.adnInsight = grounded(
+    "单场高胜率并不等同于连续场景表现稳定。",
+    ["results:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((issue) => (
+    issue.code === "rhetorical_prose_style" && issue.path === "adnInsight.text"
+  )), true);
+});
+
 test("Paper Section preserves schema, form, and grounding metric semantics", () => {
   const scopedItem = structuredClone(item);
   scopedItem.evidenceCard.problem.sources[0].excerpt = "Fixed KIE benchmarks do not handle user-specified schemas.";
@@ -614,6 +685,25 @@ test("Paper Section keeps negative results scoped to evaluated systems", () => {
   assert.equal(validation.issues.some((entry) => entry.code === "model_cohort_scope_overgeneralized"), true);
 
   draft.oneSentenceTakeaway.text = "参与测试的模型在长文档处理上存在显著不足。";
+  const qualifiedValidation = validatePaperDraft(draft, { item: scopedItem });
+  assert.equal(qualifiedValidation.issues.some((entry) => entry.code === "model_cohort_scope_overgeneralized"), false);
+});
+
+test("Paper Section does not generalize a commercial-VLM long-document result to current systems", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.results.sources[0].excerpt = "On long documents the commercial VLMs fall below 40%, while Claude Code Opus 4.8 and Reducto Deep Extract remain close to their short-document scores.";
+  const draft = validDraft();
+  draft.oneSentenceTakeaway = grounded(
+    "现有系统在长文档处理方面仍存在明显不足。",
+    ["results:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => entry.code === "model_cohort_scope_overgeneralized"), true);
+
+  draft.oneSentenceTakeaway.text = "商业 VLM 在长文档上表现不足，而两个点名抽取系统接近其短文档表现。";
   const qualifiedValidation = validatePaperDraft(draft, { item: scopedItem });
   assert.equal(qualifiedValidation.issues.some((entry) => entry.code === "model_cohort_scope_overgeneralized"), false);
 });
@@ -828,7 +918,8 @@ test("Paper Section repair prompt includes issue paths but never issue details",
         "persistent_hit_points_translation",
         "encounter_day_translation",
         "duplicate_grounding_limitations",
-        "encounter_day_metric_scope"
+        "encounter_day_metric_scope",
+        "track_scoped_model_count"
       ]
     }]
   });
@@ -845,6 +936,8 @@ test("Paper Section repair prompt includes issue paths but never issue details",
   assert.match(prompt, /战斗日 or Day 场景/i);
   assert.match(prompt, /Merge the repeated exact-evidence-linking limitation/i);
   assert.match(prompt, /Keep Encounter win rates separate from Day clear counts/i);
+  assert.match(prompt, /write Encounter: win rate; Day: cleared-day count/i);
+  assert.match(prompt, /Attach a model count only to the track that supplied it/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
 });
 

@@ -32,14 +32,14 @@ const ALLOWED_TOP_LEVEL_FIELDS = new Set([
   "readingValue"
 ]);
 const INTERNAL_TERM_PATTERN = /\bfallback\b|\bthresholds?\b|阈值|复评分|复评阈值|保底补入|内部筛选|候选下限|\bselection\s*reason\b|\bselectionreason\b|\bagent\s+(?:loop|stage)\b|\bprompts?\b|\bartifacts?\b|\binternal\s+json\b|内部\s*json|定向重评|横向校准/iu;
-const RHETORICAL_STYLE_PATTERN = /不等于|并非.{0,12}而是|揭示|迈向|赋能|解锁|重塑|颠覆|革命性?|坚实(?:的)?(?:量化)?证据|有效(?:解决|方法|暴露|测试)|不排除未来.{0,30}(?:可能|改进|消除)|鸿沟|浪潮|拐点|破局|\breveal(?:s|ed|ing)?\b|\bunlock(?:s|ed|ing)?\b|\breshape(?:s|d|ing)?\b|\brevolutionary\b/iu;
+const RHETORICAL_STYLE_PATTERN = /不等于|不等同于|并非.{0,12}而是|揭示|迈向|赋能|解锁|重塑|颠覆|革命性?|坚实(?:的)?(?:量化)?证据|有效(?:解决|方法|暴露|测试)|不排除未来.{0,30}(?:可能|改进|消除)|鸿沟|浪潮|拐点|破局|\breveal(?:s|ed|ing)?\b|\bunlock(?:s|ed|ing)?\b|\breshape(?:s|d|ing)?\b|\brevolutionary\b/iu;
 const LIMITED_TOP_MODEL_EVIDENCE_PATTERN = /\b(?:the\s+)?(?:strongest|best(?:-performing)?|best\s+performer)\s+models?\b/iu;
-const BROAD_MODEL_SUBJECT_PATTERN = /(?:前沿|当前|现有)?(?:大语言模型|大模型|语言模型|模型)|(?:frontier\s+)?(?:LLMs?|large\s+language\s+models?|models?)/iu;
+const BROAD_MODEL_SUBJECT_PATTERN = /(?:前沿|当前|现有|多数|大多数)?(?:大语言模型|大模型|语言模型|模型|抽取系统|系统|方法)|(?:frontier\s+)?(?:LLMs?|large\s+language\s+models?|models?)|\bmost\s+(?:systems?|methods?)\b/iu;
 const POSITIVE_MODEL_PERFORMANCE_PATTERN = /(?:表现|能力|胜率).{0,14}(?:优异|突出|较高|较强|领先)|(?:优异|突出|较高|较强|领先).{0,8}(?:表现|能力|胜率)|(?:achiev(?:e|es|ed|ing)\s+)?(?:high|strong|excellent|outstanding|superior)\s+(?:performance|win\s+rates?|capabilit(?:y|ies))|(?:performance|win\s+rates?|capabilit(?:y|ies)).{0,14}(?:high|strong|excellent|outstanding|superior)/iu;
 const QUALIFIED_MODEL_SUBSET_PATTERN = /部分|其中|表现最(?:好|佳|强)|最(?:好|佳|强)的?|最佳|最强|领先的|Gemini|GPT|Claude|DeepSeek|Grok|strongest|best[-\s]?perform/iu;
 const LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN = /\b(?:Gemini|GPT|Claude|DeepSeek|Grok)\b|\bbest\s+(?:overall|method|model|system)\b/iu;
 const NEGATIVE_MODEL_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|失败模式|较差|不稳定|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?)\b/iu;
-const QUALIFIED_EVALUATED_COHORT_PATTERN = /所评估|评估的|参与测试|接受测试|部分|某些|具体|上述|Gemini|GPT|Claude|DeepSeek|Grok|\b(?:evaluated|tested|participating|specific|some|named)\b/iu;
+const QUALIFIED_EVALUATED_COHORT_PATTERN = /所评估|评估的|参与测试|接受测试|部分|某些|具体|上述|点名|商业\s*VLM|Gemini|GPT|Claude|DeepSeek|Grok|Reducto|LlamaExtract|\b(?:evaluated|tested|participating|specific|some|named|commercial\s+VLMs?)\b/iu;
 const TRACK_SCOPED_MODEL_COUNT_SOURCE_PATTERN = /\b(?:encounter|day)[-\s]?track\b.{0,120}\b(?:evaluates?|compares?|tests?)\b.{0,40}\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+models?\b/iu;
 const MODEL_COUNT_CLAIM_PATTERN = /(?:[一二三四五六七八九十百]+|\d+)个(?:前沿|语言|大语言|受测|所评估|特定)?模型(?:版本)?|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+(?:frontier\s+|evaluated\s+|specific\s+)?model(?:s|\s+versions?)\b/iu;
 const TRACK_SCOPE_QUALIFIER_PATTERN = /遭遇(?:赛道|轨道|场景)|连续(?:遭遇|任务)|(?:该|本|这个)赛道|\b(?:encounter|day)[-\s]?(?:track|scenario)?\b|\b(?:this|the)\s+track\b/iu;
@@ -53,7 +53,7 @@ const PERSISTENT_HIT_POINTS_SOURCE_PATTERN = /\bpersistent\s+hit\s+points?\b/iu;
 const AWKWARD_PERSISTENT_HP_PATTERN = /持续生命值/u;
 const ENCOUNTER_DAY_SOURCE_PATTERN = /\b(?:linked\s+)?encounter\s+days?\b|\bclear(?:s|ed)?\s+(?:none|one|two|three|four|five|\d+)\s+(?:of\s+(?:one|two|three|four|five|\d+)\s+)?days?\b/iu;
 const AWKWARD_ENCOUNTER_DAY_PATTERN = /(?:通过|未通过|五个|多个)日程|日程中/u;
-const DAY_WIN_RATE_CLAIM_PATTERN = /(?:\bday\b|战斗日|跨(?:场景|战斗日)).{0,36}(?:胜率|\bwin\s+rates?\b)|(?:胜率|\bwin\s+rates?\b).{0,36}(?:\bday\b|战斗日|跨(?:场景|战斗日))/iu;
+const DAY_WIN_RATE_CLAIM_PATTERN = /(?:\bday\b|战斗日|跨(?:场景|战斗日)).{0,18}(?:胜率|\bwin\s+rates?\b)|(?:胜率|\bwin\s+rates?\b).{0,8}(?:适用于|用于|覆盖|作为|\bin\b|\bon\b|\bfor\b).{0,8}(?:\bday\b|战斗日|跨(?:场景|战斗日))/iu;
 const DAY_WIN_RATE_SOURCE_PATTERN = /\bday(?:-track)?\b.{0,160}\bwin\s+rates?\b|\bwin\s+rates?\b.{0,160}\bday(?:-track)?\b/iu;
 const EXACT_EVIDENCE_LINKING_LIMITATION_PATTERN = /(?:词级.{0,20}grounding|grounding\s*F1|确切(?:的)?(?:支撑|支持)证据|精确证据关联|来源页面)/iu;
 const PERFORMANCE_RESTATED_AS_LIMITATION_PATTERN = /(?:模型|系统).{0,36}(?:表现|能力|性能|差距|失败).{0,36}(?:局限|不足)|表明.{0,20}(?:模型|系统).{0,30}(?:局限|不足)/u;
@@ -201,21 +201,25 @@ const validateTrackScopedModelCounts = ({ text, sourceText, path, issues }) => {
     && ((encounterScoped && /\bencounter\b/iu.test(clause) && /\bday\b/iu.test(clause))
       || (dayScoped && /\bday\b/iu.test(clause) && /\bencounter\b/iu.test(clause)))
   ))) {
-    issues.push(issue(
+    const validationIssue = issue(
       "model_count_track_scope_mismatch",
       path,
       "A model count from one track cannot be attached to both Encounter and Day tracks."
-    ));
+    );
+    validationIssue.repairKinds = ["track_scoped_model_count"];
+    issues.push(validationIssue);
   }
   if (clauses.some((clause) => (
     MODEL_COUNT_CLAIM_PATTERN.test(clause)
     && !TRACK_SCOPE_QUALIFIER_PATTERN.test(clause)
   ))) {
-    issues.push(issue(
+    const validationIssue = issue(
       "model_count_track_scope_missing",
       path,
       "A model count scoped to one experimental track must retain that track qualifier in the same clause."
-    ));
+    );
+    validationIssue.repairKinds = ["track_scoped_model_count"];
+    issues.push(validationIssue);
   }
 };
 
@@ -262,7 +266,11 @@ const validateEncounterScopeAndTerminology = ({ text, sourceText, path, issues }
     validationIssue.repairKinds = ["encounter_day_translation"];
     issues.push(validationIssue);
   }
-  if (DAY_WIN_RATE_CLAIM_PATTERN.test(text) && !DAY_WIN_RATE_SOURCE_PATTERN.test(sourceText)) {
+  const hasDayWinRateClaim = normalizeText(text, 12000)
+    .split(/[，,。！？!?；;\n]+/u)
+    .filter(Boolean)
+    .some((clause) => DAY_WIN_RATE_CLAIM_PATTERN.test(clause));
+  if (hasDayWinRateClaim && !DAY_WIN_RATE_SOURCE_PATTERN.test(sourceText)) {
     const validationIssue = issue(
       "track_metric_scope_mismatch",
       path,

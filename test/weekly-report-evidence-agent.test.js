@@ -196,6 +196,94 @@ test("合法 Evidence 与 Value artifacts 能通过原文章节、摘录和数�
   assert.equal(validation.evidenceRefCount >= 6, true);
 });
 
+test("Affiliation Evidence cannot use a product or provider mention outside paper metadata", () => {
+  const contextPacket = contextPacketFor();
+  contextPacket.inputSections.push({
+    anchor: "S6",
+    heading: "Appendix C Evaluation Protocol",
+    kind: "other",
+    text: "Appendix C Evaluation Protocol\n\nLlamaExtract Agentic Plus uses a credit-based extraction rate."
+  });
+  const response = validResponseFor();
+  response.evidenceCard.affiliations = {
+    summary: "The paper has an industry affiliation related to LlamaExtract.",
+    status: "supported",
+    sources: [source(
+      "S6",
+      "Appendix C Evaluation Protocol",
+      "LlamaExtract Agentic Plus uses a credit-based extraction rate."
+    )]
+  };
+
+  const validation = validateEvidenceArtifacts(response, {
+    contextPacket,
+    expectedPaperId: contextPacket.paperId
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "affiliation_source_not_metadata"
+    && entry.path === "evidenceCard.affiliations.sources[0]"
+  )), true);
+});
+
+test("Evidence results cannot generalize a commercial-VLM long-document result to most systems", () => {
+  const contextPacket = contextPacketFor();
+  const excerpt = "On long documents the commercial VLMs fall below 40%, while Claude Code Opus 4.8 and Reducto Deep Extract remain close to their short-document scores.";
+  contextPacket.inputSections[4].text += ` ${excerpt}`;
+  const response = validResponseFor();
+  response.evidenceCard.results = {
+    summary: "Most systems degrade significantly on long documents.",
+    status: "supported",
+    sources: [source("S4", "4 Results and Discussion", excerpt)]
+  };
+  response.valueSignals.signals = [response.valueSignals.signals[0]];
+
+  const validation = validateEvidenceArtifacts(response, {
+    contextPacket,
+    expectedPaperId: contextPacket.paperId
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "model_cohort_scope_overgeneralized"
+    && entry.path === "evidenceCard.results.summary"
+  )), true);
+
+  response.evidenceCard.results.summary = "Commercial VLMs degrade on long documents, while the named extraction systems remain close to their short-document scores.";
+  const qualifiedValidation = validateEvidenceArtifacts(response, {
+    contextPacket,
+    expectedPaperId: contextPacket.paperId
+  });
+  assert.equal(qualifiedValidation.issues.some((entry) => entry.code === "model_cohort_scope_overgeneralized"), false);
+});
+
+test("Evidence commercial-VLM long-document result requires a directly bound excerpt", () => {
+  const contextPacket = contextPacketFor();
+  const response = validResponseFor();
+  response.evidenceCard.results.summary = "Commercial VLMs degrade significantly on long documents.";
+
+  const validation = validateEvidenceArtifacts(response, {
+    contextPacket,
+    expectedPaperId: contextPacket.paperId
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "commercial_vlm_long_document_source_missing"
+    && entry.path === "evidenceCard.results.summary"
+  )), true);
+
+  const excerpt = "On long documents the commercial VLMs fall below 40%.";
+  contextPacket.inputSections[4].text += ` ${excerpt}`;
+  response.evidenceCard.results.sources[0] = source("S4", "4 Results and Discussion", excerpt);
+  const groundedValidation = validateEvidenceArtifacts(response, {
+    contextPacket,
+    expectedPaperId: contextPacket.paperId
+  });
+  assert.equal(groundedValidation.issues.some((entry) => entry.code === "commercial_vlm_long_document_source_missing"), false);
+});
+
 test("Evidence excerpts must not start with an unresolved comparison subject", () => {
   const contextPacket = contextPacketFor();
   contextPacket.inputSections[4].text += " It also outperforms another method at lower cost.";
@@ -415,7 +503,14 @@ test("repair prompt 不携带上次原始响应，只包含当前原文和问题
   const prompt = buildEvidenceRepairPrompt({
     paper: { id: "2607.11111" },
     contextPacket: contextPacketFor(),
-    issues: [{ code: "paper_id_mismatch", detail: "Returned 2607.22222" }]
+    issues: [
+      { code: "paper_id_mismatch", detail: "Returned 2607.22222" },
+      { code: "excerpt_not_in_source", path: "evidenceCard.systemDesign.sources[0].excerpt" },
+      { code: "excerpt_not_self_contained", path: "evidenceCard.results.sources[0].excerpt" },
+      { code: "numeric_claim_not_in_excerpt", path: "evidenceCard.results.summary" },
+      { code: "problem_excerpt_not_problem_statement", path: "evidenceCard.problem.sources" },
+      { code: "commercial_vlm_long_document_source_missing", path: "evidenceCard.results.summary" }
+    ]
   });
 
   assert.match(prompt, /weekly_report_extract_evidence_repair/);
@@ -436,4 +531,10 @@ test("repair prompt 不携带上次原始响应，只包含当前原文和问题
     "evidence"
   ]);
   assert.match(payload.repairInstruction, /Do not omit a field/);
+  const repairHints = payload.issues.flatMap((entry) => entry.repairHints || []).join(" ");
+  assert.match(repairHints, /shorter contiguous verbatim substring/i);
+  assert.match(repairHints, /contiguous antecedent/i);
+  assert.match(repairHints, /remove the exact number/i);
+  assert.match(repairHints, /problem, gap, challenge/i);
+  assert.match(repairHints, /both commercial VLMs and the long-document scope/i);
 });

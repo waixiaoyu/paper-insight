@@ -28,6 +28,12 @@ const numericTokens = (value) => {
 
 const UNRESOLVED_LEADING_ANAPHORA_PATTERN = /^(?:it|they)\s+also\b/iu;
 const PROBLEM_EVIDENCE_SIGNAL_PATTERN = /\b(?:problem|challenge|gap|issue|risk|unsafe|under[-\s]?test|fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|limitation|limited|cannot|can't|need(?:s|ed)?|require(?:s|d)?|ability\s+to|we\s+(?:study|consider|investigate|ask))\b|问题|挑战|不足|缺乏|风险|不安全|无法|需要|要求|研究.{0,16}(?:问题|能力)/iu;
+const LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN = /\b(?:Gemini|GPT|Claude|DeepSeek|Grok|Reducto|LlamaExtract)\b|\bbest\s+(?:overall|method|model|system)\b/iu;
+const BROAD_METHOD_SYSTEM_SUBJECT_PATTERN = /(?:当前|现有|多数|大多数)(?:抽取)?(?:系统|方法|模型)|\bmost\s+(?:systems?|methods?|models?)\b/iu;
+const NEGATIVE_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|退化|较差|不佳|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?)\b/iu;
+const QUALIFIED_EVALUATED_COHORT_PATTERN = /所评估|评估的|参与测试|接受测试|部分|某些|具体|上述|点名|商业\s*VLM|Gemini|GPT|Claude|DeepSeek|Grok|Reducto|LlamaExtract|\b(?:evaluated|tested|participating|specific|some|named|commercial\s+VLMs?)\b/iu;
+const COMMERCIAL_VLM_PATTERN = /商业\s*VLM|\bcommercial\s+VLMs?\b/iu;
+const LONG_DOCUMENT_PATTERN = /长文档|\blong\s+documents?\b/iu;
 
 const parseModelJson = (raw) => {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -71,6 +77,36 @@ const uniqueIssues = (issues) => {
     seen.add(key);
     return true;
   });
+};
+
+const validateResultCohortScope = ({ summary, sourceText, issues }) => {
+  const sentences = normalizeText(summary).split(/[。！？!?；;\n]+/u).filter(Boolean);
+  if (!LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN.test(sourceText)
+    || !sentences.some((sentence) => (
+      BROAD_METHOD_SYSTEM_SUBJECT_PATTERN.test(sentence)
+      && NEGATIVE_PERFORMANCE_PATTERN.test(sentence)
+      && !QUALIFIED_EVALUATED_COHORT_PATTERN.test(sentence)
+    ))) {
+    return;
+  }
+  issues.push(issue(
+    "model_cohort_scope_overgeneralized",
+    "evidenceCard.results.summary",
+    "A negative result limited to commercial VLMs or named systems cannot be generalized to most or current systems."
+  ));
+};
+
+const validateCommercialVlmLongDocumentSource = ({ summary, sourceText, issues }) => {
+  if (!COMMERCIAL_VLM_PATTERN.test(summary)
+    || !LONG_DOCUMENT_PATTERN.test(summary)
+    || (COMMERCIAL_VLM_PATTERN.test(sourceText) && LONG_DOCUMENT_PATTERN.test(sourceText))) {
+    return;
+  }
+  issues.push(issue(
+    "commercial_vlm_long_document_source_missing",
+    "evidenceCard.results.summary",
+    "A commercial-VLM long-document result requires a bound result excerpt that names both the cohort and the long-document scope."
+  ));
 };
 
 const sanitizedNumericEvidence = (validation, { contextPacket, expectedPaperId } = {}) => {
@@ -154,6 +190,13 @@ export const validateEvidenceArtifacts = (value, {
         if (!normalizeText(section.text).includes(normalizeText(sourceValue.excerpt))) {
           issues.push(issue("excerpt_not_in_source", `${path}.excerpt`, "Excerpt is not a verbatim substring of the bound source section."));
         }
+        if (field === "affiliations" && String(section.kind || "") !== "metadata") {
+          issues.push(issue(
+            "affiliation_source_not_metadata",
+            path,
+            "Affiliation Evidence must come from the paper author or institution metadata, not a body, citation, product, provider, or evaluation mention."
+          ));
+        }
       }
 
       if (UNRESOLVED_LEADING_ANAPHORA_PATTERN.test(normalizeText(sourceValue.excerpt))) {
@@ -192,6 +235,18 @@ export const validateEvidenceArtifacts = (value, {
         ));
       }
     });
+    if (field === "results") {
+      validateResultCohortScope({
+        summary: fieldValue.summary,
+        sourceText: excerpts.join(" "),
+        issues
+      });
+      validateCommercialVlmLongDocumentSource({
+        summary: fieldValue.summary,
+        sourceText: excerpts.join(" "),
+        issues
+      });
+    }
   });
 
   artifacts.valueSignals.signals.forEach((signal, signalIndex) => {

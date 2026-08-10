@@ -62,6 +62,8 @@ const commonEvidenceRules = [
   "Every supported fact must bind to an exact section anchor, the exact supplied section heading, and a short contiguous verbatim excerpt copied character-for-character from that section. Never normalize LaTeX, punctuation, whitespace, citations, or symbols inside excerpts.",
   "Each excerpt must be self-contained enough to identify its factual subject, comparison, and metric. Do not start an excerpt with unresolved anaphora such as 'It also' or 'They also'; include the contiguous antecedent sentence or choose another excerpt.",
   "The problem field must cite a sentence that states the research problem, gap, challenge, need, or capability being tested. A contribution-only sentence such as 'We introduce X' is not sufficient problem Evidence.",
+  "The affiliations field may use only the supplied paper author or institution metadata. Product names, evaluated providers, customer names, citations, acknowledgements, and body-text organization mentions are not author affiliations; return affiliations as not_present when metadata is insufficient.",
+  "Keep negative result scope exact. If long-document degradation is reported for commercial VLMs while named extraction systems remain close to their short-document scores, do not summarize this as most or current systems degrading. A results summary that mentions commercial VLMs on long documents must bind a results excerpt that explicitly names both commercial VLMs and the long-document scope.",
   "Before returning, verify every excerpt by exact substring matching against its selected section. If no exact excerpt can be copied, return not_present or insufficient instead of paraphrasing a source excerpt.",
   "Every exact number in a summary or value claim must appear in its bound excerpt. Otherwise add an exact supporting excerpt or remove the number from the claim; do not introduce citation or section numbers into summaries.",
   "Every Evidence field always requires a non-empty summary. For not_present or insufficient, explain the evidence boundary briefly and return sources as an empty array.",
@@ -122,6 +124,30 @@ export const buildEvidencePrompt = ({ paper, contextPacket } = {}) => JSON.strin
   })
 );
 
+const EVIDENCE_REPAIR_HINTS = Object.freeze({
+  excerpt_not_in_source: "At this path, copy a shorter contiguous verbatim substring character-for-character from the exact bound section. Do not reconstruct, normalize, join non-contiguous sentences, or paraphrase the excerpt.",
+  excerpt_not_self_contained: "At this path, include the contiguous antecedent that names the subject, comparison, and metric, or choose another self-contained excerpt. Do not start with It also or They also.",
+  numeric_claim_not_in_excerpt: "At this path, remove the exact number or version from the summary or Value Signal unless the same field binds a verbatim excerpt containing that exact token. Do not move the unsupported number to another field.",
+  problem_excerpt_not_problem_statement: "Replace the problem source with a verbatim sentence that directly states a problem, gap, challenge, need, risk, or tested capability. A contribution announcement is not problem Evidence.",
+  commercial_vlm_long_document_source_missing: "Bind a verbatim results excerpt that explicitly names both commercial VLMs and the long-document scope, or remove that commercial-VLM long-document claim from the summary.",
+  model_cohort_scope_overgeneralized: "Keep the negative result limited to the evaluated or named cohort. Do not rewrite commercial VLM, named-system, or best-system evidence as a result about most or current systems.",
+  affiliation_source_not_metadata: "Remove body, appendix, product, provider, customer, citation, or acknowledgement sources from affiliations. Use author or institution metadata only; otherwise return not_present with no sources.",
+  unknown_section_anchor: "Replace the source anchor with an exact anchor from the supplied context and copy the excerpt from that same section.",
+  missing_evidence_source: "Add a valid bound source for this supported field or change the field to not_present or insufficient with an empty sources array."
+});
+
+const evidenceRepairIssue = (itemIssue) => {
+  const result = {
+    code: String(itemIssue?.code || "evidence_validation_failed"),
+    path: String(itemIssue?.path || "")
+  };
+  const repairHint = EVIDENCE_REPAIR_HINTS[result.code];
+  if (repairHint) {
+    result.repairHints = [repairHint];
+  }
+  return result;
+};
+
 export const buildEvidenceRepairPrompt = ({
   paper,
   contextPacket,
@@ -133,10 +159,7 @@ export const buildEvidenceRepairPrompt = ({
     contextPacket
   }),
   repairInstruction: "Regenerate the complete Evidence response for this paper. Fix the listed validation classes while preserving every required field in completenessContract. Do not omit a field merely because its path is not listed. Recheck exact excerpt substrings, section headings, numeric grounding, evidenceRefs, and every Value Signal dimension before returning.",
-  issues: (Array.isArray(issues) ? issues : []).slice(0, 30).map((issue) => ({
-    code: String(issue?.code || "evidence_validation_failed"),
-    path: String(issue?.path || "")
-  }))
+  issues: (Array.isArray(issues) ? issues : []).slice(0, 30).map(evidenceRepairIssue)
 });
 
 const reviewEvidenceFields = [
@@ -545,6 +568,7 @@ const editorialPlanRules = [
   "Use neutral, literal technical prose. State the research object, method, result, and limitation directly; avoid metaphors, personification, rhetorical contrasts, slogans, and promotional AI-style wording. Do not use 揭示/reveal, 而非 rhetorical contrasts, 赋能/unlock, 重塑/reshape, claims of 坚实量化证据, or generic claims of 较高的直接参考价值.",
   "titleAngle must contain 18-32 Unicode characters. Target 20-28 characters and count every ASCII letter individually. Do not prefix titleAngle with a paper, benchmark, or product name followed by a colon; Head/Tail already has paper context.",
   "Preserve every population and comparison qualifier. Evidence about the strongest, best-performing, or explicitly named models must not become a claim about frontier models or models as a whole.",
+  "A long-document result limited to commercial VLMs must remain limited to that cohort, especially when named extraction systems are counterexamples. Do not rewrite it as a weakness of current or most systems.",
   "Preserve the evaluated object type. A cohort spanning VLMs, extraction tools, coding agents, and APIs is a cohort of methods or systems, not frontier models.",
   "Keep track-scoped model counts on that track only. An Encounter-only count cannot describe the combined Encounter and Day cohort. If a model clears none in a Day result, write that it clears no Day scenarios, not that it passes no track.",
   "Keep track-specific metrics separate. Encounter win rates and Day clear counts are different measures; do not call Day or cross-day outcomes win-rate differences unless a cited Day excerpt directly reports win rate.",
@@ -579,7 +603,9 @@ const WRITING_REPAIR_HINTS = Object.freeze({
   persistent_hit_points_translation: "Translate persistent hit points as 跨战斗保留的生命值, not 持续生命值.",
   encounter_day_translation: "Translate cleared encounter days as 通过的战斗日 or Day 场景, not 日程.",
   duplicate_grounding_limitations: "Merge the repeated exact-evidence-linking limitation into one bullet and add a different supported scope, cohort, data, seed, comparison, or missing-validation boundary.",
-  encounter_day_metric_scope: "Keep Encounter win rates separate from Day clear counts. Do not describe Day or cross-day outcomes as win-rate differences unless the cited Day excerpt directly reports win rate."
+  encounter_day_metric_scope: "Keep Encounter win rates separate from Day clear counts. Rewrite the affected statement to name the two measures independently: write Encounter: win rate; Day: cleared-day count. Do not describe Day or cross-day outcomes as win-rate differences unless the cited Day excerpt directly reports win rate.",
+  track_scoped_model_count: "Attach a model count only to the track that supplied it. If the count comes from Encounter, keep Encounter in the same clause and do not attach that count to Day or to the whole paper.",
+  single_paper_head_tail_repetition: "For a one-paper report, keep reportIntroduction to the problem and reading entry, keep the single-paper observation to one useful result and one evidence boundary, and keep closingSummary to a distinct final reading focus. Choose a different supplied reading dimension for closingSummary, such as an evidence boundary or final verification priority. Do not preserve or lightly paraphrase any long phrase from paperDraft recommendedFocus; changing only the tail of that sentence is insufficient."
 });
 
 const writingRepairIssue = (itemIssue, fallbackCode) => {
@@ -665,6 +691,7 @@ const paperSectionRules = [
   "Put citations only in each field's evidenceRefs array. Never write [field:index], field:index, footnote markers, or citation annotations inside reader-facing text.",
   "Review score reasons, weaknesses, uncertainty, calibration comments, and selection metadata are editorial aids, not factual Evidence. Never present them as facts about the paper.",
   "Preserve cohort, track, dataset, and model-version scope. When different excerpts describe different experimental cohorts, qualify each statement separately instead of implying one shared cohort.",
+  "A long-document result limited to commercial VLMs must remain limited to commercial VLMs. Preserve named extraction-system counterexamples and do not generalize the result to current or most systems.",
   "Keep an exact model count in the same clause as its track qualifier. If an excerpt says the Encounter track evaluates five models, do not summarize the paper's overall experiments as using five model versions, especially when Day results name a different cohort.",
   "Keep Encounter win rates separate from Day clear counts. Do not describe cross-day or Day results as win-rate differences unless the cited Day excerpt directly reports win rate.",
   "Do not rewrite a single-encounter result as single-step decision performance. Translate persistent hit points as 跨战斗保留的生命值 and cleared encounter days as 战斗日 or Day 场景; do not use 持续生命值 or 日程.",
@@ -916,14 +943,18 @@ const headTailRules = [
   "Write every reader-facing field in Simplified Chinese; paper titles and indispensable technical terms may remain in their original language.",
   "Use neutral, literal technical prose throughout. State the topic and findings directly; avoid metaphors, personification, rhetorical contrast patterns such as X is not Y, slogans, and promotional AI-style wording. Do not use 揭示/reveal, 赋能/unlock, 重塑/reshape, or claims of 坚实量化证据.",
   "Preserve strongest, best-performing, subset, and named-model qualifiers from the supplied artifacts. Do not generalize them to frontier models or models as a whole.",
+  "Keep commercial-VLM long-document results scoped to commercial VLMs and retain named extraction-system counterexamples. Do not generalize them to current or most systems.",
   "Preserve track-specific metrics. Encounter win rates and Day clear counts must remain separate; do not attach win rate to Day or cross-day outcomes without direct support.",
   "Preserve the evaluated object type. A mixed cohort of VLMs, extraction tools, coding agents, and APIs must remain methods or systems, not frontier models.",
+  "Do not confuse frontier-model ensembles used to construct or annotate a dataset with the mixed cohort evaluated by that benchmark. A grounded construction method may retain frontier-model ensembles; the evaluated VLM/tool/agent/API cohort must still be called methods or systems.",
+  "For a one-paper report, closingSummary must provide a distinct final reading focus and must not copy the compact paperDraft recommendedFocus or repeat the same result sentence.",
   "Preserve time-horizon scope from the supplied artifacts. Do not expand medium-horizon or multi-encounter findings to 中长期, 长期, 长周期, long-term, or long-horizon, and do not use 中时间跨度.",
   "Keep single-encounter distinct from single-step. Use 跨战斗保留的生命值 for persistent hit points and 战斗日 or Day 场景 for cleared encounter days; do not use 持续生命值 or 日程.",
   "Review reasons, weaknesses, uncertainty, and calibration comments are not factual support. Do not promote them into report claims unless the supplied validated paper artifacts independently support them.",
   "Preserve resource budgeting as 资源预算 rather than the broader 资源管理. Do not introduce deterministic engines, persistent-state or short-rest mechanics, or separation from basic rules parsing unless those premises exist in the supplied validated artifacts.",
   "Return every supplied trend and single-paper observation exactly once by its zero-based source index.",
   "Do not promote a single-paper observation into a weekly trend.",
+  "For a one-paper report, assign distinct roles to the reader-facing fields: reportIntroduction states the problem and reading entry; the single-paper observation states one useful result and one evidence boundary; closingSummary states only the final reading focus. Do not repeat the same method or result across these fields.",
   "Do not introduce an exact number unless it already occurs in the corresponding plan entry or supplied compact artifact.",
   "readingOrder must contain every selected paper exactly once in the supplied rank order.",
   "The title angle must be specific and must not use generic slogans such as new paradigm, worth watching, or accelerated adoption.",
