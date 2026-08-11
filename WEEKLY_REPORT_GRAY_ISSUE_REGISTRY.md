@@ -85,6 +85,7 @@
 | 2026-08-11 02:33–02:34 | `weekly-report-trace-6a1113fc-877d-4e31-b89a-65fdf9202b5a` | reject | 加载 GRAY-087 后复验 ExtractBench：初稿 results 使用分别只覆盖具体模型或长文档结果的摘录，逐摘录范围门正确触发修正；修正稿改用一条同时写明商业 VLM 与长文档结果的原文摘录，该问题通过。修正稿的 experiments 摘录仍不是原文逐字子串，既有 GRAY-002 正确排除论文。本轮未触发数字清理，GRAY-086 仍待真实复核。 |
 | 2026-08-11 13:15–13:16 | `weekly-report-trace-6c67264c-f5e7-4e3b-a867-78f0597668af` | reject | 换用有已核验全文缓存且历史上能进入完整写作链的 LEMUR 单篇复验。Evidence 初稿将结果原句的现在时 `tracks` 改成 `tracked`，唯一修正仍保留该非逐字摘录，既有 GRAY-002 正确排除论文。没有新增防护缺口，未进入 Review 和写作。 |
 | 2026-08-11 13:18–13:19 | `weekly-report-trace-c366ecdb-efb2-46ea-9b2d-1dff4a47d118` | reject | 换用 DungeonBench 单篇复验。Evidence 初稿只剩 systemDesign、experiments、results 和 Value Signal 的未绑定数字；字段级修正响应中第四个 Value Signal 缺少 `claim` 与 `evidenceRefs`，Schema 校验 fail closed，未执行后续数字清理。该结构残缺反例已加入回归；Evidence 内容修正是否增加独立响应格式纠正转 GRAY-088，当前不增加修正次数。 |
+| 2026-08-11 13:41–13:46（远端正式数据） | `weekly-report-trace-c6e93573-d1eb-4af7-a716-aa72e23e9c69` | publish（人工验收待完成） | 使用远端正式论文库运行完整 Job。3 篇候选中，GB/T-Bench 不在本报告周范围内被候选池排除；HLSmith 在 Evidence 修正后仍有非逐字摘录，GRAY-002 正确排除；AutoMOOSE 依次通过 Evidence、Review、Calibration、Selection、写作、确定性 QA 与两层语义 QA，生成单篇发布稿。服务端记录 Evidence 高失败率告警；本次 publish 仅表示自动门通过，仍需逐篇人工核对事实、数字、范围、文风和阅读价值。 |
 
 ## 问题与防护网
 
