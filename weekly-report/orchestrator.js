@@ -1419,6 +1419,7 @@ export const planWeeklyReportEditorial = async (selected, context = {}, {
       durationMs: elapsed(stageStartedAt),
       selectedPaperIds: selected.selectedItems.map(paperIdForStage),
       repairAttempted: result.repairAttempted,
+      responseRepairAttempted: result.responseRepairAttempted,
       decision: "continue"
     });
 
@@ -1554,7 +1555,8 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     succeeded: result.succeeded.map((entry) => ({
       paperId: entry.paperDraft.paperId,
       paperDraft: entry.paperDraft,
-      repairAttempted: entry.repairAttempted
+      repairAttempted: entry.repairAttempted,
+      responseRepairAttempted: entry.responseRepairAttempted
     })),
     failed: result.failed.map((entry) => ({
       paperId: paperIdForStage(entry.item),
@@ -1693,6 +1695,7 @@ export const writeWeeklyReportHeadTail = async (written, context = {}, {
       scope: "job",
       durationMs: elapsed(stageStartedAt),
       repairAttempted: result.repairAttempted,
+      responseRepairAttempted: result.responseRepairAttempted,
       decision: "continue"
     });
 

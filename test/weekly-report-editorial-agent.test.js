@@ -331,6 +331,13 @@ test("Editorial Plan preserves best-model scope and rejects rhetorical prose out
     issue.code === "rhetorical_prose_style"
     && issue.path === "readingOrder[0].reason"
   )), true);
+  assert.deepEqual(
+    validation.issues.find((issue) => (
+      issue.code === "rhetorical_prose_style"
+      && issue.path === "readingOrder[0].reason"
+    ))?.repairKinds,
+    ["neutral_direct_statement"]
+  );
 });
 
 test("Editorial Plan keeps negative results scoped to evaluated systems", () => {
@@ -675,6 +682,38 @@ test("Editorial Plan gets one structured repair and does not include the prior r
   assert.doesNotMatch(JSON.stringify(prompts[1]), /SECRET_PRIOR_RAW_RESPONSE/);
 });
 
+test("Editorial Plan gets one response-format repair after a malformed content repair", async () => {
+  const invalid = validPlan();
+  invalid.singlePaperObservations[0].caveat = "该指标得分为零，而非指标本身为零。";
+  const prompts = [];
+  const result = await runEditorialPlanAgent({
+    selectedItems,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      prompts.push(payload);
+      if (payload.task === "weekly_report_editorial_plan") {
+        return invalid;
+      }
+      if (payload.task === "weekly_report_editorial_plan_repair") {
+        return '{"coreTheme":"broken"';
+      }
+      return validPlan();
+    }
+  });
+
+  assert.equal(result.repairAttempted, true);
+  assert.equal(result.responseRepairAttempted, true);
+  assert.deepEqual(prompts.map((payload) => payload.task), [
+    "weekly_report_editorial_plan",
+    "weekly_report_editorial_plan_repair",
+    "weekly_report_editorial_plan_response_repair"
+  ]);
+  assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
+  assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
+  assert.doesNotMatch(JSON.stringify(prompts[2]), /\{\"coreTheme\":\"broken\"/);
+});
+
 test("Editorial Plan network failure retries once", async () => {
   let calls = 0;
   const result = await runEditorialPlanAgent({
@@ -719,6 +758,10 @@ test("Editorial repair prompt includes issue paths but not issue details", () =>
       path: "readingOrder",
       detail: "SECRET_PRIOR_RAW_RESPONSE"
     }, {
+      code: "rhetorical_prose_style",
+      path: "singlePaperObservations[0].caveat",
+      repairKinds: ["neutral_direct_statement"]
+    }, {
       code: "specific_setup_claim_not_in_evidence",
       path: "readingOrder[2].reason",
       repairKinds: [
@@ -742,6 +785,8 @@ test("Editorial repair prompt includes issue paths but not issue details", () =>
   assert.match(prompt, /cohort spanning VLMs, extraction tools, coding agents, and APIs/i);
   assert.match(prompt, /Attach a model count only to the track that supplied it/i);
   assert.match(prompt, /write Encounter: win rate; Day: cleared-day count/i);
+  assert.match(prompt, /state the supported scope and metric directly/i);
+  assert.match(prompt, /Do not replace one forbidden contrast with another/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
 });
 
@@ -966,6 +1011,39 @@ test("one-paper Head/Tail cannot copy the paper recommended focus into the closi
 
   assert.equal(validation.valid, false);
   assert.equal(validation.issues.some((issue) => issue.code === "head_tail_repeated_content"), true);
+});
+
+test("one-paper Head/Tail rejects a semantic paraphrase of the paper recommended focus", () => {
+  const draft = validSinglePaperHeadTail();
+  const scopedPaperDrafts = [structuredClone(paperDrafts[0])];
+  scopedPaperDrafts[0].readingValue.recommendedFocus.text = "建议关注不同系统在长文档处理上的表现差异，以及各系统在词级证据定位方面的具体测量结果。";
+  draft.closingSummary = "建议重点关注各系统在长文档条件下得分的衰减幅度，以及不同系统架构在词级证据定位任务上的具体测量差异。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validSinglePaperPlan(),
+    selectedItems: [selectedItems[0]],
+    paperDrafts: scopedPaperDrafts
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((issue) => issue.code === "head_tail_repeated_content"), true);
+});
+
+test("Head/Tail does not relabel a score or F1 result as accuracy without source support", () => {
+  const draft = validSinglePaperHeadTail();
+  draft.closingSummary = "建议关注各系统在长文档条件下准确率的衰减幅度。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validSinglePaperPlan(),
+    selectedItems: [selectedItems[0]],
+    paperDrafts: [paperDrafts[0]]
+  });
+
+  assert.equal(validation.valid, false);
+  const validationIssue = validation.issues.find((issue) => (
+    issue.code === "metric_label_not_in_evidence" && issue.path === "closingSummary"
+  ));
+  assert.deepEqual(validationIssue?.repairKinds, ["preserve_metric_name"]);
 });
 
 test("Head/Tail cannot omit Editorial Plan entries or reorder selected papers", () => {
@@ -1215,6 +1293,40 @@ test("Head/Tail gets one structured repair and never carries the previous raw re
   assert.doesNotMatch(JSON.stringify(prompts[1]), /SECRET_PRIOR_RAW_RESPONSE/);
 });
 
+test("Head/Tail gets one response-format repair after a malformed content repair", async () => {
+  const invalid = validHeadTail();
+  invalid.reportIntroduction = "该结果揭示了任务差异。";
+  const prompts = [];
+  const result = await runHeadTailWriter({
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      prompts.push(payload);
+      if (payload.task === "weekly_report_write_head_tail") {
+        return invalid;
+      }
+      if (payload.task === "weekly_report_write_head_tail_repair") {
+        return '{"titleAngle":"broken"';
+      }
+      return validHeadTail();
+    }
+  });
+
+  assert.equal(result.repairAttempted, true);
+  assert.equal(result.responseRepairAttempted, true);
+  assert.deepEqual(prompts.map((payload) => payload.task), [
+    "weekly_report_write_head_tail",
+    "weekly_report_write_head_tail_repair",
+    "weekly_report_write_head_tail_response_repair"
+  ]);
+  assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
+  assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
+  assert.doesNotMatch(JSON.stringify(prompts[2]), /\{\"titleAngle\":\"broken\"/);
+});
+
 test("Head/Tail network failure retries once", async () => {
   let calls = 0;
   const result = await runHeadTailWriter({
@@ -1266,6 +1378,10 @@ test("Head/Tail repair prompt carries issue codes and paths but not issue detail
       path: "readingOrder",
       detail: "SECRET_PRIOR_RAW_RESPONSE"
     }, {
+      code: "rhetorical_prose_style",
+      path: "closingSummary",
+      repairKinds: ["neutral_direct_statement"]
+    }, {
       code: "specific_setup_claim_not_in_evidence",
       path: "reportIntroduction",
       repairKinds: [
@@ -1274,7 +1390,8 @@ test("Head/Tail repair prompt carries issue codes and paths but not issue detail
         "missing_zai_before_condition",
         "track_scoped_model_count",
         "encounter_day_metric_scope",
-        "single_paper_head_tail_repetition"
+        "single_paper_head_tail_repetition",
+        "preserve_metric_name"
       ]
     }]
   });
@@ -1293,5 +1410,8 @@ test("Head/Tail repair prompt carries issue codes and paths but not issue detail
   assert.match(prompt, /keep reportIntroduction to the problem and reading entry/i);
   assert.match(prompt, /choose a different supplied reading dimension/i);
   assert.match(prompt, /do not preserve or lightly paraphrase/i);
+  assert.match(prompt, /state the supported scope and metric directly/i);
+  assert.match(prompt, /Do not replace one forbidden contrast with another/i);
+  assert.match(prompt, /Preserve the exact supported metric name/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
 });

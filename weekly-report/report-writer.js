@@ -1,6 +1,7 @@
 import {
   buildPaperSectionPrompt,
-  buildPaperSectionRepairPrompt
+  buildPaperSectionRepairPrompt,
+  buildPaperSectionResponseRepairPrompt
 } from "./prompts.js";
 
 const EVIDENCE_FIELDS = [
@@ -25,6 +26,13 @@ const REQUIRED_READING_VALUE_FIELDS = [
   "recommendedFocus",
   "evidenceBoundary"
 ];
+const RESPONSE_CONTRACT_ISSUE_CODES = new Set(["invalid_json", "schema_invalid"]);
+const hasOnlyResponseContractIssues = (validation) => (
+  validation?.valid === false
+  && Array.isArray(validation?.issues)
+  && validation.issues.length > 0
+  && validation.issues.every((entry) => RESPONSE_CONTRACT_ISSUE_CODES.has(String(entry?.code || "")))
+);
 const ALLOWED_TOP_LEVEL_FIELDS = new Set([
   "paperId",
   ...REQUIRED_GROUNDED_FIELDS,
@@ -38,7 +46,7 @@ const BROAD_MODEL_SUBJECT_PATTERN = /(?:前沿|当前|现有|多数|大多数)?(
 const POSITIVE_MODEL_PERFORMANCE_PATTERN = /(?:表现|能力|胜率).{0,14}(?:优异|突出|较高|较强|领先)|(?:优异|突出|较高|较强|领先).{0,8}(?:表现|能力|胜率)|(?:achiev(?:e|es|ed|ing)\s+)?(?:high|strong|excellent|outstanding|superior)\s+(?:performance|win\s+rates?|capabilit(?:y|ies))|(?:performance|win\s+rates?|capabilit(?:y|ies)).{0,14}(?:high|strong|excellent|outstanding|superior)/iu;
 const QUALIFIED_MODEL_SUBSET_PATTERN = /部分|其中|表现最(?:好|佳|强)|最(?:好|佳|强)的?|最佳|最强|领先的|Gemini|GPT|Claude|DeepSeek|Grok|strongest|best[-\s]?perform/iu;
 const LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN = /\b(?:Gemini|GPT|Claude|DeepSeek|Grok)\b|\bbest\s+(?:overall|method|model|system)\b/iu;
-const NEGATIVE_MODEL_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|失败模式|较差|不稳定|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?)\b/iu;
+const NEGATIVE_MODEL_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|(?:得分|分数|F1).{0,10}(?:低于|降至).{0,10}(?:以下)?|失败模式|较差|不稳定|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?|(?:score|f1).{0,20}below)\b/iu;
 const QUALIFIED_EVALUATED_COHORT_PATTERN = /所评估|评估的|参与测试|接受测试|部分|某些|具体|上述|点名|商业\s*VLM|Gemini|GPT|Claude|DeepSeek|Grok|Reducto|LlamaExtract|\b(?:evaluated|tested|participating|specific|some|named|commercial\s+VLMs?)\b/iu;
 const TRACK_SCOPED_MODEL_COUNT_SOURCE_PATTERN = /\b(?:encounter|day)[-\s]?track\b.{0,120}\b(?:evaluates?|compares?|tests?)\b.{0,40}\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+models?\b/iu;
 const MODEL_COUNT_CLAIM_PATTERN = /(?:[一二三四五六七八九十百]+|\d+)个(?:前沿|语言|大语言|受测|所评估|特定)?模型(?:版本)?|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+(?:frontier\s+|evaluated\s+|specific\s+)?model(?:s|\s+versions?)\b/iu;
@@ -56,7 +64,7 @@ const AWKWARD_ENCOUNTER_DAY_PATTERN = /(?:通过|未通过|五个|多个)日程|
 const DAY_WIN_RATE_CLAIM_PATTERN = /(?:\bday\b|战斗日|跨(?:场景|战斗日)).{0,18}(?:胜率|\bwin\s+rates?\b)|(?:胜率|\bwin\s+rates?\b).{0,8}(?:适用于|用于|覆盖|作为|\bin\b|\bon\b|\bfor\b).{0,8}(?:\bday\b|战斗日|跨(?:场景|战斗日))/iu;
 const DAY_WIN_RATE_SOURCE_PATTERN = /\bday(?:-track)?\b.{0,160}\bwin\s+rates?\b|\bwin\s+rates?\b.{0,160}\bday(?:-track)?\b/iu;
 const EXACT_EVIDENCE_LINKING_LIMITATION_PATTERN = /(?:词级.{0,20}grounding|grounding\s*F1|确切(?:的)?(?:支撑|支持)证据|精确证据关联|来源页面)/iu;
-const PERFORMANCE_RESTATED_AS_LIMITATION_PATTERN = /(?:模型|系统).{0,36}(?:表现|能力|性能|差距|失败).{0,36}(?:局限|不足)|表明.{0,20}(?:模型|系统).{0,30}(?:局限|不足)/u;
+const PERFORMANCE_RESTATED_AS_LIMITATION_PATTERN = /(?:模型|系统|VLM|编码代理).{0,48}(?:表现|能力|性能|差距|失败|得分|分数|低于|为零|不返回证据)|表明.{0,20}(?:模型|系统).{0,30}(?:局限|不足)|\b(?:models?|systems?|VLMs?|coding agents?).{0,48}(?:score zero|below|underperform|do not return evidence)\b/iu;
 const MATERIAL_STUDY_BOUNDARY_PATTERN = /评估范围|适用范围|仅限|限定于|样本|场景|种子|对手|模型版本|数据集|数据|未(?:覆盖|评估|验证)|不(?:涵盖|包括|覆盖)|依赖|成本对比|价格|标注者|脚本教师|比较对象/u;
 const INLINE_EVIDENCE_REF_PATTERN = /\[[^\]]*(?:problem|method|systemDesign|experiments|results|limitations|affiliations):\d+[^\]]*\]/u;
 const INLINE_EVIDENCE_REF_REPLACE_PATTERN = /\[[^\]]*(?:problem|method|systemDesign|experiments|results|limitations|affiliations):\d+[^\]]*\]/gu;
@@ -378,6 +386,18 @@ const numericTokens = (value) => {
 
 const validatePercentageMetricLabels = ({ text, evidenceRefs, refs, path, issues }) => {
   const clauses = normalizeText(text, 12000).split(/[，,。！？!?；;\n]+/u).filter(Boolean);
+  const citedExcerpts = evidenceRefs.map((reference) => refs.get(reference)?.excerpt || "");
+  if (clauses.some((clause) => /(?:准确率|\baccuracy\b)/iu.test(clause))
+    && !citedExcerpts.some((excerpt) => /(?:准确率|\baccuracy\b)/iu.test(excerpt))) {
+    const validationIssue = issue(
+      "metric_label_not_in_evidence",
+      path,
+      "Do not relabel score, value F1, or grounding F1 as accuracy unless a cited Evidence excerpt uses that metric name."
+    );
+    validationIssue.repairKinds = ["preserve_metric_name"];
+    issues.push(validationIssue);
+    return;
+  }
   clauses.forEach((clause) => {
     if (!/(?:准确率|\baccuracy\b)/iu.test(clause)) {
       return;
@@ -470,11 +490,13 @@ const validateGroundedText = (value, {
     ));
   }
   if (RHETORICAL_STYLE_PATTERN.test(text)) {
-    issues.push(issue(
+    const validationIssue = issue(
       "rhetorical_prose_style",
       `${path}.text`,
       "Paper prose must use direct, neutral technical description without rhetorical or promotional wording."
-    ));
+    );
+    validationIssue.repairKinds = ["neutral_direct_statement"];
+    issues.push(validationIssue);
   }
   if (AWKWARD_TRANSLATION_PATTERN.test(text)) {
     issues.push(issue(
@@ -591,11 +613,13 @@ export const validatePaperDraft = (value, { item } = {}) => {
   normalized.limitationsAndConstraints.forEach((entry, index) => {
     if (PERFORMANCE_RESTATED_AS_LIMITATION_PATTERN.test(entry.text)
       && !MATERIAL_STUDY_BOUNDARY_PATTERN.test(entry.text)) {
-      issues.push(issue(
+      const validationIssue = issue(
         "limitation_not_study_boundary",
         `limitationsAndConstraints[${index}].text`,
         "A performance gap is a result, not a separate study limitation; state an experiment, data, comparison, or applicability boundary."
-      ));
+      );
+      validationIssue.repairKinds = ["performance_result_as_limitation"];
+      issues.push(validationIssue);
     }
   });
   const duplicateGroundingLimitations = normalized.limitationsAndConstraints
@@ -814,24 +838,72 @@ export const runPaperSectionWriter = async ({
     }
   };
 
+  let responseRepairAttempted = false;
   let validation = await invokeWithNetworkRetry(
     buildPaperSectionPrompt({ item }),
     "initial"
   );
+  if (hasOnlyResponseContractIssues(validation)) {
+    const responseIssues = validation.issues;
+    responseRepairAttempted = true;
+    await onEvent?.({
+      type: "paper_section_response_repair_requested",
+      stage: "write_paper_sections",
+      paperId,
+      attemptType: "initial",
+      issues: responseIssues
+    });
+    validation = await invokeWithNetworkRetry(
+      buildPaperSectionResponseRepairPrompt({ item, responseIssues }),
+      "initial_response_repair"
+    );
+  }
   if (validation.valid) {
-    return { paperDraft: validation.paperDraft, repairAttempted: false, calls };
+    return {
+      paperDraft: validation.paperDraft,
+      repairAttempted: false,
+      responseRepairAttempted,
+      calls
+    };
+  }
+  if (hasOnlyResponseContractIssues(validation)) {
+    throw new PaperSectionWriterError("paperDraft response remains invalid after one response-format repair.", {
+      code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
+      paperId,
+      issues: validation.issues
+    });
   }
 
+  const contentIssues = validation.issues;
   await onEvent?.({
     type: "paper_section_repair_requested",
     stage: "write_paper_sections",
     paperId,
-    issues: validation.issues
+    issues: contentIssues
   });
   validation = await invokeWithNetworkRetry(
-    buildPaperSectionRepairPrompt({ item, issues: validation.issues }),
+    buildPaperSectionRepairPrompt({ item, issues: contentIssues }),
     "repair"
   );
+  if (hasOnlyResponseContractIssues(validation) && !responseRepairAttempted) {
+    const responseIssues = validation.issues;
+    responseRepairAttempted = true;
+    await onEvent?.({
+      type: "paper_section_response_repair_requested",
+      stage: "write_paper_sections",
+      paperId,
+      attemptType: "repair",
+      issues: responseIssues
+    });
+    validation = await invokeWithNetworkRetry(
+      buildPaperSectionResponseRepairPrompt({
+        item,
+        issues: contentIssues,
+        responseIssues
+      }),
+      "repair_response_repair"
+    );
+  }
   if (!validation.valid) {
     throw new PaperSectionWriterError("paperDraft remains unsupported after one structured repair.", {
       code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
@@ -840,7 +912,12 @@ export const runPaperSectionWriter = async ({
     });
   }
 
-  return { paperDraft: validation.paperDraft, repairAttempted: true, calls };
+  return {
+    paperDraft: validation.paperDraft,
+    repairAttempted: true,
+    responseRepairAttempted,
+    calls
+  };
 };
 
 const mapWithConcurrency = async (items, concurrency, mapper) => {
@@ -885,7 +962,8 @@ export const writePaperSectionsBatch = async (items, {
         type: "paper_section_accepted",
         stage: "write_paper_sections",
         paperId,
-        repairAttempted: result.repairAttempted
+        repairAttempted: result.repairAttempted,
+        responseRepairAttempted: result.responseRepairAttempted
       });
       return { ok: true, item, ...result };
     } catch (error) {
@@ -905,7 +983,8 @@ export const writePaperSectionsBatch = async (items, {
     succeeded: results.filter((entry) => entry.ok).map((entry) => ({
       item: entry.item,
       paperDraft: entry.paperDraft,
-      repairAttempted: entry.repairAttempted
+      repairAttempted: entry.repairAttempted,
+      responseRepairAttempted: entry.responseRepairAttempted
     })),
     failed: results.filter((entry) => !entry.ok).map((entry) => ({
       item: entry.item,

@@ -79,6 +79,70 @@ const uniqueIssues = (issues) => {
   });
 };
 
+const evidenceRepairScope = ({ issues = [], baseArtifacts = null } = {}) => {
+  const evidenceFields = new Set();
+  let rebuildValueSignals = false;
+  let recognizedTarget = false;
+  let requiresFullResponse = !baseArtifacts;
+
+  (Array.isArray(issues) ? issues : []).forEach((entry) => {
+    const code = String(entry?.code || "");
+    const path = String(entry?.path || "");
+    const fieldMatch = path.match(/^evidenceCard\.([^.\[]+)/);
+    if (fieldMatch && EVIDENCE_FIELDS.includes(fieldMatch[1])) {
+      evidenceFields.add(fieldMatch[1]);
+      rebuildValueSignals = true;
+      recognizedTarget = true;
+      return;
+    }
+    if (path === "valueSignals" || path.startsWith("valueSignals.")) {
+      rebuildValueSignals = true;
+      recognizedTarget = true;
+      return;
+    }
+    if (["invalid_json", "schema_invalid", "paper_id_mismatch"].includes(code)
+      || path === "response"
+      || path === "evidenceCard.paperId"
+      || path === "valueSignals.paperId") {
+      requiresFullResponse = true;
+    }
+  });
+
+  if (!recognizedTarget) {
+    requiresFullResponse = true;
+  }
+
+  return {
+    mode: requiresFullResponse ? "full_response" : "field_scoped_merge",
+    evidenceFields: requiresFullResponse ? [] : [...evidenceFields],
+    rebuildValueSignals: requiresFullResponse ? true : rebuildValueSignals
+  };
+};
+
+const mergeEvidenceRepairArtifacts = ({
+  baseArtifacts,
+  repairedValue,
+  repairScope
+}) => {
+  const repairedArtifacts = normalizeEvidenceArtifacts(repairedValue);
+  if (repairScope?.mode !== "field_scoped_merge") {
+    return repairedArtifacts;
+  }
+
+  const retainedArtifacts = normalizeEvidenceArtifacts(baseArtifacts);
+  const merged = structuredClone(retainedArtifacts);
+  (Array.isArray(repairScope.evidenceFields) ? repairScope.evidenceFields : [])
+    .forEach((field) => {
+      if (EVIDENCE_FIELDS.includes(field)) {
+        merged.evidenceCard[field] = structuredClone(repairedArtifacts.evidenceCard[field]);
+      }
+    });
+  if (repairScope.rebuildValueSignals) {
+    merged.valueSignals = structuredClone(repairedArtifacts.valueSignals);
+  }
+  return merged;
+};
+
 const validateResultCohortScope = ({ summary, sourceText, issues }) => {
   const sentences = normalizeText(summary).split(/[。！？!?；;\n]+/u).filter(Boolean);
   if (!LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN.test(sourceText)
@@ -109,6 +173,30 @@ const validateCommercialVlmLongDocumentSource = ({ summary, sourceText, issues }
   ));
 };
 
+const numericSummarySentences = (value) => {
+  const text = normalizeText(value);
+  return text.split(/(?<=[。！？!?；;])\s*|(?<=\.)\s+/u)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+};
+
+const removeUnsupportedNumericSentences = (fieldValue) => {
+  const availableNumbers = new Set(numericTokens(
+    fieldValue.sources.map((sourceValue) => sourceValue.excerpt).join(" ")
+  ));
+  const unsupportedNumbers = new Set(
+    numericTokens(fieldValue.summary).filter((token) => !availableNumbers.has(token))
+  );
+  if (!unsupportedNumbers.size) {
+    return fieldValue.summary;
+  }
+
+  return numericSummarySentences(fieldValue.summary)
+    .filter((sentence) => !numericTokens(sentence).some((token) => unsupportedNumbers.has(token)))
+    .join(" ")
+    .trim();
+};
+
 const sanitizedNumericEvidence = (validation, { contextPacket, expectedPaperId } = {}) => {
   const issues = Array.isArray(validation?.issues) ? validation.issues : [];
   if (!validation?.artifacts || issues.length === 0
@@ -117,11 +205,23 @@ const sanitizedNumericEvidence = (validation, { contextPacket, expectedPaperId }
   }
 
   const artifacts = structuredClone(validation.artifacts);
+  const fieldsMarkedInsufficient = new Set();
   const signalIndexesToDrop = new Set();
   for (const entry of issues) {
     const fieldMatch = String(entry.path || "").match(/^evidenceCard\.([^.]+)\.summary$/);
     if (fieldMatch && EVIDENCE_FIELDS.includes(fieldMatch[1])) {
-      artifacts.evidenceCard[fieldMatch[1]].summary = "Exact numeric details were omitted because they were not fully grounded in the retained source excerpts.";
+      const field = fieldMatch[1];
+      const fieldValue = artifacts.evidenceCard[field];
+      const retainedSummary = removeUnsupportedNumericSentences(fieldValue);
+      if (retainedSummary) {
+        fieldValue.summary = retainedSummary;
+      } else {
+        fieldValue.summary = "当前绑定摘录不足以支持该字段的定量陈述。";
+        fieldValue.status = "insufficient";
+        fieldValue.sources = [];
+        artifacts.evidenceCard.evidenceInsufficient = true;
+        fieldsMarkedInsufficient.add(field);
+      }
       continue;
     }
     const signalMatch = String(entry.path || "").match(/^valueSignals\.signals\[(\d+)]\.claim$/);
@@ -134,6 +234,9 @@ const sanitizedNumericEvidence = (validation, { contextPacket, expectedPaperId }
 
   artifacts.valueSignals.signals = artifacts.valueSignals.signals.filter((_, index) => (
     !signalIndexesToDrop.has(index)
+    && !artifacts.valueSignals.signals[index].evidenceRefs.some((reference) => (
+      fieldsMarkedInsufficient.has(String(reference).split(":", 1)[0])
+    ))
   ));
   const sanitized = validateEvidenceArtifacts(artifacts, { contextPacket, expectedPaperId });
   return sanitized.valid ? sanitized : null;
@@ -339,6 +442,7 @@ const serializedError = (error) => ({
 export const runEvidenceAgent = async ({
   paper,
   contextPacket,
+  currentArtifacts = null,
   callModel,
   signal,
   onCall,
@@ -363,7 +467,7 @@ export const runEvidenceAgent = async ({
   }
 
   const callRecords = [];
-  const invoke = async (prompt, attemptType) => {
+  const invoke = async (prompt, attemptType, repairContext = null) => {
     if (signal?.aborted) {
       throw abortError();
     }
@@ -403,7 +507,14 @@ export const runEvidenceAgent = async ({
 
     try {
       parsed = parseModelJson(rawOutput);
-      validation = validateEvidenceArtifacts(parsed, { contextPacket, expectedPaperId });
+      const validationValue = repairContext
+        ? mergeEvidenceRepairArtifacts({
+          baseArtifacts: repairContext.baseArtifacts,
+          repairedValue: parsed,
+          repairScope: repairContext.repairScope
+        })
+        : parsed;
+      validation = validateEvidenceArtifacts(validationValue, { contextPacket, expectedPaperId });
     } catch (error) {
       validation = {
         valid: false,
@@ -423,7 +534,8 @@ export const runEvidenceAgent = async ({
       validation: {
         valid: validation.valid,
         issues: validation.issues,
-        evidenceRefCount: validation.evidenceRefCount
+        evidenceRefCount: validation.evidenceRefCount,
+        ...(repairContext ? { repairScope: repairContext.repairScope } : {})
       },
       durationMs: Math.max(0, Date.now() - startedAt),
       error: null
@@ -435,9 +547,14 @@ export const runEvidenceAgent = async ({
     return validation;
   };
 
-  const invokeWithNetworkRetry = async (prompt, firstAttemptType, retryAttemptType) => {
+  const invokeWithNetworkRetry = async (
+    prompt,
+    firstAttemptType,
+    retryAttemptType,
+    repairContext = null
+  ) => {
     try {
-      return await invoke(prompt, firstAttemptType);
+      return await invoke(prompt, firstAttemptType, repairContext);
     } catch (error) {
       if (!error?.modelCallFailed || error?.name === "AbortError" || signal?.aborted) {
         throw error;
@@ -455,7 +572,7 @@ export const runEvidenceAgent = async ({
       await waitForRetry(networkRetryDelayMs, signal);
 
       try {
-        return await invoke(prompt, retryAttemptType);
+        return await invoke(prompt, retryAttemptType, repairContext);
       } catch (retryError) {
         if (retryError?.name === "AbortError") {
           throw retryError;
@@ -474,23 +591,41 @@ export const runEvidenceAgent = async ({
   const initialPrompt = buildEvidencePrompt({ paper, contextPacket });
 
   if (Array.isArray(repairIssues) && repairIssues.length) {
+    let reviewBaseArtifacts = null;
+    try {
+      reviewBaseArtifacts = currentArtifacts
+        ? normalizeEvidenceArtifacts(currentArtifacts)
+        : null;
+    } catch {
+      reviewBaseArtifacts = null;
+    }
+    const reviewRepairScope = evidenceRepairScope({
+      issues: repairIssues,
+      baseArtifacts: reviewBaseArtifacts
+    });
     if (typeof onEvent === "function") {
       await onEvent({
         type: "review_evidence_repair_started",
         stage: "review",
         paperId: expectedPaperId,
-        issues: repairIssues
+        issues: repairIssues,
+        repairScope: reviewRepairScope
       });
     }
     const reviewRepairPrompt = buildEvidenceRepairPrompt({
       paper,
       contextPacket,
+      repairTargets: reviewRepairScope,
       issues: repairIssues
     });
     const reviewRepaired = await invokeWithNetworkRetry(
       reviewRepairPrompt,
       "review_evidence_repair",
-      "review_evidence_repair_network_retry"
+      "review_evidence_repair_network_retry",
+      reviewBaseArtifacts ? {
+        baseArtifacts: reviewBaseArtifacts,
+        repairScope: reviewRepairScope
+      } : null
     );
 
     if (!reviewRepaired.valid) {
@@ -508,6 +643,7 @@ export const runEvidenceAgent = async ({
       validation: reviewRepaired,
       repairAttempted: true,
       repairSource: "review",
+      repairScope: reviewRepairScope,
       calls: callRecords
     };
   }
@@ -524,19 +660,37 @@ export const runEvidenceAgent = async ({
   }
 
   if (typeof onEvent === "function") {
+    const plannedRepairScope = evidenceRepairScope({
+      issues: initial.issues,
+      baseArtifacts: initial.artifacts
+    });
     await onEvent({
       type: "repair_requested",
       stage: "extract_evidence",
       paperId: expectedPaperId,
-      issues: initial.issues
+      issues: initial.issues,
+      repairScope: plannedRepairScope
     });
   }
+  const plannedRepairScope = evidenceRepairScope({
+    issues: initial.issues,
+    baseArtifacts: initial.artifacts
+  });
   const repairPrompt = buildEvidenceRepairPrompt({
     paper,
     contextPacket,
+    repairTargets: plannedRepairScope,
     issues: initial.issues
   });
-  const repaired = await invokeWithNetworkRetry(repairPrompt, "repair", "repair_network_retry");
+  const repaired = await invokeWithNetworkRetry(
+    repairPrompt,
+    "repair",
+    "repair_network_retry",
+    initial.artifacts ? {
+      baseArtifacts: initial.artifacts,
+      repairScope: plannedRepairScope
+    } : null
+  );
 
   if (!repaired.valid) {
     const sanitized = sanitizedNumericEvidence(repaired, { contextPacket, expectedPaperId });
@@ -551,6 +705,7 @@ export const runEvidenceAgent = async ({
         ...sanitized.artifacts,
         validation: sanitized,
         repairAttempted: true,
+        repairScope: plannedRepairScope,
         deterministicSanitizationApplied: true,
         calls: callRecords
       };
@@ -568,6 +723,7 @@ export const runEvidenceAgent = async ({
     ...repaired.artifacts,
     validation: repaired,
     repairAttempted: true,
+    repairScope: plannedRepairScope,
     calls: callRecords
   };
 };

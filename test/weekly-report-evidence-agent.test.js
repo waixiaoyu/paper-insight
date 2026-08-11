@@ -319,6 +319,12 @@ test("Problem Evidence must state a problem or capability instead of only announ
 test("伪造摘录触发一次定向修正，修正 prompt 仍只读取当前论文", async () => {
   const invalid = validResponseFor();
   invalid.evidenceCard.method.sources[0].excerpt = "A fabricated method excerpt from another paper.";
+  const repairedResponse = validResponseFor();
+  repairedResponse.evidenceCard.problem = {
+    summary: "An unrelated contribution announcement.",
+    status: "supported",
+    sources: [source("S1", "1 Introduction", "We introduce an unrelated benchmark.")]
+  };
   const calls = [];
   const callRecords = [];
   const result = await runEvidenceAgent({
@@ -327,7 +333,7 @@ test("伪造摘录触发一次定向修正，修正 prompt 仍只读取当前论
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
       calls.push(payload);
-      return calls.length === 1 ? invalid : validResponseFor();
+      return calls.length === 1 ? invalid : repairedResponse;
     },
     onCall: async (record) => callRecords.push(record)
   });
@@ -336,9 +342,45 @@ test("伪造摘录触发一次定向修正，修正 prompt 仍只读取当前论
   assert.equal(result.validation.valid, true);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].task, "weekly_report_extract_evidence_repair");
+  assert.deepEqual(calls[1].repairTargets.evidenceFields, ["method"]);
+  assert.equal(calls[1].repairTargets.rebuildValueSignals, true);
+  assert.match(calls[1].serverMergePolicy, /ignored/i);
   assert.match(JSON.stringify(calls[1].issues), /excerpt_not_in_source/);
   assert.doesNotMatch(JSON.stringify(calls[1]), /ABSTRACT_SECRET|2607\.22222/);
   assert.deepEqual(callRecords.map((record) => record.attemptType), ["initial", "repair"]);
+  assert.equal(
+    result.evidenceCard.problem.sources[0].excerpt,
+    validResponseFor().evidenceCard.problem.sources[0].excerpt
+  );
+  assert.equal(callRecords[1].validation.repairScope.mode, "field_scoped_merge");
+  assert.deepEqual(callRecords[1].validation.repairScope.evidenceFields, ["method"]);
+});
+
+test("Review-requested Evidence repair preserves fields outside the challenged scope", async () => {
+  const currentArtifacts = validResponseFor();
+  const repairedResponse = validResponseFor();
+  repairedResponse.evidenceCard.results.summary = "Unsafe actions are reduced by 37% while completion is preserved.";
+  repairedResponse.evidenceCard.problem.sources[0].excerpt = "This unrelated sentence is not in the source.";
+  const prompts = [];
+
+  const result = await runEvidenceAgent({
+    paper: { id: "2607.11111" },
+    contextPacket: contextPacketFor(),
+    currentArtifacts,
+    repairIssues: [{ code: "review_claim_not_supported", path: "evidenceCard.results.summary" }],
+    callModel: async (prompt) => {
+      prompts.push(JSON.parse(prompt));
+      return repairedResponse;
+    }
+  });
+
+  assert.equal(result.validation.valid, true);
+  assert.equal(result.repairSource, "review");
+  assert.deepEqual(prompts[0].repairTargets.evidenceFields, ["results"]);
+  assert.equal(
+    result.evidenceCard.problem.sources[0].excerpt,
+    currentArtifacts.evidenceCard.problem.sources[0].excerpt
+  );
 });
 
 test("精确数字不在绑定摘录中时验证失败", () => {
@@ -407,8 +449,31 @@ test("unsupported numeric prose after the one repair is safely removed without a
   assert.equal(result.validation.valid, true);
   assert.equal(result.deterministicSanitizationApplied, true);
   assert.doesNotMatch(result.evidenceCard.results.summary, /42/);
+  assert.equal(result.evidenceCard.results.status, "insufficient");
+  assert.deepEqual(result.evidenceCard.results.sources, []);
+  assert.doesNotMatch(result.evidenceCard.results.summary, /Exact numeric details|omitted|grounded/i);
   assert.equal(result.valueSignals.signals.some((signal) => /42/.test(signal.claim)), false);
   assert.equal(events.some((event) => event.type === "evidence_numeric_claims_sanitized"), true);
+});
+
+test("numeric sanitization keeps supported paper content and removes only sentences with unbound numbers", async () => {
+  const invalid = validResponseFor();
+  invalid.evidenceCard.results.summary = "The benchmark evaluates extraction reliability. Unsafe actions are reduced by 42%.";
+  invalid.valueSignals.signals[1].claim = "The reported unsafe-action reduction is 42%.";
+
+  const result = await runEvidenceAgent({
+    paper: { id: "2607.11111" },
+    contextPacket: contextPacketFor(),
+    callModel: async () => invalid
+  });
+
+  assert.equal(result.validation.valid, true);
+  assert.equal(result.deterministicSanitizationApplied, true);
+  assert.equal(result.evidenceCard.results.status, "supported");
+  assert.equal(result.evidenceCard.results.summary, "The benchmark evaluates extraction reliability.");
+  assert.doesNotMatch(result.evidenceCard.results.summary, /42|Exact numeric details|omitted|grounded/i);
+  assert.equal(result.evidenceCard.results.sources.length > 0, true);
+  assert.equal(result.valueSignals.signals.some((signal) => /42/.test(signal.claim)), false);
 });
 
 test("一次修正后仍不合格会抛出可排除单篇的 Evidence 错误", async () => {
@@ -503,6 +568,11 @@ test("repair prompt 不携带上次原始响应，只包含当前原文和问题
   const prompt = buildEvidenceRepairPrompt({
     paper: { id: "2607.11111" },
     contextPacket: contextPacketFor(),
+    repairTargets: {
+      mode: "field_scoped_merge",
+      evidenceFields: ["problem", "results"],
+      rebuildValueSignals: true
+    },
     issues: [
       { code: "paper_id_mismatch", detail: "Returned 2607.22222" },
       { code: "excerpt_not_in_source", path: "evidenceCard.systemDesign.sources[0].excerpt" },
@@ -531,6 +601,9 @@ test("repair prompt 不携带上次原始响应，只包含当前原文和问题
     "evidence"
   ]);
   assert.match(payload.repairInstruction, /Do not omit a field/);
+  assert.deepEqual(payload.repairTargets.evidenceFields, ["problem", "results"]);
+  assert.equal(payload.repairTargets.rebuildValueSignals, true);
+  assert.match(payload.serverMergePolicy, /ignored/i);
   const repairHints = payload.issues.flatMap((entry) => entry.repairHints || []).join(" ");
   assert.match(repairHints, /shorter contiguous verbatim substring/i);
   assert.match(repairHints, /contiguous antecedent/i);

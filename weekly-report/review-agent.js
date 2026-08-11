@@ -565,6 +565,10 @@ export const runReviewAgent = async ({
     repairedEvidence = await runEvidenceAgent({
       paper: item.paper,
       contextPacket: item.contextPacket,
+      currentArtifacts: {
+        evidenceCard: item.evidenceCard,
+        valueSignals: item.valueSignals
+      },
       callModel,
       signal,
       networkRetryDelayMs,

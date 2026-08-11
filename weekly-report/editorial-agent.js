@@ -1,8 +1,10 @@
 import {
   buildEditorialPlanPrompt,
   buildEditorialPlanRepairPrompt,
+  buildEditorialPlanResponseRepairPrompt,
   buildHeadTailPrompt,
-  buildHeadTailRepairPrompt
+  buildHeadTailRepairPrompt,
+  buildHeadTailResponseRepairPrompt
 } from "./prompts.js";
 
 const MATURITY_LEVELS = new Set(["emerging", "developing", "mature", "uncertain"]);
@@ -23,7 +25,7 @@ const BROAD_MODEL_SUBJECT_PATTERN = /(?:前沿|当前|现有|多数|大多数)?(
 const POSITIVE_MODEL_PERFORMANCE_PATTERN = /(?:表现|能力|胜率).{0,14}(?:优异|突出|较高|较强|领先)|(?:优异|突出|较高|较强|领先).{0,8}(?:表现|能力|胜率)|(?:achiev(?:e|es|ed|ing)\s+)?(?:high|strong|excellent|outstanding|superior)\s+(?:performance|win\s+rates?|capabilit(?:y|ies))|(?:performance|win\s+rates?|capabilit(?:y|ies)).{0,14}(?:high|strong|excellent|outstanding|superior)/iu;
 const QUALIFIED_MODEL_SUBSET_PATTERN = /部分|其中|表现最(?:好|佳|强)|最(?:好|佳|强)的?|最佳|最强|领先的|Gemini|GPT|Claude|DeepSeek|Grok|strongest|best[-\s]?perform/iu;
 const LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN = /\b(?:Gemini|GPT|Claude|DeepSeek|Grok)\b|\bbest\s+(?:overall|method|model|system)\b/iu;
-const NEGATIVE_MODEL_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|表现不佳|性能不佳|失败模式|较差|不稳定|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?)\b/iu;
+const NEGATIVE_MODEL_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|表现不佳|性能不佳|(?:得分|分数|F1).{0,10}(?:低于|降至).{0,10}(?:以下)?|失败模式|较差|不稳定|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?|(?:score|f1).{0,20}below)\b/iu;
 const QUALIFIED_EVALUATED_COHORT_PATTERN = /所评估|评估的|参与测试|接受测试|部分|某些|具体|上述|点名|商业\s*VLM|Gemini|GPT|Claude|DeepSeek|Grok|Reducto|LlamaExtract|\b(?:evaluated|tested|participating|specific|some|named|commercial\s+VLMs?)\b/iu;
 const TRACK_SCOPED_MODEL_COUNT_SOURCE_PATTERN = /\b(?:encounter|day)[-\s]?track\b.{0,120}\b(?:evaluates?|compares?|tests?)\b.{0,40}\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+models?\b/iu;
 const MODEL_COUNT_CLAIM_PATTERN = /(?:[一二三四五六七八九十百]+|\d+)个(?:前沿|语言|大语言|受测|所评估|特定)?模型(?:版本)?|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)\s+(?:frontier\s+|evaluated\s+|specific\s+)?model(?:s|\s+versions?)\b/iu;
@@ -32,6 +34,13 @@ const LONG_HORIZON_CLAIM_PATTERN = /中长期|长期|长周期|长时程|长程|
 const LONG_HORIZON_SOURCE_PATTERN = /长期|长周期|长时程|长程|\blong[-\s]?(?:term|horizon|range)\b/iu;
 const AWKWARD_TRANSLATION_PATTERN = /中时间跨度|自主决策网络/u;
 const AWKWARD_CHINESE_GRAMMAR_PATTERN = /旨在奖励函数未知(?:的)?情况下/u;
+const RESPONSE_CONTRACT_ISSUE_CODES = new Set(["invalid_json", "schema_invalid"]);
+const hasOnlyResponseContractIssues = (validation) => (
+  validation?.valid === false
+  && Array.isArray(validation?.issues)
+  && validation.issues.length > 0
+  && validation.issues.every((entry) => RESPONSE_CONTRACT_ISSUE_CODES.has(String(entry?.code || "")))
+);
 const LOW_INFORMATION_BENCHMARK_TREND_PATTERN = /(?:两项|两篇|多篇|这些)(?:工作|研究|论文)?.{0,24}(?:均|都).{0,20}(?:构建|提出|建立).{0,12}(?:基准|评测).{0,36}(?:现有|当前).{0,16}(?:评测|测试|基准).{0,12}(?:不足|局限)/u;
 const FRONTIER_MODEL_SUBJECT_PATTERN = /(?:当前|现有)?前沿(?:大)?模型|\bfrontier\s+models?\b/iu;
 const FRONTIER_MODEL_CONSTRUCTION_METHOD_PATTERN = /(?:结合|使用|采用|基于)(?:了)?前沿(?:大)?模型集成|\b(?:using|uses?|combines?|with)\s+frontier[-\s]+model\s+ensembles?\b/giu;
@@ -394,6 +403,18 @@ const validateClaimNumbers = ({ claim, refs, evidenceRefs, path, issues }) => {
 
 const validatePercentageMetricLabels = ({ claim, refs, evidenceRefs, path, issues }) => {
   const clauses = normalizeText(claim, 12000).split(/[，,。！？!?；;\n]+/u).filter(Boolean);
+  const citedExcerpts = evidenceRefs.map((reference) => refs.get(reference)?.excerpt || "");
+  if (clauses.some((clause) => /(?:准确率|\baccuracy\b)/iu.test(clause))
+    && !citedExcerpts.some((excerpt) => /(?:准确率|\baccuracy\b)/iu.test(excerpt))) {
+    const validationIssue = issue(
+      "metric_label_not_in_evidence",
+      path,
+      "Do not relabel score, value F1, or grounding F1 as accuracy unless a cited Evidence excerpt uses that metric name."
+    );
+    validationIssue.repairKinds = ["preserve_metric_name"];
+    issues.push(validationIssue);
+    return;
+  }
   clauses.forEach((clause) => {
     if (!/(?:准确率|\baccuracy\b)/iu.test(clause)) {
       return;
@@ -413,6 +434,20 @@ const validatePercentageMetricLabels = ({ claim, refs, evidenceRefs, path, issue
   });
 };
 
+const validateMetricLabelSupport = ({ text, sourceText, path, issues }) => {
+  if (!/(?:准确率|\baccuracy\b)/iu.test(text)
+    || /(?:准确率|\baccuracy\b)/iu.test(sourceText)) {
+    return;
+  }
+  const validationIssue = issue(
+    "metric_label_not_in_evidence",
+    path,
+    "Head/Tail must preserve the supplied metric name; score, value F1, and grounding F1 are not accuracy."
+  );
+  validationIssue.repairKinds = ["preserve_metric_name"];
+  issues.push(validationIssue);
+};
+
 const validateInternalText = (value, path, issues) => {
   if (INTERNAL_TERM_PATTERN.test(value)) {
     issues.push(issue(
@@ -422,11 +457,13 @@ const validateInternalText = (value, path, issues) => {
     ));
   }
   if (RHETORICAL_STYLE_PATTERN.test(value)) {
-    issues.push(issue(
+    const validationIssue = issue(
       "rhetorical_prose_style",
       path,
       "Editorial Plan text must use direct, neutral technical description without rhetorical or promotional wording."
-    ));
+    );
+    validationIssue.repairKinds = ["neutral_direct_statement"];
+    issues.push(validationIssue);
   }
   if (AWKWARD_TRANSLATION_PATTERN.test(value)) {
     issues.push(issue(
@@ -956,23 +993,71 @@ export const runEditorialPlanAgent = async ({
     }
   };
 
+  let responseRepairAttempted = false;
   let validation = await invokeWithNetworkRetry(
     buildEditorialPlanPrompt({ selectedItems: candidates }),
     "initial"
   );
+  if (hasOnlyResponseContractIssues(validation)) {
+    const responseIssues = validation.issues;
+    responseRepairAttempted = true;
+    await onEvent?.({
+      type: "editorial_plan_response_repair_requested",
+      stage: "editorial_plan",
+      attemptType: "initial",
+      issues: responseIssues
+    });
+    validation = await invokeWithNetworkRetry(
+      buildEditorialPlanResponseRepairPrompt({
+        selectedItems: candidates,
+        responseIssues
+      }),
+      "initial_response_repair"
+    );
+  }
   if (validation.valid) {
-    return { editorialPlan: validation.editorialPlan, repairAttempted: false, calls };
+    return {
+      editorialPlan: validation.editorialPlan,
+      repairAttempted: false,
+      responseRepairAttempted,
+      calls
+    };
+  }
+  if (hasOnlyResponseContractIssues(validation)) {
+    throw new EditorialAgentError("Editorial Plan response remains invalid after one response-format repair.", {
+      code: "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED",
+      issues: validation.issues
+    });
   }
 
+  const contentIssues = validation.issues;
   await onEvent?.({
     type: "editorial_plan_repair_requested",
     stage: "editorial_plan",
-    issues: validation.issues
+    issues: contentIssues
   });
   validation = await invokeWithNetworkRetry(
-    buildEditorialPlanRepairPrompt({ selectedItems: candidates, issues: validation.issues }),
+    buildEditorialPlanRepairPrompt({ selectedItems: candidates, issues: contentIssues }),
     "repair"
   );
+  if (hasOnlyResponseContractIssues(validation) && !responseRepairAttempted) {
+    const responseIssues = validation.issues;
+    responseRepairAttempted = true;
+    await onEvent?.({
+      type: "editorial_plan_response_repair_requested",
+      stage: "editorial_plan",
+      attemptType: "repair",
+      issues: responseIssues
+    });
+    validation = await invokeWithNetworkRetry(
+      buildEditorialPlanResponseRepairPrompt({
+        selectedItems: candidates,
+        issues: contentIssues,
+        responseIssues
+      }),
+      "repair_response_repair"
+    );
+  }
   if (!validation.valid) {
     throw new EditorialAgentError("Editorial Plan remains unsupported after one structured repair.", {
       code: "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED",
@@ -980,7 +1065,12 @@ export const runEditorialPlanAgent = async ({
     });
   }
 
-  return { editorialPlan: validation.editorialPlan, repairAttempted: true, calls };
+  return {
+    editorialPlan: validation.editorialPlan,
+    repairAttempted: true,
+    responseRepairAttempted,
+    calls
+  };
 };
 
 const allowedHeadTailFields = new Set([
@@ -1043,11 +1133,13 @@ const validateHeadTailText = (value, {
     issues.push(issue("cross_paper_reference", path, "Head/Tail text references an unselected arXiv paper."));
   }
   if (path !== "titleAngle" && RHETORICAL_STYLE_PATTERN.test(text)) {
-    issues.push(issue(
+    const validationIssue = issue(
       "rhetorical_prose_style",
       path,
       "Head/Tail prose must use direct, neutral technical description without rhetorical or promotional wording."
-    ));
+    );
+    validationIssue.repairKinds = ["neutral_direct_statement"];
+    issues.push(validationIssue);
   }
   if (AWKWARD_CHINESE_GRAMMAR_PATTERN.test(text)) {
     const validationIssue = issue(
@@ -1161,6 +1253,31 @@ const sharesNormalizedWindow = (left, right, minimumCharacters = 24) => {
   return false;
 };
 
+const sharesNormalizedBigramFocus = (left, right) => {
+  const normalizeFocus = (value) => String(value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[a-z0-9_.+-]+/gu, "")
+    .replace(/[\p{P}\p{S}\s]/gu, "");
+  const leftText = normalizeFocus(left);
+  const rightText = normalizeFocus(right);
+  if ((leftText.match(/\p{Script=Han}/gu) || []).length < 20
+    || (rightText.match(/\p{Script=Han}/gu) || []).length < 20) {
+    return false;
+  }
+  const bigrams = (text) => new Set(Array.from(text)
+    .slice(0, -1)
+    .map((character, index, characters) => `${character}${characters[index + 1]}`));
+  const leftBigrams = bigrams(leftText);
+  const rightBigrams = bigrams(rightText);
+  const minimumSize = Math.min(leftBigrams.size, rightBigrams.size);
+  if (!minimumSize) {
+    return false;
+  }
+  const overlap = [...leftBigrams].filter((entry) => rightBigrams.has(entry)).length;
+  return overlap / minimumSize >= 0.55;
+};
+
 const validateSinglePaperHeadTailRepetition = ({
   rankedItems,
   reportIntroduction,
@@ -1182,6 +1299,9 @@ const validateSinglePaperHeadTailRepetition = ({
   const repeated = readerFields.some((text, index) => (
     readerFields.slice(index + 1).some((otherText) => sharesNormalizedWindow(text, otherText))
   )) || sharesNormalizedWindow(
+    closingSummary,
+    paperDrafts?.[0]?.readingValue?.recommendedFocus?.text
+  ) || sharesNormalizedBigramFocus(
     closingSummary,
     paperDrafts?.[0]?.readingValue?.recommendedFocus?.text
   );
@@ -1350,6 +1470,26 @@ export const validateHeadTailDraft = (value, {
   const scopeEvidence = [...evidenceReferenceMap(rankedItems).values()]
     .map((entry) => entry.excerpt)
     .join(" ");
+  [
+    ["titleAngle", titleAngle],
+    ["description", description],
+    ["reportIntroduction", reportIntroduction],
+    ...trendJudgments.flatMap((entry, index) => [
+      [`trendJudgments[${index}].claim`, entry.claim],
+      [`trendJudgments[${index}].caveat`, entry.caveat]
+    ]),
+    ...singlePaperObservations.flatMap((entry, index) => [
+      [`singlePaperObservations[${index}].claim`, entry.claim],
+      [`singlePaperObservations[${index}].caveat`, entry.caveat]
+    ]),
+    ...readingOrder.map((entry, index) => [`readingOrder[${index}].reason`, entry.reason]),
+    ["closingSummary", closingSummary]
+  ].forEach(([path, text]) => validateMetricLabelSupport({
+    text,
+    sourceText: scopeEvidence,
+    path,
+    issues
+  }));
   [
     ["titleAngle", titleAngle],
     ["description", description],
@@ -1595,23 +1735,69 @@ export const runHeadTailWriter = async ({
   };
 
   const promptOptions = { editorialPlan, selectedItems: candidates, paperDrafts };
+  let responseRepairAttempted = false;
   let validation = await invokeWithNetworkRetry(
     buildHeadTailPrompt(promptOptions),
     "initial"
   );
+  if (hasOnlyResponseContractIssues(validation)) {
+    const responseIssues = validation.issues;
+    responseRepairAttempted = true;
+    await onEvent?.({
+      type: "head_tail_response_repair_requested",
+      stage: "write_head_tail",
+      attemptType: "initial",
+      issues: responseIssues
+    });
+    validation = await invokeWithNetworkRetry(
+      buildHeadTailResponseRepairPrompt({ ...promptOptions, responseIssues }),
+      "initial_response_repair"
+    );
+  }
   if (validation.valid) {
-    return { headTailDraft: validation.headTailDraft, repairAttempted: false, calls };
+    return {
+      headTailDraft: validation.headTailDraft,
+      repairAttempted: false,
+      responseRepairAttempted,
+      calls
+    };
+  }
+  if (hasOnlyResponseContractIssues(validation)) {
+    throw new EditorialAgentError("Head/Tail response remains invalid after one response-format repair.", {
+      code: "READING_LIST_HEAD_TAIL_UNSUPPORTED",
+      stage: "write_head_tail",
+      issues: validation.issues
+    });
   }
 
+  const contentIssues = validation.issues;
   await onEvent?.({
     type: "head_tail_repair_requested",
     stage: "write_head_tail",
-    issues: validation.issues
+    issues: contentIssues
   });
   validation = await invokeWithNetworkRetry(
-    buildHeadTailRepairPrompt({ ...promptOptions, issues: validation.issues }),
+    buildHeadTailRepairPrompt({ ...promptOptions, issues: contentIssues }),
     "repair"
   );
+  if (hasOnlyResponseContractIssues(validation) && !responseRepairAttempted) {
+    const responseIssues = validation.issues;
+    responseRepairAttempted = true;
+    await onEvent?.({
+      type: "head_tail_response_repair_requested",
+      stage: "write_head_tail",
+      attemptType: "repair",
+      issues: responseIssues
+    });
+    validation = await invokeWithNetworkRetry(
+      buildHeadTailResponseRepairPrompt({
+        ...promptOptions,
+        issues: contentIssues,
+        responseIssues
+      }),
+      "repair_response_repair"
+    );
+  }
   if (!validation.valid) {
     throw new EditorialAgentError("Head/Tail remains unsupported after one structured repair.", {
       code: "READING_LIST_HEAD_TAIL_UNSUPPORTED",
@@ -1620,5 +1806,10 @@ export const runHeadTailWriter = async ({
     });
   }
 
-  return { headTailDraft: validation.headTailDraft, repairAttempted: true, calls };
+  return {
+    headTailDraft: validation.headTailDraft,
+    repairAttempted: true,
+    responseRepairAttempted,
+    calls
+  };
 };

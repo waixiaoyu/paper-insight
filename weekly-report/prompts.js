@@ -2,6 +2,16 @@ const paperIdFrom = (paper = {}, contextPacket = {}) => String(
   contextPacket.paperId || paper.id || paper.absLink || paper.link || ""
 ).trim();
 
+const EVIDENCE_REPAIR_FIELDS = new Set([
+  "problem",
+  "method",
+  "systemDesign",
+  "experiments",
+  "results",
+  "limitations",
+  "affiliations"
+]);
+
 const evidenceSections = (contextPacket = {}) => (
   Array.isArray(contextPacket.inputSections)
     ? contextPacket.inputSections.map((section) => ({
@@ -151,6 +161,7 @@ const evidenceRepairIssue = (itemIssue) => {
 export const buildEvidenceRepairPrompt = ({
   paper,
   contextPacket,
+  repairTargets = {},
   issues = []
 } = {}) => JSON.stringify({
   ...baseEvidencePayload({
@@ -159,6 +170,14 @@ export const buildEvidenceRepairPrompt = ({
     contextPacket
   }),
   repairInstruction: "Regenerate the complete Evidence response for this paper. Fix the listed validation classes while preserving every required field in completenessContract. Do not omit a field merely because its path is not listed. Recheck exact excerpt substrings, section headings, numeric grounding, evidenceRefs, and every Value Signal dimension before returning.",
+  repairTargets: {
+    mode: String(repairTargets?.mode || "full_response"),
+    evidenceFields: [...new Set((Array.isArray(repairTargets?.evidenceFields)
+      ? repairTargets.evidenceFields
+      : []).map(String).filter((field) => EVIDENCE_REPAIR_FIELDS.has(field)))],
+    rebuildValueSignals: Boolean(repairTargets?.rebuildValueSignals)
+  },
+  serverMergePolicy: "Only fields named in repairTargets.evidenceFields and valueSignals when rebuildValueSignals is true may replace the retained normalized artifacts. Changes outside that scope are ignored. The merged complete artifacts are then fully revalidated.",
   issues: (Array.isArray(issues) ? issues : []).slice(0, 30).map(evidenceRepairIssue)
 });
 
@@ -605,6 +624,9 @@ const WRITING_REPAIR_HINTS = Object.freeze({
   duplicate_grounding_limitations: "Merge the repeated exact-evidence-linking limitation into one bullet and add a different supported scope, cohort, data, seed, comparison, or missing-validation boundary.",
   encounter_day_metric_scope: "Keep Encounter win rates separate from Day clear counts. Rewrite the affected statement to name the two measures independently: write Encounter: win rate; Day: cleared-day count. Do not describe Day or cross-day outcomes as win-rate differences unless the cited Day excerpt directly reports win rate.",
   track_scoped_model_count: "Attach a model count only to the track that supplied it. If the count comes from Encounter, keep Encounter in the same clause and do not attach that count to Day or to the whole paper.",
+  neutral_direct_statement: "Rewrite this path as a direct neutral statement: state the supported scope and metric directly. Do not use 不等于、不等同于、而非、并非……而是、揭示 or promotional wording. Do not replace one forbidden contrast with another. If distinguishing two concepts, write two separate factual sentences with their own supported names.",
+  preserve_metric_name: "Preserve the exact supported metric name. Use score, value F1, or grounding F1 as supplied; do not write accuracy/准确率 unless a cited Evidence excerpt explicitly uses accuracy for that claim.",
+  performance_result_as_limitation: "Replace the repeated performance result with a supported study boundary such as evaluation scope, excluded comparison, data coverage, model/price time point, seed, or missing validation. A low or zero score and a system not returning evidence by default are results, not a second limitation by themselves.",
   single_paper_head_tail_repetition: "For a one-paper report, keep reportIntroduction to the problem and reading entry, keep the single-paper observation to one useful result and one evidence boundary, and keep closingSummary to a distinct final reading focus. Choose a different supplied reading dimension for closingSummary, such as an evidence boundary or final verification priority. Do not preserve or lightly paraphrase any long phrase from paperDraft recommendedFocus; changing only the tail of that sentence is insufficient."
 });
 
@@ -650,6 +672,25 @@ export const buildEditorialPlanRepairPrompt = ({
   repairInstruction: "Regenerate the complete Editorial Plan and correct only the listed validation classes.",
   issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
     .map((itemIssue) => writingRepairIssue(itemIssue, "editorial_plan_validation_failed"))
+});
+
+export const buildEditorialPlanResponseRepairPrompt = ({
+  selectedItems = [],
+  issues = [],
+  responseIssues = []
+} = {}) => JSON.stringify({
+  ...baseEditorialPlanPayload({
+    task: "weekly_report_editorial_plan_response_repair",
+    selectedItems
+  }),
+  repairInstruction: "Regenerate the complete Editorial Plan with valid JSON and schema. Preserve the original content-repair scope when issues are present; do not introduce a second or broader content repair. Do not reproduce or depend on the prior malformed raw response.",
+  issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
+    .map((itemIssue) => writingRepairIssue(itemIssue, "editorial_plan_validation_failed")),
+  responseValidationIssues: (Array.isArray(responseIssues) ? responseIssues : []).slice(0, 40)
+    .map((itemIssue) => ({
+      code: String(itemIssue?.code || "editorial_plan_response_invalid"),
+      path: String(itemIssue?.path || "response")
+    }))
 });
 
 const paperSectionEvidence = evidenceExcerptPayload;
@@ -743,6 +784,22 @@ export const buildPaperSectionRepairPrompt = ({ item, issues = [] } = {}) => JSO
   repairInstruction: "Regenerate the complete paperDraft and correct only the listed validation classes. Revalidate every field in the regenerated draft, not only the listed paths. For every exact number, cite all Evidence refs needed to support that number in the same text field or remove the number. Do not move an unsupported number to another field. Keep citations only in evidenceRefs arrays; never insert [field:index] or field:index into text.",
   issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
     .map((itemIssue) => writingRepairIssue(itemIssue, "paper_section_validation_failed"))
+});
+
+export const buildPaperSectionResponseRepairPrompt = ({
+  item,
+  issues = [],
+  responseIssues = []
+} = {}) => JSON.stringify({
+  ...basePaperSectionPayload({ task: "weekly_report_write_paper_section_response_repair", item }),
+  repairInstruction: "Regenerate the complete paperDraft with valid JSON and schema. Preserve the original content-repair scope when issues are present; do not introduce a second or broader content repair. Revalidate the complete result and do not reproduce or depend on the prior malformed raw response.",
+  issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
+    .map((itemIssue) => writingRepairIssue(itemIssue, "paper_section_validation_failed")),
+  responseValidationIssues: (Array.isArray(responseIssues) ? responseIssues : []).slice(0, 40)
+    .map((itemIssue) => ({
+      code: String(itemIssue?.code || "paper_section_response_invalid"),
+      path: String(itemIssue?.path || "response")
+    }))
 });
 
 const paperSemanticQaChecks = {
@@ -995,6 +1052,22 @@ export const buildHeadTailRepairPrompt = ({ issues = [], ...options } = {}) => J
   repairInstruction: "Regenerate the complete headTailDraft and correct only the listed validation classes. Count titleAngle by Unicode characters before returning and keep it within the explicit publicationConstraints range.",
   issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
     .map((itemIssue) => writingRepairIssue(itemIssue, "head_tail_validation_failed"))
+});
+
+export const buildHeadTailResponseRepairPrompt = ({
+  issues = [],
+  responseIssues = [],
+  ...options
+} = {}) => JSON.stringify({
+  ...baseHeadTailPayload({ task: "weekly_report_write_head_tail_response_repair", ...options }),
+  repairInstruction: "Regenerate the complete headTailDraft with valid JSON and schema. Preserve the original content-repair scope when issues are present; do not introduce a second or broader content repair. Revalidate the complete result and do not reproduce or depend on the prior malformed raw response.",
+  issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
+    .map((itemIssue) => writingRepairIssue(itemIssue, "head_tail_validation_failed")),
+  responseValidationIssues: (Array.isArray(responseIssues) ? responseIssues : []).slice(0, 40)
+    .map((itemIssue) => ({
+      code: String(itemIssue?.code || "head_tail_response_invalid"),
+      path: String(itemIssue?.path || "response")
+    }))
 });
 
 const reportSemanticQaChecks = {

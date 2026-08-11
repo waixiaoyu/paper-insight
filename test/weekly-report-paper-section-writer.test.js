@@ -689,6 +689,21 @@ test("Paper Section keeps negative results scoped to evaluated systems", () => {
   assert.equal(qualifiedValidation.issues.some((entry) => entry.code === "model_cohort_scope_overgeneralized"), false);
 });
 
+test("Paper Section keeps a best-overall F1 threshold scoped to evaluated systems", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.results.sources[0].excerpt = "Even the best overall word-level grounding F1 remains below 50%.";
+  const draft = validDraft();
+  draft.oneSentenceTakeaway = grounded(
+    "现有系统的词级证据定位 F1 仍低于 50%。",
+    ["results:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => entry.code === "model_cohort_scope_overgeneralized"), true);
+});
+
 test("Paper Section does not generalize a commercial-VLM long-document result to current systems", () => {
   const scopedItem = structuredClone(item);
   scopedItem.evidenceCard.results.sources[0].excerpt = "On long documents the commercial VLMs fall below 40%, while Claude Code Opus 4.8 and Reducto Deep Extract remain close to their short-document scores.";
@@ -773,6 +788,26 @@ test("Paper Section limitations must state a study boundary instead of restating
 
   assert.equal(validation.valid, false);
   assert.equal(validation.issues.some((entry) => entry.code === "limitation_not_study_boundary"), true);
+});
+
+test("Paper Section does not count a default zero-grounding result as a study limitation", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.limitations.sources[1] = source(
+    "S5",
+    "5 Limitations",
+    "VLMs and coding agents do not return evidence by default; they therefore score zero at both grounding levels."
+  );
+  const draft = validDraft();
+  draft.limitationsAndConstraints[1] = grounded(
+    "VLM 和编码代理默认不返回证据，因此它们在两个证据定位级别上的得分均为零。",
+    ["limitations:1"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, false);
+  const validationIssue = validation.issues.find((entry) => entry.code === "limitation_not_study_boundary");
+  assert.deepEqual(validationIssue?.repairKinds, ["performance_result_as_limitation"]);
 });
 
 test("Paper Section rejects the unnatural phrase 自主决策网络", () => {
@@ -865,6 +900,38 @@ test("Paper Section Writer gets one structured repair without carrying its prior
   assert.doesNotMatch(JSON.stringify(prompts[1]), /SECRET_PRIOR_RAW_RESPONSE/);
 });
 
+test("Paper Section Writer gets one response-format repair after a malformed content repair", async () => {
+  const invalid = validDraft();
+  invalid.adnInsight.text = "该结果揭示了系统差异。";
+  const prompts = [];
+  const result = await runPaperSectionWriter({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      prompts.push(payload);
+      if (payload.task === "weekly_report_write_paper_section") {
+        return invalid;
+      }
+      if (payload.task === "weekly_report_write_paper_section_repair") {
+        return '{"paperId":"2607.60001","SECRET_MALFORMED_RAW"';
+      }
+      return validDraft();
+    }
+  });
+
+  assert.equal(result.repairAttempted, true);
+  assert.equal(result.responseRepairAttempted, true);
+  assert.deepEqual(prompts.map((payload) => payload.task), [
+    "weekly_report_write_paper_section",
+    "weekly_report_write_paper_section_repair",
+    "weekly_report_write_paper_section_response_repair"
+  ]);
+  assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
+  assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
+  assert.doesNotMatch(JSON.stringify(prompts[2]), /SECRET_MALFORMED_RAW/);
+});
+
 test("Paper Section Writer network failure retries once", async () => {
   let calls = 0;
   const result = await runPaperSectionWriter({
@@ -919,7 +986,9 @@ test("Paper Section repair prompt includes issue paths but never issue details",
         "encounter_day_translation",
         "duplicate_grounding_limitations",
         "encounter_day_metric_scope",
-        "track_scoped_model_count"
+        "track_scoped_model_count",
+        "preserve_metric_name",
+        "performance_result_as_limitation"
       ]
     }]
   });
@@ -938,6 +1007,8 @@ test("Paper Section repair prompt includes issue paths but never issue details",
   assert.match(prompt, /Keep Encounter win rates separate from Day clear counts/i);
   assert.match(prompt, /write Encounter: win rate; Day: cleared-day count/i);
   assert.match(prompt, /Attach a model count only to the track that supplied it/i);
+  assert.match(prompt, /Preserve the exact supported metric name/i);
+  assert.match(prompt, /low or zero score.*not a second limitation/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
 });
 

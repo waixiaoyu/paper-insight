@@ -564,11 +564,17 @@ problem、method、systemDesign、experiments、results、limitations 使用相�
 - section 和 anchor 必须存在于解析后的章节结构。
 - 精确数字必须同时存在于绑定 excerpt 中。
 - `F1`、`V4` 等由拉丁字母直接前缀的指标或版本标识不拆成独立数字；完整标识及其事实含义仍由 Evidence 复核和后续语义 QA 检查。
+- 唯一一次 Evidence 修正后若只剩未绑定数字，服务端只能删除包含这些数字的句子，保留其余已验证的论文内容；不得用“数字已省略”“未完全落入摘录”等内部处理说明替换 summary。
+- 删除后仍有论文内容时保留原字段状态和来源；若该 summary 已无可保留内容，则将字段标记为 insufficient，使用简短证据边界说明并清空 sources，同时删除引用该字段的 Value Signal。处理完成后重新执行完整 Evidence 校验，仍不合格则排除该论文。
 - affiliations 只能绑定论文作者/机构 metadata 区块；正文、附录、引用、致谢、受测产品、供应商或客户名称不能作为作者单位线索。metadata 不足时返回 not_present，不能从产品关系推断机构。
 - results summary 必须保留受测对象和反例范围。例如原文只报告商业 VLM 在长文档上退化、同时列出保持接近短文档表现的点名抽取系统时，不能概括为“多数/现有系统”普遍退化。summary 同时提到商业 VLM 和长文档结果时，当前 results.sources 中至少一个绑定摘录必须明确出现这两个范围对象，不能用同字段内其他结果摘录替代。
 - 找不到依据时返回 not_present 或 insufficient，不能补写。
 - 摘录匹配失败或必填证据缺失时，Evidence Agent 获得一次定向修正机会。
 - Evidence 修正只接收当前原文、issue code/path 和服务端安全提示，不携带上次原始响应。安全提示按问题类型明确要求：非逐字摘录改用更短的同区块连续原文；未解析指代补连续先行句或换自包含摘录；未绑定数字删除或绑定含同一 token 的摘录且不得移到其他字段；problem 使用直接问题句；商业 VLM 长文档结论补齐同时包含两个范围的结果摘录。
+- Evidence 定向修正采用服务端字段级合并：初稿中已通过校验的 evidenceCard 字段由服务端保留，模型修正响应只有 `repairTargets.evidenceFields` 指定的字段可以替换；响应对其他 Evidence 字段的修改一律忽略。
+- 任一 Evidence 字段被修正时，valueSignals 必须基于合并后的 Evidence 整体重新生成；仅 valueSignals 被 Review 指出问题时，只替换 valueSignals。合并完成后仍对完整 evidenceCard 和 valueSignals 执行全部校验，不能只校验修正字段。
+- 初稿无法规范化，或问题属于 JSON、Schema、paperId/响应标识等完整响应级错误时，修正回退为完整响应替换；该回退不降低验证门，也不增加第二次修正机会。
+- Review 触发的 Evidence 修正使用相同的字段级合并规则。每次 Trace 必须记录 repairScope、目标 Evidence 字段、是否重建 valueSignals，以及完整合并后校验结果。
 - 一次修正后仍不合格，排除并增补。
 
 ### 8.3 valueSignals
@@ -768,7 +774,7 @@ paperDraft 质量门：
 - 精确数字必须存在于该正文单元绑定的原文摘录中。
 - 数字提取不得把 `F1`、`V4` 等由拉丁字母直接前缀的指标或版本标识拆成独立精确数字；该规则必须同时用于 Paper Section、Editorial Plan 和 Head/Tail。
 - 数字归一化支持英文 `zero`–`twelve` 与阿拉伯数字的直接等价，以及英文月份与中文数字月份的日期等价；不做任意语义换算。
-- limitationsAndConstraints 至少两条，并分别绑定证据；性能下降或任务失败是实验结果，不自动构成独立研究局限，两条限制必须分别描述范围、数据、场景、种子、对手、模型版本、比较设置、缺失验证或适用边界。
+- limitationsAndConstraints 至少两条，并分别绑定证据；性能下降、低分/零分、任务失败或受测系统默认不返回证据属于实验设置或结果，不自动构成独立研究局限。若要作为约束，必须进一步陈述由摘录直接支持的评估边界；两条限制必须分别描述范围、数据、场景、种子、对手、模型版本/价格时间点、比较设置、排除对象、缺失验证或适用边界。
 - 两条限制必须在语义上独立；不得把同一个 word-level grounding/精确证据关联问题拆成两条并重复引用同一 Evidence。第二条应从受测对象、数据、种子、比较设置、任务范围或缺失验证中选择另一受支持边界。
 - 精确模型数量必须与其 cohort/track 限定保留在同一子句；例如原文只说明 Encounter 赛道评估五个模型时，不能概括为整篇实验使用五个模型版本；`该赛道/本赛道/this track` 等指向紧邻已命名赛道的明确回指可以接受。
 - 单一 track 的模型数量不能同时挂到 Encounter 与 Day；零结果也必须保留测量对象，例如 Day 结果中的 `clears none` 只能写成未通过任何 Day 场景，不能写成未通过任何赛道。
@@ -780,8 +786,8 @@ paperDraft 质量门：
 - 不使用无明确结果边界的“有效解决”“有效方法”“有效暴露”“有效测试”；改为陈述具体测量结果、对比对象和适用范围。
 - “并不等同于”与“X 不等于 Y”按相同修辞式对比处理，不用于发布稿；改为直接陈述各场景的测量、结果与边界。
 - 保留指标和术语：F1 不改写为准确率，`scanned forms` 写为“扫描表单”；绑定摘录只描述其他基准缺少某能力时，不能反推当前方法具备该能力。
-- 百分比标为准确率时，实际包含该百分比的绑定摘录也必须明确给出 accuracy 指标；不能借用同字段其他数字的指标名称。
-- 点名模型、最佳系统或特定评估对象的负面结果不得推广为“现有前沿模型”整体结论，必须保留“所评估方法”“部分模型”或具体名称。
+- 发布字段只要使用“准确率/accuracy”，其当前绑定摘录就必须明确给出 accuracy 指标，不以句中是否包含百分比为前提；score、value F1 和 grounding F1 均不能改写为准确率，也不能借用同字段其他数字的指标名称。
+- 点名模型、最佳系统或特定评估对象的负面结果不得推广为“现有前沿模型/现有系统”整体结论，必须保留“所评估方法”“部分模型”或具体名称。“得分/分数/F1 低于或降至某阈值以下”同样属于需要保留 cohort 的负面结果。
 - 商业 VLM 的长文档退化不能扩大为当前或多数系统的共同弱点；若 Evidence 同时列出保持接近短文档表现的点名抽取系统，正文必须保留该对象限定或反例。
 - “参与测试的模型”“接受测试的系统”属于有效评估对象限定，修正后不应因限定词同义表达产生误报。
 - 本次评测最高值不能写成内在“上限/ceiling”，除非原文明确给出上界；应写为“本次评测的最高值”。
@@ -828,7 +834,7 @@ Editorial Agent 在逐篇 paperDraft 完成后执行第二次独立调用，生�
 - 只读取已校验 editorialPlan 和 paperDraft 的精简读者价值字段，不读取多篇原文或 Evidence 摘录。
 - trendJudgments 和 singlePaperObservations 必须逐项映射回 editorialPlan，模型不能增加、删除或把单篇观察提升为周趋势。
 - 当 editorialPlan 对某个集合明确期望零项时，模型省略该集合可由服务端规范化为空数组；只要计划期望非空条目，缺失、非数组、少项或乱序仍必须拒绝。
-- 只有一篇论文入选时，Head/Tail 的三个读者字段必须分工：reportIntroduction 只说明问题和阅读入口，singlePaperObservations 只保留一个最有用的结果及一个证据边界，closingSummary 只给不同于逐篇 recommendedFocus 的最终阅读重点，不重复方法、结果或逐篇阅读建议。服务端忽略空白和标点后，若任意两类字段，或 closingSummary 与该篇 recommendedFocus，共享至少 24 个连续字符且该片段至少包含 8 个汉字，则进入一次安全定向修正；修正必须改选另一个已提供的阅读维度，不能只替换原句尾部。长英文论文、系统或模型标识符本身不算重复内容。该确定性规则不用于多篇周报。
+- 只有一篇论文入选时，Head/Tail 的三个读者字段必须分工：reportIntroduction 只说明问题和阅读入口，singlePaperObservations 只保留一个最有用的结果及一个证据边界，closingSummary 只给不同于逐篇 recommendedFocus 的最终阅读重点，不重复方法、结果或逐篇阅读建议。服务端忽略空白和标点后，若任意两类字段，或 closingSummary 与该篇 recommendedFocus，共享至少 24 个连续字符且该片段至少包含 8 个汉字，则进入一次安全定向修正。closingSummary 与 recommendedFocus 还需在移除英文技术标识符后比较中文二元字符；两侧至少各有 20 个汉字且较短一侧重合率达到 55% 时，同样视为轻度改写重复。修正必须改选另一个已提供的阅读维度，不能只替换原句尾部或替换少量同义词。长英文论文、系统或模型标识符本身不算重复内容。该确定性规则不用于多篇周报。
 - readingOrder 必须保持 Selection 的确定性顺序。
 - 标题观点必须具体，拒绝“新范式”“值得关注”“加速落地”等泛化套话。
 - 标题观点必须是独立的技术判断，不以入选论文、基准或产品名加冒号开头。
@@ -968,6 +974,8 @@ Selection 由服务端确定性执行。
 
 ### 9.8 editorial_plan
 
+`editorial_plan`、`write_paper_sections` 和 `write_head_tail` 的内容修正与响应格式纠正分开计数。初次生成或唯一内容修正若只剩 `invalid_json` 或顶层 `schema_invalid`，允许一次响应格式纠正；它不产生第二次内容修正。格式纠正 prompt 不携带畸形原始响应；若正在纠正内容修正的响应，必须继续携带原 content issues 和同一修正范围。返回完整 artifact 后重新执行全部 Schema、Evidence、范围、数字和文风校验。调用、耗时、response issues、attemptType 和 `responseRepairAttempted` 全部写入 Trace；格式纠正后仍无效则 reject。
+
 - 使用最终 selectedPapers 和结构化 artifacts。
 - 模型的事实输入只包含带 ref 的原文 Evidence 短摘录；不发送 Evidence summary、Value Signal 事实文本、Review 理由或 Calibration 理由，避免编辑提示进入发布事实。
 - 生成 coreTheme、trends 和 readingOrder。
@@ -978,6 +986,7 @@ Selection 由服务端确定性执行。
 - 保留来源限定词和概念边界，例如 `resource budgeting` 只能写为“资源预算”；具体系统设置没有直接摘录时必须删除或改为摘录实际支持的表述。
 - 每篇最多生成一条 singlePaperObservation，把该论文最重要的单篇发现和一个实质证据边界合并，不能用多条重复论文标题和正文。
 - caveat 描述当前实验、数据、模型、指标或适用范围，不写“不排除未来改进”等泛化可能性。
+- Editorial Plan、Paper Section 和 Head/Tail 若命中修辞式或推广式表达，唯一修正必须改成直接的事实陈述。不得在“不等于”“不等同于”“而非”“并非……而是”“揭示”等禁用表达之间互相替换；需要区分两个概念时，拆成两句并分别保留其受支持的对象范围、指标名称和 Evidence 边界。
 - 服务端先校验计划，再允许写头尾。
 
 ### 9.9 write_paper_sections
