@@ -81,6 +81,10 @@
 | 2026-08-10 04:09–04:11 | `weekly-report-trace-c0313624-78a0-4675-b4a6-abf9ac4e5bfe` | publish（人工不通过） | 一篇 ExtractBench 通过自动门并完整进入两层语义 QA；本轮 Editorial Plan 初稿合法，未实际触发 GRAY-081，只确认新增状态机不影响正常流程。人工终审发现：结语把长文档“得分/value F1”写成“准确率”；一句话介绍把受测集合的最佳 grounding F1 低于 50% 写成“现有系统”普遍结论；逐篇稿把默认不返回证据和 grounding 得分为零的系统结果当成第二条研究局限；结语又语义复述 recommendedFocus。分别转 GRAY-082 至 GRAY-085，本轮不计为人工验收通过。 |
 | 2026-08-10 07:37 | `weekly-report-trace-4373ee5d-7871-40cc-8f20-d5095ec0539f` | reject（环境无效） | 本地原文缓存超过默认 7 天有效期，实时 arXiv 请求暂时不可用，任务在 prepare_context 阶段以 `original_text_unavailable` 排除论文且未调用模型。该运行只验证原文不可用时 fail closed，不作为内容质量复验。 |
 | 2026-08-10 07:41–07:43 | `weekly-report-trace-2e82e556-54c9-43da-b731-b94825c121c6` | reject | 使用已核验的 ExtractBench arXiv HTML 缓存完成有效灰度。Evidence 初稿及唯一修正存在未绑定数字；数字清理兜底将 method/results summary 整段替换为内部处理说明，虽然数字门通过，但 Review 正确判定这些内容不是论文事实并发起定向修正。修正再次生成未绑定的 `95.6%` 和 `8.1`，论文被排除。内部说明污染 Evidence 的问题转 GRAY-086。 |
+| 2026-08-11 02:27–02:29 | `weekly-report-trace-0b1ba77c-b527-4bb2-9013-c52f0910722e` | reject | ExtractBench 初次 Evidence 响应为残缺 JSON，现有完整响应修正恢复了结构；修正稿的 results summary 把商业 VLM 的长文档结论绑定到两条分别只包含 cohort 或长文档范围的摘录，没有任何单条摘录同时支持完整结论，GRAY-076 正确拒绝。格式恢复后完整内容门仍生效的回归用例已补充。本轮未触发数字清理，因此 GRAY-086 仍待真实复核。 |
+| 2026-08-11 02:33–02:34 | `weekly-report-trace-6a1113fc-877d-4e31-b89a-65fdf9202b5a` | reject | 加载 GRAY-087 后复验 ExtractBench：初稿 results 使用分别只覆盖具体模型或长文档结果的摘录，逐摘录范围门正确触发修正；修正稿改用一条同时写明商业 VLM 与长文档结果的原文摘录，该问题通过。修正稿的 experiments 摘录仍不是原文逐字子串，既有 GRAY-002 正确排除论文。本轮未触发数字清理，GRAY-086 仍待真实复核。 |
+| 2026-08-11 13:15–13:16 | `weekly-report-trace-6c67264c-f5e7-4e3b-a867-78f0597668af` | reject | 换用有已核验全文缓存且历史上能进入完整写作链的 LEMUR 单篇复验。Evidence 初稿将结果原句的现在时 `tracks` 改成 `tracked`，唯一修正仍保留该非逐字摘录，既有 GRAY-002 正确排除论文。没有新增防护缺口，未进入 Review 和写作。 |
+| 2026-08-11 13:18–13:19 | `weekly-report-trace-c366ecdb-efb2-46ea-9b2d-1dff4a47d118` | reject | 换用 DungeonBench 单篇复验。Evidence 初稿只剩 systemDesign、experiments、results 和 Value Signal 的未绑定数字；字段级修正响应中第四个 Value Signal 缺少 `claim` 与 `evidenceRefs`，Schema 校验 fail closed，未执行后续数字清理。该结构残缺反例已加入回归；Evidence 内容修正是否增加独立响应格式纠正转 GRAY-088，当前不增加修正次数。 |
 
 ## 问题与防护网
 
@@ -172,6 +176,8 @@
 | GRAY-084 | 逐篇稿把“VLM 和编码代理默认不返回证据，因此 grounding 得分为零”列为第二条“局限与适用约束”。这是受测系统的默认输出行为和测量结果，不是独立的研究设计、数据、比较或适用范围边界。 | `limitationsAndConstraints` 将系统低分、零分、低于阈值或默认不返回证据识别为结果复述；没有同时陈述实质研究边界时触发 `limitation_not_study_boundary`。定向修正要求从评估范围、排除比较、数据覆盖、模型/价格时间点、种子或缺失验证中选择有 Evidence 的边界。真实零 grounding 反例与 repair hint 有回归用例。 | 已增强防护，待真实复核 |
 | GRAY-085 | 单篇周报 closingSummary 与 paperDraft.recommendedFocus 都建议关注“长文档表现差异”和“词级证据定位测量”，但通过替换“处理上/条件下”“表现差异/衰减幅度”等词避开了 24 个连续字符重复门。 | 单篇 Head/Tail 除连续字符窗口外，对 closingSummary 与 recommendedFocus 增加去除英文技术标识符后的中文二元字符重合检查；两侧至少各有 20 个汉字且较短一侧重合率达到 55% 时视为轻度改写重复。长英文系统名重复仍不触发；真实语义复述反例、不同阅读维度正例和既有 repair hint 均有回归用例。 | 已增强防护，待真实复核 |
 | GRAY-086 | Evidence 唯一修正后只剩未绑定数字时，旧的确定性清理会把整个 summary 替换成 `Exact numeric details were omitted...`。该文本描述内部处理过程，不是论文内容，却以 supported Evidence 进入 Review。 | 数字清理只删除包含未绑定数字的句子并保留其余已验证论文内容；若整段均不可保留，则把字段标记为 insufficient、清空 sources，并删除引用该字段的 Value Signal。禁止生成“数字已省略/未完全落入摘录”等内部处理说明；两类路径均有回归用例。 | 已加防护，待真实复核 |
+| GRAY-087 | GRAY-076 的实现曾把 results 字段的全部摘录拼接后检查商业 VLM 与长文档范围，允许一条摘录只写 cohort、另一条只写长文档，组合形成任何单条原文都没有直接支持的完整结论。 | `commercial_vlm_long_document_source_missing` 改为逐条检查：results summary 同时声称商业 VLM 与长文档结果时，至少一条绑定摘录必须同时包含这两个范围，不能跨摘录拼接。格式恢复后的分散摘录反例已加入 Evidence 集成回归。 | 已加防护，待真实复核 |
+| GRAY-088 | DungeonBench 的 Evidence 内容修正已经针对未绑定数字重建目标字段，但返回的一个 Value Signal 缺少 `claim` 与 `evidenceRefs`。当前 Evidence 的唯一修正同时承担内容和响应结构纠正，不像 Editorial Plan、Paper Section、Head/Tail 那样允许独立响应格式纠正，因此任务直接 reject。 | 现有行为继续 fail closed，并增加“残缺修正响应不能进入数字清理或被接受”的回归用例。是否把不增加内容修正次数的独立 response-format repair 扩展到 Evidence，需要先更新规格后再实现。 | 待决策 |
 
 ## 下一轮进入条件
 

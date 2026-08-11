@@ -1,0 +1,25 @@
+{
+  "reportKey": "2026-07-w5-real-gray-lemur",
+  "date": "2026-07-31",
+  "month": "2026-07",
+  "weekOfMonth": 5,
+  "weekStart": "2026-07-26T16:00:00.000Z",
+  "weekEnd": "2026-08-02T16:00:00.000Z",
+  "sourceReport": "2026 年 7 月第 5 周 LEMUR 单篇聚焦灰度",
+  "reviewScoreThreshold": 70,
+  "minSelectedCount": 1,
+  "maxSelectedCount": 3,
+  "paperConcurrency": 1,
+  "calibrationMaxPapers": 30,
+  "primaryPapers": [
+    {
+      "id": "2607.29559",
+      "title": "LEMUR: Learning to Align with Multi-Objective Reinforcement Learning from Preference Feedback",
+      "absLink": "https://arxiv.org/abs/2607.29559",
+      "link": "https://arxiv.org/pdf/2607.29559",
+      "published": "2026-07-31T15:50:29.000Z"
+    }
+  ],
+  "reservePapers": [],
+  "useOriginalText": true
+}

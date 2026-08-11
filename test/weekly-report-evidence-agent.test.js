@@ -356,6 +356,77 @@ test("伪造摘录触发一次定向修正，修正 prompt 仍只读取当前论
   assert.deepEqual(callRecords[1].validation.repairScope.evidenceFields, ["method"]);
 });
 
+test("malformed initial Evidence is repaired once and the recovered content still passes every evidence guard", async () => {
+  const contextPacket = contextPacketFor();
+  contextPacket.inputSections[4].text += " Commercial VLMs show weaker results. Long documents remain a separate challenge.";
+  const repairedResponse = validResponseFor();
+  repairedResponse.evidenceCard.results = {
+    summary: "Commercial VLMs show weaker results on long documents.",
+    status: "supported",
+    sources: [
+      source("S4", "4 Results and Discussion", "Commercial VLMs show weaker results."),
+      source("S4", "4 Results and Discussion", "Long documents remain a separate challenge.")
+    ]
+  };
+  repairedResponse.valueSignals.signals[1] = {
+    ...repairedResponse.valueSignals.signals[1],
+    claim: "Commercial VLM performance requires separate long-document verification.",
+    evidenceRefs: ["results:0", "results:1"]
+  };
+  const prompts = [];
+  let calls = 0;
+
+  await assert.rejects(
+    () => runEvidenceAgent({
+      paper: { id: "2607.11111" },
+      contextPacket,
+      callModel: async (prompt) => {
+        calls += 1;
+        prompts.push(JSON.parse(prompt));
+        return calls === 1 ? "{\"evidenceCard\":" : repairedResponse;
+      }
+    }),
+    (error) => (
+      error instanceof EvidenceAgentError
+      && error.code === "READING_LIST_EVIDENCE_UNSUPPORTED"
+      && error.issues.some((entry) => entry.code === "commercial_vlm_long_document_source_missing")
+    )
+  );
+
+  assert.equal(calls, 2);
+  assert.equal(prompts[1].task, "weekly_report_extract_evidence_repair");
+  assert.equal(prompts[1].repairTargets.mode, "full_response");
+  assert.equal(prompts[1].issues.some((entry) => entry.code === "invalid_json"), true);
+});
+
+test("a schema-incomplete Evidence content repair fails closed instead of reaching numeric sanitization", async () => {
+  const initial = validResponseFor();
+  initial.evidenceCard.results.summary = "Unsafe actions are reduced by 42%.";
+  const malformedRepair = validResponseFor();
+  delete malformedRepair.valueSignals.signals[1].claim;
+  let calls = 0;
+
+  await assert.rejects(
+    () => runEvidenceAgent({
+      paper: { id: "2607.11111" },
+      contextPacket: contextPacketFor(),
+      callModel: async () => {
+        calls += 1;
+        return calls === 1 ? initial : malformedRepair;
+      }
+    }),
+    (error) => (
+      error instanceof EvidenceAgentError
+      && error.code === "READING_LIST_EVIDENCE_UNSUPPORTED"
+      && error.issues.some((entry) => (
+        entry.code === "invalid_json" && /requires claim and evidenceRefs/.test(entry.detail)
+      ))
+    )
+  );
+
+  assert.equal(calls, 2);
+});
+
 test("Review-requested Evidence repair preserves fields outside the challenged scope", async () => {
   const currentArtifacts = validResponseFor();
   const repairedResponse = validResponseFor();

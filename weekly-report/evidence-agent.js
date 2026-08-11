@@ -160,10 +160,12 @@ const validateResultCohortScope = ({ summary, sourceText, issues }) => {
   ));
 };
 
-const validateCommercialVlmLongDocumentSource = ({ summary, sourceText, issues }) => {
+const validateCommercialVlmLongDocumentSource = ({ summary, sourceTexts, issues }) => {
   if (!COMMERCIAL_VLM_PATTERN.test(summary)
     || !LONG_DOCUMENT_PATTERN.test(summary)
-    || (COMMERCIAL_VLM_PATTERN.test(sourceText) && LONG_DOCUMENT_PATTERN.test(sourceText))) {
+    || sourceTexts.some((sourceText) => (
+      COMMERCIAL_VLM_PATTERN.test(sourceText) && LONG_DOCUMENT_PATTERN.test(sourceText)
+    ))) {
     return;
   }
   issues.push(issue(
@@ -346,7 +348,7 @@ export const validateEvidenceArtifacts = (value, {
       });
       validateCommercialVlmLongDocumentSource({
         summary: fieldValue.summary,
-        sourceText: excerpts.join(" "),
+        sourceTexts: excerpts,
         issues
       });
     }
