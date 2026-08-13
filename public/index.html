@@ -247,7 +247,7 @@
               <li data-reading-step="calibrate"><span>4</span><div><strong>横向校准</strong><em>在同批论文之间复核相对评价是否一致。</em></div></li>
               <li data-reading-step="select"><span>5</span><div><strong>确定性选稿</strong><em>按阈值、排序和保底规则确定最终篇目。</em></div></li>
               <li data-reading-step="write"><span>6</span><div><strong>策划与写作</strong><em>生成编辑计划、逐篇正文以及周报首尾内容。</em></div></li>
-              <li data-reading-step="qa"><span>7</span><div><strong>发布前 QA</strong><em>检查事实、数字和表达；必要时进行一次定向修正。</em></div></li>
+              <li data-reading-step="qa"><span>7</span><div><strong>发布前 QA</strong><em>检查事实、数字和表达；最多自动修正三次，仍不通过时等待管理员处理。</em></div></li>
               <li data-reading-step="save"><span>8</span><div><strong>发布结果</strong><em>写入发布稿，或保留拒绝原因和完整 Trace。</em></div></li>
             </ol>
             <div id="readingListSourcePanel" class="reading-list-source-panel" hidden>
@@ -290,6 +290,21 @@
             <button id="weeklyReportTraceClose" class="ghost-button" type="button">关闭</button>
           </div>
         </header>
+        <section id="weeklyReportManualReview" class="weekly-report-manual-review" aria-live="assertive" hidden>
+          <div class="weekly-report-manual-review-copy">
+            <p class="eyebrow">等待管理员决策</p>
+            <h3 id="weeklyReportManualReviewTitle">自动修正后仍未通过质量门</h3>
+            <p id="weeklyReportManualReviewSummary"></p>
+            <p id="weeklyReportManualReviewMeta" class="weekly-report-manual-review-meta"></p>
+            <ul id="weeklyReportManualReviewIssues" class="weekly-report-manual-review-issues"></ul>
+          </div>
+          <div class="weekly-report-manual-review-actions" aria-label="管理员决策">
+            <button class="primary-action" data-manual-review-action="continue_repair" type="button">继续修正一次</button>
+            <button class="secondary-action" data-manual-review-action="skip_paper" type="button">跳过这篇论文</button>
+            <button class="secondary-action" data-manual-review-action="ignore_warning" type="button">忽略告警并继续</button>
+            <button class="ghost-button warning-action" data-manual-review-action="exit_task" type="button">退出任务</button>
+          </div>
+        </section>
         <div class="weekly-report-trace-content">
           <p class="weekly-report-trace-intro">按周报的八个阶段查看任务记录。每个阶段说明其作用，并汇总该阶段的执行结果；原始 Trace 仅用于排查。</p>
           <ol id="weeklyReportTraceList" class="weekly-report-trace-list" aria-label="Agent Loop 阶段摘要"></ol>

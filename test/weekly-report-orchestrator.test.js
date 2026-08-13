@@ -934,6 +934,47 @@ test("calibrate stage persists compact cross-paper calls and calibrated artifact
   assert.doesNotMatch(calibrationCalls[0].prompt, /LONG_ORIGINAL_TEXT|BOUND_EXCERPT/);
 });
 
+test("calibrate excludes a paper skipped by the administrator before rebuilding the cohort", async () => {
+  const execution = fakeExecutionContext();
+  const buildContext = async (paper) => evidencePacketFor(paper.id);
+  const prepared = await prepareWeeklyReportJob({
+    ...inputRange,
+    minSelectedCount: 1,
+    primaryPapers: [
+      { id: "2607.17011", published: inWeek },
+      { id: "2607.17012", published: inWeek }
+    ],
+    reservePapers: []
+  }, execution.context, { buildContext });
+  const evidenced = await extractWeeklyReportEvidence(prepared, execution.context, {
+    buildContext,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => evidenceResponseFor(JSON.parse(prompt).paper.paperId)
+  });
+  const reviewed = await reviewWeeklyReportPapers(evidenced, execution.context, {
+    buildContext,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => reviewResponseFor(JSON.parse(prompt).paper.paperId)
+  });
+  const calibrated = await calibrateWeeklyReportPapers({
+    ...reviewed,
+    manualExcludedPaperIds: ["2607.17011"]
+  }, execution.context, {
+    buildContext,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      return calibrationResponseFor(payload.papers.map((paper) => paper.paperId));
+    }
+  });
+
+  assert.deepEqual(calibrated.calibratedItems.map((item) => item.paper.id), ["2607.17012"]);
+  assert.deepEqual(calibrated.manualExcludedPaperIds, ["2607.17011"]);
+  assert.equal(calibrated.warnings.some((warning) => (
+    warning.code === "READING_LIST_ADMIN_SKIPPED_PAPER" && warning.paperId === "2607.17011"
+  )), true);
+});
+
 test("Calibration unresolved paper is replaced through the full pipeline and the cohort is recalibrated", async () => {
   const execution = fakeExecutionContext();
   const contextAttempts = [];
@@ -1257,8 +1298,14 @@ test("editorial_plan validates the selected cohort and persists the complete mod
   )), true);
 });
 
-test("editorial_plan rejects the report after three structured repairs remain invalid", async () => {
-  const execution = fakeExecutionContext();
+test("editorial_plan waits after three repairs and an administrator can grant one more repair", async () => {
+  const manualReviews = [];
+  const execution = fakeExecutionContext({
+    requestManualReview: async (review) => {
+      manualReviews.push(review);
+      return { action: "continue_repair" };
+    }
+  });
   const calibratedItems = [
     calibratedItemFor("2607.19401", 88, "must_read"),
     calibratedItemFor("2607.19402", 78, "worth_reading")
@@ -1282,27 +1329,24 @@ test("editorial_plan rejects the report after three structured repairs remain in
   const invalidPlan = editorialPlanFor(selected.selectedItems);
   invalidPlan.readingOrder = [];
 
-  await assert.rejects(
-    () => planWeeklyReportEditorial(selected, execution.context, {
-      networkRetryDelayMs: 0,
-      callModel: async () => invalidPlan
-    }),
-    (error) => (
-      error.code === "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED"
-      && error.stage === "editorial_plan"
-      && error.rejectJob === true
-    )
-  );
+  let callsMade = 0;
+  const planned = await planWeeklyReportEditorial(selected, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      callsMade += 1;
+      return callsMade <= 4 ? invalidPlan : editorialPlanFor(selected.selectedItems);
+    }
+  });
   const calls = [...execution.sections.keys()]
     .filter((name) => name.startsWith("editorial-call-"));
-  assert.equal(calls.length, 4);
+  assert.equal(planned.nextStage, "write_paper_sections");
+  assert.equal(calls.length, 5);
+  assert.equal(manualReviews.length, 1);
+  assert.equal(manualReviews[0].repairAttempts, 3);
+  assert.deepEqual(manualReviews[0].allowedActions, ["continue_repair", "exit_task"]);
   assert.deepEqual(execution.events
     .filter((event) => event.type === "editorial_plan_repair_requested")
-    .map((event) => event.repairAttempt), [1, 2, 3]);
-  assert.equal(execution.events.some((event) => (
-    event.type === "reject_requested"
-    && event.stage === "editorial_plan"
-  )), true);
+    .map((event) => event.repairAttempt), [1, 2, 3, 4]);
 });
 
 test("write_paper_sections generates one isolated paperDraft per selected paper and persists every call", async () => {
@@ -1588,7 +1632,7 @@ test("assemble rejects artifact identity mismatches and records a report-level d
   )), true);
 });
 
-test("deterministic_qa routes the first failure to repair_once and rejects the same failure after repair", async () => {
+test("deterministic_qa routes failures to repair and requests manual review after three attempts", async () => {
   const makeAssembled = async (execution) => {
     const selectedItems = [
       calibratedItemFor("2607.19911", 88, "must_read"),
@@ -1654,20 +1698,19 @@ test("deterministic_qa routes the first failure to repair_once and rejects the s
   const stillInvalid = {
     ...secondAssembled,
     markdown: secondAssembled.markdown.replace("阅读价值评分：88", "阅读价值评分：99"),
-    qaReport: { repairAttempted: true }
+    qaReport: { repairAttempted: true, repairCount: 3 }
   };
-  await assert.rejects(
-    () => runWeeklyReportDeterministicQa(stillInvalid, secondExecution.context),
-    (error) => (
-      error.code === "READING_LIST_DETERMINISTIC_QA_FAILED"
-      && error.stage === "deterministic_qa"
-      && error.rejectJob === true
-    )
-  );
+  const manual = await runWeeklyReportDeterministicQa(stillInvalid, secondExecution.context);
+  assert.equal(manual.nextStage, "manual_review");
+  assert.equal(manual.manualReview.stage, "deterministic_qa");
+  assert.equal(manual.manualReview.repairAttempts, 3);
+  assert.deepEqual(manual.manualReview.allowedActions, ["continue_repair", "exit_task"]);
   assert.equal(secondExecution.events.some((event) => (
-    event.type === "reject_requested"
+    event.type === "stage_failed"
     && event.stage === "deterministic_qa"
+    && event.decision === "manual_review"
   )), true);
+  assert.equal(secondExecution.events.some((event) => event.type === "reject_requested"), false);
 });
 
 test("paper_semantic_qa reviews one paper per call, persists Trace, and continues only when all pass", async () => {
@@ -1746,8 +1789,8 @@ test("paper_semantic_qa reviews one paper per call, persists Trace, and continue
   )), true);
 });
 
-test("paper_semantic_qa routes findings to the single repair and rejects findings after it", async () => {
-  const makeInput = (execution, repairAttempted = false) => {
+test("paper_semantic_qa allows three repairs and requests manual review after exhaustion", async () => {
+  const makeInput = (execution, repairCount = 0) => {
     const paperId = "2608.19931";
     const item = calibratedItemFor(paperId, 88, "must_read");
     item.paper.title = "Paper semantic repair routing";
@@ -1780,7 +1823,8 @@ test("paper_semantic_qa routes findings to the single repair and rejects finding
         deterministicIssues: [],
         paperIssues: [],
         reportIssues: [],
-        repairAttempted
+        repairAttempted: repairCount > 0,
+        repairCount
       }
     };
   };
@@ -1816,29 +1860,101 @@ test("paper_semantic_qa routes findings to the single repair and rejects finding
     && event.stage === "paper_semantic_qa"
   )), true);
 
-  await assert.rejects(
-    () => runWeeklyReportPaperSemanticQa(
-      makeInput(firstExecution, true),
-      firstExecution.context,
-      { networkRetryDelayMs: 0, callModel: async (prompt) => issueResponse(JSON.parse(prompt).paper.paperId) }
-    ),
-    (error) => error.code === "READING_LIST_QA_REPAIR_FAILED"
-      && error.stage === "paper_semantic_qa"
-      && error.paperId === "2608.19931"
-      && error.rejectJob === true
+  const secondRepair = await runWeeklyReportPaperSemanticQa(
+    makeInput(firstExecution, 1),
+    firstExecution.context,
+    { networkRetryDelayMs: 0, callModel: async (prompt) => issueResponse(JSON.parse(prompt).paper.paperId) }
   );
-  assert.equal(firstExecution.events.some((event) => (
-    event.type === "reject_requested"
-    && event.stage === "paper_semantic_qa"
-  )), true);
+  assert.equal(secondRepair.nextStage, "repair_once");
+  const manual = await runWeeklyReportPaperSemanticQa(
+    makeInput(firstExecution, 3),
+    firstExecution.context,
+    { networkRetryDelayMs: 0, callModel: async (prompt) => issueResponse(JSON.parse(prompt).paper.paperId) }
+  );
+  assert.equal(manual.nextStage, "manual_review");
+  assert.equal(manual.manualReview.paperId, "2608.19931");
+  assert.equal(manual.manualReview.repairAttempts, 3);
+  assert.deepEqual(manual.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
   assert.equal(firstExecution.sections.has("paper-semantic-qa-call-0000"), true);
-  assert.equal(firstExecution.sections.has("paper-semantic-qa-post-repair-call-0000"), true);
+  assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-1-call-0000"), true);
+  assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-3-call-0000"), true);
   assert.equal(firstExecution.sections.has("paper-semantic-qa"), true);
-  assert.equal(firstExecution.sections.has("paper-semantic-qa-post-repair"), true);
+  assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-3"), true);
 });
 
-test("report_semantic_qa routes head-tail findings to the single repair and rejects them after it", async () => {
-  const makeInput = (repairAttempted = false) => {
+test("paper_semantic_qa artifact mismatch waits for an administrator instead of rejecting the whole report", async () => {
+  const execution = fakeExecutionContext();
+  const paperId = "2608.19932";
+  const item = calibratedItemFor(paperId, 88, "must_read");
+  item.selection = {
+    selected: true,
+    selectionReason: "threshold",
+    finalScore: 88,
+    readingTier: "must_read",
+    rank: 1
+  };
+  const result = await runWeeklyReportPaperSemanticQa({
+    nextStage: "paper_semantic_qa",
+    selectedItems: [item],
+    paperDrafts: [paperDraftFor("2608.99999")],
+    counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
+    options: { paperConcurrency: 1 },
+    warnings: [],
+    qaReport: { status: "passed", repairAttempted: false, repairCount: 0 }
+  }, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      throw new Error("Identity mismatch must fail before a model call.");
+    }
+  });
+
+  assert.equal(result.nextStage, "manual_review");
+  assert.equal(result.manualReview.paperId, paperId);
+  assert.deepEqual(result.manualReview.allowedActions, ["exit_task", "skip_paper"]);
+  assert.equal(result.manualReview.issues[0].code, "READING_LIST_PAPER_QA_FAILED");
+  assert.equal(execution.events.some((event) => (
+    event.type === "stage_failed"
+    && event.stage === "paper_semantic_qa"
+    && event.decision === "manual_review"
+  )), true);
+  assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
+});
+
+test("paper_semantic_qa malformed model responses still fail closed instead of offering skip", async () => {
+  const execution = fakeExecutionContext();
+  const paperId = "2608.19933";
+  const item = calibratedItemFor(paperId, 88, "must_read");
+  item.selection = {
+    selected: true,
+    selectionReason: "threshold",
+    finalScore: 88,
+    readingTier: "must_read",
+    rank: 1
+  };
+  await assert.rejects(
+    () => runWeeklyReportPaperSemanticQa({
+      nextStage: "paper_semantic_qa",
+      selectedItems: [item],
+      paperDrafts: [paperDraftFor(paperId)],
+      counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
+      options: { paperConcurrency: 1 },
+      warnings: [],
+      qaReport: { status: "passed", repairAttempted: false, repairCount: 0 }
+    }, execution.context, {
+      networkRetryDelayMs: 0,
+      callModel: async () => ({ paperId })
+    }),
+    (error) => error.code === "READING_LIST_PAPER_QA_FAILED"
+      && error.stage === "paper_semantic_qa"
+      && error.rejectJob === true
+  );
+  assert.equal(execution.events.some((event) => (
+    event.type === "reject_requested" && event.stage === "paper_semantic_qa"
+  )), true);
+});
+
+test("report_semantic_qa allows three repairs and requests manual review after exhaustion", async () => {
+  const makeInput = (repairCount = 0) => {
     const selectedItems = [
       calibratedItemFor("2608.19941", 88, "must_read"),
       calibratedItemFor("2608.19942", 78, "worth_reading")
@@ -1885,7 +2001,8 @@ test("report_semantic_qa routes head-tail findings to the single repair and reje
         paperIssues: [],
         reportIssues: [],
         paperSemanticResults: [],
-        repairAttempted
+        repairAttempted: repairCount > 0,
+        repairCount
       }
     };
   };
@@ -1920,28 +2037,26 @@ test("report_semantic_qa routes head-tail findings to the single repair and reje
     && event.stage === "report_semantic_qa"
   )), true);
 
-  await assert.rejects(
-    () => runWeeklyReportReportSemanticQa(
-      makeInput(true),
-      firstExecution.context,
-      { networkRetryDelayMs: 0, callModel: async () => issueResponse() }
-    ),
-    (error) => error.code === "READING_LIST_QA_REPAIR_FAILED"
-      && error.stage === "report_semantic_qa"
-      && error.rejectJob === true
+  const secondRepair = await runWeeklyReportReportSemanticQa(
+    makeInput(1),
+    firstExecution.context,
+    { networkRetryDelayMs: 0, callModel: async () => issueResponse() }
   );
-  assert.equal(firstExecution.events.some((event) => (
-    event.type === "reject_requested"
-    && event.stage === "report_semantic_qa"
-  )), true);
-  assert.equal(firstExecution.updates.some((entry) => (
-    entry.stage === "report_semantic_qa"
-    && entry.patch.warnings?.some((warning) => warning.code === "READING_LIST_QA_REPAIR_FAILED")
-  )), true);
+  assert.equal(secondRepair.nextStage, "repair_once");
+  const manual = await runWeeklyReportReportSemanticQa(
+    makeInput(3),
+    firstExecution.context,
+    { networkRetryDelayMs: 0, callModel: async () => issueResponse() }
+  );
+  assert.equal(manual.nextStage, "manual_review");
+  assert.equal(manual.manualReview.paperId, "");
+  assert.equal(manual.manualReview.repairAttempts, 3);
+  assert.deepEqual(manual.manualReview.allowedActions, ["continue_repair", "exit_task"]);
   assert.equal(firstExecution.sections.has("report-semantic-qa-call-0000"), true);
-  assert.equal(firstExecution.sections.has("report-semantic-qa-post-repair-call-0000"), true);
+  assert.equal(firstExecution.sections.has("report-semantic-qa-repair-1-call-0000"), true);
+  assert.equal(firstExecution.sections.has("report-semantic-qa-repair-3-call-0000"), true);
   assert.equal(firstExecution.sections.has("report-semantic-qa"), true);
-  assert.equal(firstExecution.sections.has("report-semantic-qa-post-repair"), true);
+  assert.equal(firstExecution.sections.has("report-semantic-qa-repair-3"), true);
 
   const unavailableExecution = fakeExecutionContext();
   await assert.rejects(
@@ -2126,6 +2241,7 @@ test("repair_once cannot be entered after the content repair opportunity was con
         paperIssues: [],
         reportIssues: [{ repairTarget: "head_tail", repairable: true }],
         repairAttempted: true,
+        repairCount: 3,
         repairResults: []
       }
     }, execution.context, { callModel: async () => ({}) }),
@@ -2137,4 +2253,41 @@ test("repair_once cannot be entered after the content repair opportunity was con
     event.type === "reject_requested"
     && event.stage === "repair_once"
   )), true);
+});
+
+test("an administrator can grant exactly one repair after the three automatic attempts", async () => {
+  const execution = fakeExecutionContext();
+  const result = await repairWeeklyReportOnce({
+    nextStage: "repair_once",
+    counts: {},
+    warnings: [],
+    qaReport: {
+      status: "repair_required",
+      deterministicIssues: [{
+        code: "published_score_mismatch",
+        path: "paper.score.2608.19951",
+        message: "Published score differs from trusted Review.",
+        severity: "high",
+        scope: "paper",
+        paperId: "2608.19951",
+        repairTarget: "assemble",
+        repairable: true
+      }],
+      paperIssues: [],
+      reportIssues: [],
+      repairAttempted: true,
+      repairCount: 3,
+      adminRepairApproved: true,
+      repairResults: []
+    }
+  }, execution.context, {
+    callModel: async () => {
+      throw new Error("Assembly-only repair must not call a model.");
+    }
+  });
+
+  assert.equal(result.nextStage, "assemble");
+  assert.equal(result.qaReport.repairCount, 4);
+  assert.equal(result.qaReport.adminRepairApproved, false);
+  assert.equal(execution.sections.has("repair-result-4"), true);
 });

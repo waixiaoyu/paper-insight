@@ -217,3 +217,86 @@ test("Job 输入只以脱敏快照进入 Trace，认证信息不写入 Job 文�
   assert.doesNotMatch(traceText, /job-file-secret|job-cookie/);
   assert.match(traceText, /\[REDACTED\]/);
 });
+
+test("manual review keeps the Job running until the administrator decides", async () => {
+  const requestingReview = deferred();
+  const { manager, traceStore } = await createHarness({
+    execute: async (_input, context) => {
+      requestingReview.resolve();
+      const decision = await context.requestManualReview({
+        stage: "paper_semantic_qa",
+        paperId: "2608.50001",
+        issues: [{ code: "unsupported_fact", reason: "The claim is unsupported." }],
+        repairAttempts: 3,
+        allowedActions: ["continue_repair", "exit_task", "skip_paper"]
+      });
+      return decision.action === "exit_task"
+        ? { state: "reject", reason: "admin_rejected" }
+        : { state: "publish", markdown: "# Unexpected" };
+    }
+  });
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W32-manual" });
+  await requestingReview.promise;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const waiting = await manager.getActive();
+
+  assert.equal(waiting.state, "running");
+  assert.equal(waiting.agentStage, "paper_semantic_qa");
+  assert.equal(waiting.manualReview.paperId, "2608.50001");
+  assert.equal(waiting.manualReview.repairAttempts, 3);
+  assert.deepEqual(waiting.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
+
+  const decided = await manager.decide(created.jobId, { action: "exit_task" });
+  const completed = await manager.waitForCompletion(created.jobId);
+  const trace = await traceStore.readTrace(created.traceId);
+
+  assert.equal(decided.state, "running");
+  assert.equal(decided.manualReview, null);
+  assert.equal(completed.state, "reject");
+  assert.equal(completed.result.reason, "admin_rejected");
+  assert.equal(trace.timeline.some((event) => event.type === "manual_review_requested"), true);
+  assert.equal(trace.timeline.some((event) => event.type === "manual_review_decided" && event.action === "exit_task"), true);
+});
+
+test("a failed decision Trace write leaves manual review visible and retryable", async () => {
+  const requestingReview = deferred();
+  const { manager, traceStore } = await createHarness({
+    execute: async (_input, context) => {
+      requestingReview.resolve();
+      const decision = await context.requestManualReview({
+        stage: "paper_semantic_qa",
+        paperId: "2608.50002",
+        issues: [{ code: "input_identity_mismatch" }],
+        repairAttempts: 0,
+        allowedActions: ["exit_task", "skip_paper"]
+      });
+      return { state: "reject", reason: decision.action === "exit_task" ? "admin_rejected" : "paper_skipped" };
+    }
+  });
+  const originalAppendTimeline = traceStore.appendTimeline.bind(traceStore);
+  let failDecisionTrace = true;
+  traceStore.appendTimeline = async (traceId, event) => {
+    if (failDecisionTrace && event?.type === "manual_review_decided") {
+      throw new Error("simulated trace write failure");
+    }
+    return originalAppendTimeline(traceId, event);
+  };
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W33-trace-retry" });
+  await requestingReview.promise;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await assert.rejects(
+    () => manager.decide(created.jobId, { action: "exit_task" }),
+    /simulated trace write failure/
+  );
+  const stillWaiting = await manager.getActive();
+  assert.equal(stillWaiting.state, "running");
+  assert.equal(stillWaiting.manualReview.paperId, "2608.50002");
+
+  failDecisionTrace = false;
+  await manager.decide(created.jobId, { action: "exit_task" });
+  const completed = await manager.waitForCompletion(created.jobId);
+  assert.equal(completed.state, "reject");
+  assert.equal(completed.result.reason, "admin_rejected");
+});

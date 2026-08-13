@@ -1092,8 +1092,8 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - 每个 issue 必须包含 code、path、message、severity、scope、paperId（适用时）、repairTarget 和 repairable。
 - 服务端拥有的评分、维度、机构、readingTier、发布元数据和 Markdown 结构问题定向到 assemble，由可信 artifacts 重新拼装，不调用 Writer。
 - 论文事实、数字、局限或跨论文串写问题定向到对应 paper_section；报告标题、导读、趋势、阅读顺序或头尾问题定向到 head_tail。
-- 首次失败返回 repair_required，记录完整 Trace 和管理员告警，任务继续进入 repair_once；这不是第三种发布状态。
-- 一次修正后仍失败返回 rejected，记录失败 Trace 并整体 reject，不允许第二次修正。
+- 可修复失败返回 repair_required，记录完整 Trace 和管理员告警，任务继续进入 repair_once；默认最多自动修正 3 次，这不是第三种发布状态。
+- 第 3 次修正后仍失败返回 manual_review 路由，Job 保持 running，等待管理员继续修正一次或退出任务；确定性阻断问题不允许忽略。
 - 输入缺失或无法执行校验时直接 reject，不能绕过质量门进入语义 QA。
 - 全部通过后才进入 paper_semantic_qa。
 
@@ -1116,9 +1116,10 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - 每个为 false 的 check 必须有对应 check-specific code 的详细 issue；缺失时视为 QA 响应契约错误，走一次响应结构修正，不得生成笼统内容问题并消耗正文 repair_once。
 - 服务端根据 checks 和 issues 计算最终 status；模型声明 pass 不能覆盖失败检查或已有 issue。
 - QA 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，并且这不消耗正文唯一一次 repair_once。
-- QA 模型调用最终不可用或响应修正后仍无效时 fail closed，整体 reject，不能跳过该论文继续发布。
+- QA 模型调用最终不可用或响应修正后仍无效时 fail closed 并整体 reject，不能把系统故障伪装成可跳过的论文问题。
+- 论文 artifacts 身份不一致时不直接发布；有明确 paperId 时进入管理员处理，只允许跳过该论文或退出任务，不能忽略阻断问题或在错误身份上继续修正。
 - 任一论文发现内容问题时，把问题定向到对应 paper_section 并进入 repair_once；不得重写其他论文或整篇报告。
-- 一次正文修正后同类问题仍存在则整体 reject，不允许第二次正文修正。
+- 内容问题默认最多自动修正 3 次；第 3 次后仍存在则进入管理员处理，可继续修正一次、跳过该论文或退出任务。
 - 每次模型调用、响应修正、逐篇结论、聚合结果、耗时和最终路由全部写入 Trace。
 - 全部论文通过后才进入 report_semantic_qa。
 
@@ -1146,14 +1147,14 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 
 - 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，也不消耗正文 repair_once。
 - 模型最终不可用或响应修正后仍无效时 fail closed，整体 reject，并在管理员告警区明确显示「报告级语义质量检查不可用」。
-- 首次发现报告级内容问题时，只定向到 head_tail 并进入唯一一次 repair_once。
-- 一次正文修正后仍有报告级问题则整体 reject，不允许第二次正文修正。
+- 发现报告级内容问题时，只定向到 head_tail 并进入 repair_once，默认最多自动修正 3 次。
+- 第 3 次正文修正后仍有报告级问题则进入管理员处理，可继续修正一次或退出任务；报告级阻断问题不能按单篇跳过，也不能忽略。
 - 全部检查通过后进入 publish，不需要经过 repair_once，也不存在第三种发布状态。
 - 模型调用、响应修正、qaResult、耗时、管理员告警和最终路由全部写入 Trace。
 
 ### 9.15 repair_once
 
-QA 发现可修复问题时允许一次修正机会：
+QA 发现可修复问题时默认允许最多 3 次自动修正：
 
 - 格式问题由服务端修正。
 - 单篇内容问题只重写相应 paperDraft。
@@ -1162,11 +1163,11 @@ QA 发现可修复问题时允许一次修正机会：
 - 修正 prompt、原始响应和差异写入 Trace。
 - 修正后重新执行相关语义 QA，并最终重新跑确定性 QA。
 
-仍不通过则 reject。
+第 3 次后仍不通过则进入管理员处理，不直接 reject。
 
 阶段边界：
 
-- repair_once 是一次性定向编排阶段，不是新的 Agent；它只调用已有 Paper Section Writer 或 Editorial Agent 的 Head/Tail 能力。
+- repair_once 是单轮定向编排阶段，不是新的 Agent；Pipeline 可以最多自动进入 3 轮，它只调用已有 Paper Section Writer 或 Editorial Agent 的 Head/Tail 能力。
 - 汇总并去重 deterministicIssues、paperIssues 和 reportIssues，只接受 assemble、paper_section、head_tail 三类 repairTarget。
 - repairable=false、未知 repairTarget、缺少目标论文 artifacts 或没有任何 issue 时直接 reject，不允许猜测修正范围。
 - 同一论文的多个 issue 合并为一次完整 paperDraft 重写；不同论文可按 paperConcurrency 有限并发，默认 2、范围 1–5。
@@ -1188,7 +1189,8 @@ QA 发现可修复问题时允许一次修正机会：
 - 修正 prompt、原始响应、校验结果、前后差异、耗时和失败原因全部写入 Trace。
 - 修正完成后 qaReport.repairAttempted 固定为 true，保留 repairResults，并返回 assemble 重新生成完整 Markdown。
 - 重新拼装后重跑 deterministic_qa、paper_semantic_qa 和 report_semantic_qa；这些阶段不修改内容，因此确定性门检查的仍是最终修正版 artifacts。
-- 修正后任一强制质量门仍失败则 reject，不允许再次进入 repair_once。
+- 每轮修正后重新执行全部强制质量门；自动修正次数未满 3 次时可以再次进入 repair_once。
+- 自动修正达到 3 次后仍失败时，Job 保持 running 并设置 manualReview；管理员每次选择继续修正只增加 1 次机会，再次失败仍回到管理员处理。
 
 ## 10. 重试、修正和排除规则
 
@@ -1797,13 +1799,14 @@ Mock arXiv 和 Mock LLM 走完：
 - 服务端 Markdown 拼装。
 - 完整清单与页尾确定性生成。
 
-### 阶段 6：分层 QA 和一次修正
+### 阶段 6：分层 QA、三次自动修正和管理员处理
 
 - 确定性整稿 QA。
 - 逐篇语义 QA。
 - 报告级 QA。
-- 局部修正一次。
-- 强制 publish/reject。
+- 局部自动修正最多三次。
+- 修正耗尽后等待管理员继续修正、退出任务或按范围跳过论文。
+- 最终只产生 publish/reject。
 - 管理员告警。
 
 ### 阶段 7：运维对话框和页面恢复
@@ -1840,8 +1843,8 @@ Mock arXiv 和 Mock LLM 走完：
 - 最终篇数不超过 maxSelectedCount。
 - 逐篇正文独立生成和 QA。
 - 趋势至少由两篇论文支撑，单篇只能是观察。
-- QA 有一次局部修正机会。
-- 修正后仍不合格则 reject。
+- QA 默认有三次局部自动修正机会。
+- 三次修正后仍不合格则 Job 保持 running 并提示管理员处理，不能静默 reject。
 - QA 不可用时不能发布。
 - reject 和取消不覆盖上一份周报。
 - 浏览器关闭后 Job 继续，重新打开可恢复。
@@ -1900,7 +1903,8 @@ Mock arXiv 和 Mock LLM 走完：
 → 逐篇写作 + 综合头尾
 → 服务端拼装
 → 逐篇 QA + 报告级 QA
-→ 定向修正一次
+→ 定向自动修正（最多三次）
+→ 必要时管理员处理
 → publish / reject
 ~~~
 
@@ -1912,7 +1916,7 @@ Mock arXiv 和 Mock LLM 走完：
 
 已完成：
 
-- 新版有限状态 Pipeline Runner 已串联全文质量门、Evidence、Review、Calibration、Selection、Editorial Plan、逐篇 Writer、Head/Tail、服务端拼装、三层 QA、一次定向修正和 publish/reject 终局。
+- 新版有限状态 Pipeline Runner 已串联全文质量门、Evidence、Review、Calibration、Selection、Editorial Plan、逐篇 Writer、Head/Tail、服务端拼装、三层 QA、最多三次自动定向修正、修正耗尽后的管理员处理和 publish/reject 终局。
 - 新版前端使用异步 Job API；旧 `POST /api/reading-list` 仅作为服务级回滚入口保留，不再被新版生成按钮调用。
 - 全局只允许一个 running Job；创建、复用、查询、结果、Trace 和取消 API 已接通。
 - 浏览器关闭不影响后台执行。前端在本地只保存当前 `jobId/reportKey` 指针，重新打开后会先查询 active Job；若任务已经完成，再按该指针读取终态并按 `reportKey` 回挂。

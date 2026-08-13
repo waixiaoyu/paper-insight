@@ -9,6 +9,12 @@ import {
 import { redactTraceValue } from "./trace-store.js";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
+const MANUAL_REVIEW_ACTIONS = new Set([
+  "continue_repair",
+  "exit_task",
+  "skip_paper",
+  "ignore_warning"
+]);
 
 const readJsonIfPresent = async (path, fallback = null) => {
   try {
@@ -88,6 +94,7 @@ export class WeeklyReportJobManager {
     this.abortControllers = new Map();
     this.completions = new Map();
     this.finalizations = new Map();
+    this.manualReviews = new Map();
   }
 
   get activePath() {
@@ -214,7 +221,8 @@ export class WeeklyReportJobManager {
         signal,
         updateStage: (stage, patch) => this.updateStage(jobId, stage, patch),
         recordTrace: (event) => this.recordTrace(jobId, event),
-        writeTrace: (name, value) => this.writeTrace(jobId, name, value)
+        writeTrace: (name, value) => this.writeTrace(jobId, name, value),
+        requestManualReview: (review) => this.requestManualReview(jobId, review, signal)
       });
 
       if (!this.isActiveRunning(jobId)) {
@@ -337,6 +345,126 @@ export class WeeklyReportJobManager {
     return this.traceStore.writeJson(job.traceId, name, value);
   }
 
+  async requestManualReview(jobId, review = {}, signal) {
+    if (!this.isActiveRunning(jobId)) {
+      throw new Error("Only the active running weekly report Job can request manual review.");
+    }
+    if (this.manualReviews.has(jobId) || this.activeJob.manualReview) {
+      throw new Error("The weekly report Job is already waiting for an administrator decision.");
+    }
+
+    const allowedActions = [...new Set((Array.isArray(review.allowedActions) ? review.allowedActions : [])
+      .map((action) => String(action || "").trim())
+      .filter((action) => MANUAL_REVIEW_ACTIONS.has(action)))];
+    if (!allowedActions.length) {
+      throw new TypeError("Manual review requires at least one allowed administrator action.");
+    }
+    const requestedAt = new Date().toISOString();
+    const manualReview = redactTraceValue({
+      stage: String(review.stage || this.activeJob.agentStage || "manual_review"),
+      paperId: String(review.paperId || ""),
+      summary: String(review.summary || "Content remains invalid after automatic repairs."),
+      issues: Array.isArray(review.issues) ? review.issues.slice(0, 50) : [],
+      repairAttempts: Math.max(0, Math.trunc(Number(review.repairAttempts) || 0)),
+      allowedActions,
+      requestedAt
+    });
+    const waiting = {
+      ...this.activeJob,
+      agentStage: manualReview.stage,
+      manualReview,
+      updatedAt: requestedAt
+    };
+    let resolveDecision;
+    let rejectDecision;
+    const promise = new Promise((resolve, reject) => {
+      resolveDecision = resolve;
+      rejectDecision = reject;
+    });
+    const abort = () => {
+      const error = new Error("Weekly report manual review was cancelled.");
+      error.name = "AbortError";
+      error.code = "READING_LIST_JOB_CANCELLED";
+      rejectDecision(error);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    this.manualReviews.set(jobId, {
+      resolve: resolveDecision,
+      reject: rejectDecision,
+      promise,
+      cleanup: () => signal?.removeEventListener("abort", abort)
+    });
+    assertWeeklyReportJob(waiting);
+    this.activeJob = waiting;
+    this.jobs.set(jobId, waiting);
+    try {
+      await this.persistJob(waiting, { active: true });
+      await this.traceStore.appendTimeline(waiting.traceId, {
+        type: "manual_review_requested",
+        stage: manualReview.stage,
+        scope: manualReview.paperId ? "paper" : "job",
+        paperId: manualReview.paperId,
+        issues: manualReview.issues,
+        repairAttempts: manualReview.repairAttempts,
+        allowedActions
+      });
+    } catch (error) {
+      this.manualReviews.get(jobId)?.cleanup?.();
+      this.manualReviews.delete(jobId);
+      throw error;
+    }
+
+    try {
+      return await promise;
+    } finally {
+      this.manualReviews.get(jobId)?.cleanup?.();
+      this.manualReviews.delete(jobId);
+    }
+  }
+
+  async decide(jobId, decision = {}) {
+    if (!this.isActiveRunning(jobId) || !this.activeJob.manualReview) {
+      const error = new Error("The weekly report Job is not waiting for an administrator decision.");
+      error.code = "READING_LIST_MANUAL_REVIEW_NOT_PENDING";
+      error.statusCode = 409;
+      throw error;
+    }
+    const pending = this.manualReviews.get(jobId);
+    if (!pending) {
+      const error = new Error("The in-memory administrator decision request is unavailable.");
+      error.code = "READING_LIST_MANUAL_REVIEW_UNAVAILABLE";
+      error.statusCode = 409;
+      throw error;
+    }
+    const action = String(decision.action || "").trim();
+    if (!this.activeJob.manualReview.allowedActions.includes(action)) {
+      const error = new Error("The requested administrator action is not allowed for this issue.");
+      error.code = "READING_LIST_MANUAL_REVIEW_ACTION_INVALID";
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const decidedAt = new Date().toISOString();
+    const next = {
+      ...this.activeJob,
+      manualReview: null,
+      updatedAt: decidedAt
+    };
+    assertWeeklyReportJob(next);
+    await this.traceStore.appendTimeline(next.traceId, {
+      type: "manual_review_decided",
+      stage: next.agentStage,
+      scope: "job",
+      action,
+      decidedAt
+    });
+    await this.persistJob(next, { active: true });
+    this.activeJob = next;
+    this.jobs.set(jobId, next);
+    pending.resolve({ action, decidedAt });
+    return publicJob(next);
+  }
+
   async cancel(jobId) {
     const existingFinalization = this.finalizations.get(jobId);
 
@@ -447,6 +575,7 @@ export class WeeklyReportJobManager {
     this.jobs.set(jobId, job);
     this.activeJob = null;
     this.abortControllers.delete(jobId);
+    this.manualReviews.delete(jobId);
     const completion = this.completions.get(jobId);
     completion?.resolve(publicJob(job));
     this.completions.delete(jobId);

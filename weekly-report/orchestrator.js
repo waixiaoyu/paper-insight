@@ -41,6 +41,18 @@ const totalPoolExclusions = (excluded = {}) => Object.values(excluded)
   .reduce((total, value) => total + Math.max(0, Number(value) || 0), 0);
 
 const elapsed = (startedAt) => Math.max(0, Date.now() - startedAt);
+const AUTOMATIC_CONTENT_REPAIR_LIMIT = 3;
+const repairCountFor = (qaReport = {}) => {
+  const count = Number(qaReport?.repairCount);
+  if (Number.isInteger(count) && count >= 0) {
+    return count;
+  }
+  return qaReport?.repairAttempted ? 1 : 0;
+};
+const repairTraceSuffix = (qaReport = {}) => {
+  const count = repairCountFor(qaReport);
+  return count > 0 ? `-repair-${count}` : "";
+};
 
 const normalizedReviewScoreThreshold = (value) => {
   const numeric = Number(value);
@@ -888,16 +900,26 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
     Math.trunc(Number(reviewed.options?.calibrationMaxPapers) || 30),
     1
   ), 30);
-  const reserveCandidates = Array.isArray(reviewed.candidatePool?.reserveCandidates)
+  const manualExcludedPaperIds = [...new Set((Array.isArray(reviewed.manualExcludedPaperIds)
+    ? reviewed.manualExcludedPaperIds
+    : []).map((paperId) => String(paperId || "").replace(/v\d+$/i, "")).filter(Boolean))];
+  const manuallyExcluded = new Set(manualExcludedPaperIds);
+  const reserveCandidates = (Array.isArray(reviewed.candidatePool?.reserveCandidates)
     ? reviewed.candidatePool.reserveCandidates
-    : [];
+    : []).filter((item) => !manuallyExcluded.has(paperIdForStage(item).replace(/v\d+$/i, "")));
   let reserveCursor = Math.max(0, Number(reviewed.reviewResult?.reserveAttempted) || 0);
   let callSequence = 0;
   let counts = { ...reviewed.counts };
   let rereviewedPaperIds = [];
   const allExcluded = [];
   const cycles = [];
-  const administratorWarnings = [];
+  const administratorWarnings = manualExcludedPaperIds.map((paperId) => ({
+    code: "READING_LIST_ADMIN_SKIPPED_PAPER",
+    stage: "calibrate",
+    paperId,
+    message: `管理员已跳过论文 ${paperId}，重新执行横向校准及后续阶段。`,
+    severity: "warning"
+  }));
   const refillContextEligible = [];
   const refillContextExcluded = [];
   const refillEvidenceSucceeded = [];
@@ -905,10 +927,12 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
   const refillReviewSucceeded = [];
   const refillReviewExcluded = [];
 
-  const ranked = [...reviewed.reviewItems].sort((left, right) => (
+  const ranked = [...reviewed.reviewItems]
+    .filter((item) => !manuallyExcluded.has(paperIdForStage(item).replace(/v\d+$/i, "")))
+    .sort((left, right) => (
     Number(right?.reviewResult?.rawScore || 0) - Number(left?.reviewResult?.rawScore || 0)
     || paperIdForStage(left).localeCompare(paperIdForStage(right))
-  ));
+    ));
   let calibrationPool = ranked.slice(0, calibrationMaximum);
   const deferred = ranked.slice(calibrationMaximum).map((item) => ({
     ...item,
@@ -1404,7 +1428,17 @@ export const planWeeklyReportEditorial = async (selected, context = {}, {
       signal: context.signal,
       networkRetryDelayMs,
       onCall: persistCall,
-      onEvent: (event) => context.recordTrace(event)
+      onEvent: (event) => context.recordTrace(event),
+      onRepairExhausted: typeof context.requestManualReview === "function"
+        ? ({ issues, repairAttempts }) => context.requestManualReview({
+          stage: "editorial_plan",
+          paperId: "",
+          summary: "编辑计划在三次自动修正后仍未通过证据和结构检查。",
+          issues,
+          repairAttempts,
+          allowedActions: ["continue_repair", "exit_task"]
+        })
+        : undefined
     });
 
     await context.writeTrace("editorial-plan", result.editorialPlan);
@@ -1888,6 +1922,7 @@ export const runWeeklyReportDeterministicQa = async (assembled, context = {}) =>
     throw error;
   }
 
+  const repairCount = repairCountFor(assembled.qaReport);
   let qaReport;
   try {
     qaReport = runDeterministicQa({
@@ -1895,10 +1930,12 @@ export const runWeeklyReportDeterministicQa = async (assembled, context = {}) =>
       publishedPapers: assembled.publishedPapers,
       report: assembled.publishReport,
       footerNote: assembled.footerNote,
-      repairAttempted: Boolean(assembled.qaReport?.repairAttempted)
+      repairAttempted: repairCount >= AUTOMATIC_CONTENT_REPAIR_LIMIT
     });
     qaReport = {
       ...qaReport,
+      repairAttempted: repairCount > 0,
+      repairCount,
       repairResults: Array.isArray(assembled.qaReport?.repairResults)
         ? assembled.qaReport.repairResults
         : [],
@@ -1992,34 +2029,29 @@ export const runWeeklyReportDeterministicQa = async (assembled, context = {}) =>
   const detail = qaReport.deterministicIssues.slice(0, 5)
     .map((entry) => entry.message)
     .join("；") || "Deterministic QA remains invalid after repair.";
-  const rejected = new WeeklyReportOrchestratorError(
-    "Deterministic QA remains invalid after the single repair opportunity.",
-    {
-      code: "READING_LIST_DETERMINISTIC_QA_FAILED",
-      stage: "deterministic_qa",
-      retryable: false,
-      traceId: context.traceId,
-      detail,
-      rejectJob: true
-    }
-  );
   await context.recordTrace({
     type: "stage_failed",
     stage: "deterministic_qa",
     scope: "report",
     durationMs: elapsed(stageStartedAt),
-    code: rejected.code,
+    code: "READING_LIST_DETERMINISTIC_QA_FAILED",
     issues: qaReport.deterministicIssues,
-    reason: rejected.detail
+    reason: detail,
+    decision: "manual_review"
   });
-  await context.recordTrace({
-    type: "reject_requested",
-    stage: "deterministic_qa",
-    scope: "job",
-    code: rejected.code,
-    reason: rejected.detail
-  });
-  throw rejected;
+  return {
+    ...assembled,
+    nextStage: "manual_review",
+    qaReport,
+    manualReview: {
+      stage: "deterministic_qa",
+      paperId: "",
+      summary: "确定性质量检查在三次自动修正后仍未通过。",
+      issues: qaReport.deterministicIssues,
+      repairAttempts: repairCount,
+      allowedActions: ["continue_repair", "exit_task"]
+    }
+  };
 };
 
 export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
@@ -2045,7 +2077,8 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
   ), 5);
   const selectedItems = Array.isArray(checked.selectedItems) ? checked.selectedItems : [];
   const paperDrafts = Array.isArray(checked.paperDrafts) ? checked.paperDrafts : [];
-  const traceSuffix = checked.qaReport?.repairAttempted ? "-post-repair" : "";
+  const repairCount = repairCountFor(checked.qaReport);
+  const traceSuffix = repairTraceSuffix(checked.qaReport);
   let callSequence = 0;
 
   await context.updateStage("paper_semantic_qa", {
@@ -2125,37 +2158,81 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     const artifact = { ...baseArtifact, status: "failed" };
     await context.writeTrace(`paper-semantic-qa${traceSuffix}`, artifact);
     const firstFailure = result.failed[0];
-    const rejected = new WeeklyReportOrchestratorError(
-      "At least one selected paper could not complete semantic QA.",
-      {
-        code: firstFailure.error.code || "READING_LIST_PAPER_QA_FAILED",
+    const failureCode = firstFailure.error.code || "READING_LIST_PAPER_QA_FAILED";
+    const failedPaperId = firstFailure.error.paperId || paperIdForStage(firstFailure.item);
+    const failureDetail = firstFailure.error.message || "Paper Semantic QA failed closed.";
+    const isArtifactIdentityMismatch = Array.isArray(firstFailure.error.issues)
+      && firstFailure.error.issues.some((issue) => issue?.code === "input_identity_mismatch");
+    if (!isArtifactIdentityMismatch) {
+      const rejected = new WeeklyReportOrchestratorError(
+        "At least one selected paper could not complete semantic QA.",
+        {
+          code: failureCode,
+          stage: "paper_semantic_qa",
+          paperId: failedPaperId,
+          retryable: false,
+          traceId: context.traceId,
+          detail: failureDetail,
+          rejectJob: true
+        }
+      );
+      await context.recordTrace({
+        type: "stage_failed",
         stage: "paper_semantic_qa",
-        paperId: firstFailure.error.paperId || paperIdForStage(firstFailure.item),
-        retryable: false,
-        traceId: context.traceId,
-        detail: firstFailure.error.message || "Paper Semantic QA failed closed.",
-        rejectJob: true
-      }
-    );
+        scope: "job",
+        durationMs: elapsed(stageStartedAt),
+        code: rejected.code,
+        paperId: rejected.paperId,
+        failedPaperIds: result.failed.map((entry) => paperIdForStage(entry.item)),
+        reason: rejected.detail
+      });
+      await context.recordTrace({
+        type: "reject_requested",
+        stage: "paper_semantic_qa",
+        scope: "job",
+        code: rejected.code,
+        paperId: rejected.paperId,
+        reason: rejected.detail
+      });
+      throw rejected;
+    }
+    const failureIssues = [{
+      code: failureCode,
+      paperId: failedPaperId,
+      reason: failureDetail,
+      details: Array.isArray(firstFailure.error.issues) ? firstFailure.error.issues : []
+    }];
     await context.recordTrace({
       type: "stage_failed",
       stage: "paper_semantic_qa",
       scope: "job",
       durationMs: elapsed(stageStartedAt),
-      code: rejected.code,
-      paperId: rejected.paperId,
+      code: failureCode,
+      paperId: failedPaperId,
       failedPaperIds: result.failed.map((entry) => paperIdForStage(entry.item)),
-      reason: rejected.detail
+      reason: failureDetail,
+      decision: "manual_review"
     });
-    await context.recordTrace({
-      type: "reject_requested",
-      stage: "paper_semantic_qa",
-      scope: "job",
-      code: rejected.code,
-      paperId: rejected.paperId,
-      reason: rejected.detail
-    });
-    throw rejected;
+    return {
+      ...checked,
+      nextStage: "manual_review",
+      qaReport: {
+        ...checked.qaReport,
+        status: "rejected",
+        paperSemanticResults,
+        paperIssues: failureIssues,
+        repairAttempted: repairCount > 0,
+        repairCount
+      },
+      manualReview: {
+        stage: "paper_semantic_qa",
+        paperId: failedPaperId,
+        summary: "单篇论文的语义 QA 无法完成，请查看错误详情后决定是否跳过该论文或退出任务。",
+        issues: failureIssues,
+        repairAttempts: repairCount,
+        allowedActions: failedPaperId ? ["exit_task", "skip_paper"] : ["exit_task"]
+      }
+    };
   }
 
   if (paperIssues.length === 0) {
@@ -2191,13 +2268,15 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     };
   }
 
-  const repairAttempted = Boolean(checked.qaReport?.repairAttempted);
+  const repairAttempted = repairCount > 0;
+  const automaticRepairAvailable = repairCount < AUTOMATIC_CONTENT_REPAIR_LIMIT;
   const qaReport = {
     ...checked.qaReport,
-    status: repairAttempted ? "rejected" : "repair_required",
+    status: automaticRepairAvailable ? "repair_required" : "rejected",
     paperSemanticResults,
     paperIssues,
     repairAttempted,
+    repairCount,
     warnings: checked.qaReport?.warnings || []
   };
   await context.writeTrace(`paper-semantic-qa${traceSuffix}`, {
@@ -2205,11 +2284,11 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     status: qaReport.status
   });
 
-  if (!repairAttempted) {
+  if (automaticRepairAvailable) {
     const repairWarning = {
       code: "READING_LIST_PAPER_QA_REPAIR_REQUIRED",
       stage: "paper_semantic_qa",
-      message: `逐篇语义 QA 发现 ${paperIssues.length} 个问题，已进入唯一一次定向修正。`,
+      message: `逐篇语义 QA 发现 ${paperIssues.length} 个问题，准备进行第 ${repairCount + 1}/${AUTOMATIC_CONTENT_REPAIR_LIMIT} 次自动定向修正。`,
       severity: "warning"
     };
     const warnings = uniqueWarnings([...(checked.warnings || []), repairWarning]);
@@ -2240,39 +2319,35 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     };
   }
 
-  const firstIssue = paperIssues[0];
+  const paperIds = [...new Set(paperIssues.map((entry) => String(entry.paperId || "")).filter(Boolean))];
+  const paperId = paperIds.length === 1 ? paperIds[0] : "";
   const detail = paperIssues.slice(0, 5).map((entry) => entry.reason).join("；");
-  const rejected = new WeeklyReportOrchestratorError(
-    "Paper Semantic QA remains invalid after the single repair opportunity.",
-    {
-      code: "READING_LIST_QA_REPAIR_FAILED",
-      stage: "paper_semantic_qa",
-      paperId: firstIssue?.paperId || "",
-      retryable: false,
-      traceId: context.traceId,
-      detail: detail || "Paper Semantic QA still contains unsupported content.",
-      rejectJob: true
-    }
-  );
   await context.recordTrace({
     type: "stage_failed",
     stage: "paper_semantic_qa",
     scope: "job",
     durationMs: elapsed(stageStartedAt),
-    code: rejected.code,
-    paperId: rejected.paperId,
+    code: "READING_LIST_QA_REPAIR_FAILED",
+    paperId,
     issues: paperIssues,
-    reason: rejected.detail
+    reason: detail || "Paper Semantic QA still contains unsupported content.",
+    decision: "manual_review"
   });
-  await context.recordTrace({
-    type: "reject_requested",
-    stage: "paper_semantic_qa",
-    scope: "job",
-    code: rejected.code,
-    paperId: rejected.paperId,
-    reason: rejected.detail
-  });
-  throw rejected;
+  return {
+    ...checked,
+    nextStage: "manual_review",
+    qaReport,
+    manualReview: {
+      stage: "paper_semantic_qa",
+      paperId,
+      summary: "逐篇语义检查在三次自动修正后仍发现阻断问题。",
+      issues: paperIssues,
+      repairAttempts: repairCount,
+      allowedActions: paperId
+        ? ["continue_repair", "exit_task", "skip_paper"]
+        : ["continue_repair", "exit_task"]
+    }
+  };
 };
 
 export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
@@ -2292,7 +2367,8 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
   }
 
   const stageStartedAt = Date.now();
-  const traceSuffix = checked.qaReport?.repairAttempted ? "-post-repair" : "";
+  const repairCount = repairCountFor(checked.qaReport);
+  const traceSuffix = repairTraceSuffix(checked.qaReport);
   await context.updateStage("report_semantic_qa", {
     counts: checked.counts,
     warnings: checked.warnings || []
@@ -2406,15 +2482,17 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
   }
 
   const reportIssues = result.qaResult.issues;
-  const repairAttempted = Boolean(checked.qaReport?.repairAttempted);
+  const repairAttempted = repairCount > 0;
+  const automaticRepairAvailable = repairCount < AUTOMATIC_CONTENT_REPAIR_LIMIT;
   const qaReport = {
     ...checked.qaReport,
     status: reportIssues.length === 0
       ? "passed"
-      : repairAttempted ? "rejected" : "repair_required",
+      : automaticRepairAvailable ? "repair_required" : "rejected",
     reportSemanticResult: result.qaResult,
     reportIssues,
-    repairAttempted
+    repairAttempted,
+    repairCount
   };
   await context.writeTrace(`report-semantic-qa${traceSuffix}`, {
     status: qaReport.status,
@@ -2444,11 +2522,11 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
     };
   }
 
-  if (!repairAttempted) {
+  if (automaticRepairAvailable) {
     const repairWarning = {
       code: "READING_LIST_REPORT_QA_REPAIR_REQUIRED",
       stage: "report_semantic_qa",
-      message: `报告级语义 QA 发现 ${reportIssues.length} 个问题，已进入唯一一次头尾定向修正。`,
+      message: `报告级语义 QA 发现 ${reportIssues.length} 个问题，准备进行第 ${repairCount + 1}/${AUTOMATIC_CONTENT_REPAIR_LIMIT} 次自动定向修正。`,
       severity: "warning"
     };
     const warnings = uniqueWarnings([...(checked.warnings || []), repairWarning]);
@@ -2480,22 +2558,11 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
   }
 
   const detail = reportIssues.slice(0, 5).map((entry) => entry.reason).join("；");
-  const rejected = new WeeklyReportOrchestratorError(
-    "Report Semantic QA remains invalid after the single repair opportunity.",
-    {
-      code: "READING_LIST_QA_REPAIR_FAILED",
-      stage: "report_semantic_qa",
-      retryable: false,
-      traceId: context.traceId,
-      detail: detail || "Report-level narrative remains unsupported after repair.",
-      rejectJob: true
-    }
-  );
   const failureWarning = {
-    code: "READING_LIST_QA_REPAIR_FAILED",
+    code: "READING_LIST_MANUAL_REVIEW_REQUIRED",
     stage: "report_semantic_qa",
-    message: "报告级语义问题在唯一一次修正后仍存在，本次稿件已拒绝。",
-    severity: "error"
+    message: "报告级语义问题在三次自动修正后仍存在，等待管理员处理。",
+    severity: "warning"
   };
   const warnings = uniqueWarnings([...(checked.warnings || []), failureWarning]);
   await context.updateStage("report_semantic_qa", {
@@ -2507,18 +2574,25 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
     stage: "report_semantic_qa",
     scope: "report",
     durationMs: elapsed(stageStartedAt),
-    code: rejected.code,
+    code: "READING_LIST_QA_REPAIR_FAILED",
     issues: reportIssues,
-    reason: rejected.detail
+    reason: detail || "Report-level narrative remains unsupported after repair.",
+    decision: "manual_review"
   });
-  await context.recordTrace({
-    type: "reject_requested",
-    stage: "report_semantic_qa",
-    scope: "job",
-    code: rejected.code,
-    reason: rejected.detail
-  });
-  throw rejected;
+  return {
+    ...checked,
+    nextStage: "manual_review",
+    qaReport,
+    warnings,
+    manualReview: {
+      stage: "report_semantic_qa",
+      paperId: "",
+      summary: "整稿语义检查在三次自动修正后仍发现阻断问题。",
+      issues: reportIssues,
+      repairAttempts: repairCount,
+      allowedActions: ["continue_repair", "exit_task"]
+    }
+  };
 };
 
 export const repairWeeklyReportOnce = async (repairable, context = {}, {
@@ -2534,6 +2608,8 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
     throw new TypeError("repair_once requires qaReport.status=repair_required.");
   }
 
+  const repairCount = repairCountFor(repairable.qaReport);
+  const nextRepairCount = repairCount + 1;
   const stageStartedAt = Date.now();
   await context.updateStage("repair_once", {
     counts: repairable.counts,
@@ -2543,7 +2619,9 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
     type: "stage_started",
     stage: "repair_once",
     scope: "job",
-    alreadyAttempted: Boolean(repairable.qaReport?.repairAttempted)
+    alreadyAttempted: repairCount > 0,
+    repairAttempt: nextRepairCount,
+    administratorApproved: Boolean(repairable.qaReport?.adminRepairApproved)
   });
 
   const rejectRepair = async ({
@@ -2572,9 +2650,10 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
       severity: "error"
     };
     const warnings = uniqueWarnings([...(repairable.warnings || []), warning]);
-    await context.writeTrace("repair-result", {
+    const failedArtifact = {
       status: "failed",
       repairAttempted: true,
+      repairCount: nextRepairCount,
       repairResults: partialResults,
       finalIssues: issues,
       error: {
@@ -2582,7 +2661,9 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
         paperId: rejected.paperId,
         detail: rejected.detail
       }
-    });
+    };
+    await context.writeTrace(`repair-result-${nextRepairCount}`, failedArtifact);
+    await context.writeTrace("repair-result", failedArtifact);
     await context.updateStage("repair_once", {
       counts: repairable.counts,
       warnings
@@ -2608,9 +2689,9 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
     throw rejected;
   };
 
-  if (repairable.qaReport?.repairAttempted) {
+  if (repairCount >= AUTOMATIC_CONTENT_REPAIR_LIMIT && !repairable.qaReport?.adminRepairApproved) {
     return rejectRepair({
-      detail: "The only targeted content repair opportunity was already consumed.",
+      detail: "The automatic repair budget was exhausted without administrator approval.",
       issues: [
         ...(repairable.qaReport?.paperIssues || []),
         ...(repairable.qaReport?.reportIssues || [])
@@ -2662,9 +2743,10 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
     const sequence = callSequence;
     callSequence += 1;
     await context.writeTrace(
-      `repair-call-${String(sequence).padStart(4, "0")}`,
+      `repair-${nextRepairCount}-call-${String(sequence).padStart(4, "0")}`,
       record
     );
+    await context.writeTrace(`repair-call-${String(sequence).padStart(4, "0")}`, record);
     await context.recordTrace({
       type: record.error ? "model_call_failed" : "model_call_completed",
       stage: "repair_once",
@@ -2836,6 +2918,8 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
     ...repairable.qaReport,
     status: "repair_required",
     repairAttempted: true,
+    repairCount: nextRepairCount,
+    adminRepairApproved: false,
     repairResults: [
       ...(repairable.qaReport?.repairResults || []),
       ...resultEntries
@@ -2845,11 +2929,13 @@ export const repairWeeklyReportOnce = async (repairable, context = {}, {
   const artifact = {
     status: "completed",
     repairAttempted: true,
+    repairCount: nextRepairCount,
     issueCount: issues.length,
     concurrency,
     repairResults: resultEntries,
     nextStage: "assemble"
   };
+  await context.writeTrace(`repair-result-${nextRepairCount}`, artifact);
   await context.writeTrace("repair-result", artifact);
   await context.updateStage("repair_once", {
     counts: repairable.counts,

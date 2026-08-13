@@ -179,6 +179,8 @@
 | GRAY-086 | Evidence 唯一修正后只剩未绑定数字时，旧的确定性清理会把整个 summary 替换成 `Exact numeric details were omitted...`。该文本描述内部处理过程，不是论文内容，却以 supported Evidence 进入 Review。 | 数字清理只删除包含未绑定数字的句子并保留其余已验证论文内容；若整段均不可保留，则把字段标记为 insufficient、清空 sources，并删除引用该字段的 Value Signal。禁止生成“数字已省略/未完全落入摘录”等内部处理说明；两类路径均有回归用例。 | 已加防护，待真实复核 |
 | GRAY-087 | GRAY-076 的实现曾把 results 字段的全部摘录拼接后检查商业 VLM 与长文档范围，允许一条摘录只写 cohort、另一条只写长文档，组合形成任何单条原文都没有直接支持的完整结论。 | `commercial_vlm_long_document_source_missing` 改为逐条检查：results summary 同时声称商业 VLM 与长文档结果时，至少一条绑定摘录必须同时包含这两个范围，不能跨摘录拼接。格式恢复后的分散摘录反例已加入 Evidence 集成回归。 | 已加防护，待真实复核 |
 | GRAY-088 | DungeonBench 的 Evidence 内容修正已经针对未绑定数字重建目标字段，但返回的一个 Value Signal 缺少 `claim` 与 `evidenceRefs`。当前 Evidence 的唯一修正同时承担内容和响应结构纠正，不像 Editorial Plan、Paper Section、Head/Tail 那样允许独立响应格式纠正，因此任务直接 reject。 | 现有行为继续 fail closed，并增加“残缺修正响应不能进入数字清理或被接受”的回归用例。是否把不增加内容修正次数的独立 response-format repair 扩展到 Evidence，需要先更新规格后再实现。 | 待决策 |
+| GRAY-089 | Editorial Plan 或最终 QA 的可修复内容问题耗尽修正机会后直接 reject，前端没有管理员决策面板；`Paper Semantic QA requires matching paper artifacts` 这类有明确 paperId 的执行失败也直接整体拒绝。 | 可修复内容门默认自动修正 3 次，仍失败时 Job 保持 `running` 并持久化 `manualReview`；管理员可按问题范围继续修正一次、退出或跳过单篇论文，阻断问题不允许忽略。单篇 artifacts 身份不一致只开放跳过或退出。JobManager、Pipeline、Orchestrator、API 与静态前端均有回归用例。 | 已关闭 |
+| GRAY-090 | Trace 阶段视图重构后只显示 artifact 名称，阶段内的事件和产物详细内容无法展开；管理员必须转到复杂的原始 Trace 才能排查。 | 八阶段视图中的每条事件和每份 artifact 都提供独立的原生 details 展开项，直接显示该记录的结构化内容；Trace 对话框使用完整视口高度并独立滚动。静态资源回归用例要求阶段详情渲染函数保留 `[name, artifact]` payload。 | 已关闭 |
 
 ## 下一轮进入条件
 

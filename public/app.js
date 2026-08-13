@@ -334,6 +334,11 @@ const elements = {
   weeklyReportTraceRawList: $("#weeklyReportTraceRawList"),
   weeklyReportTraceClose: $("#weeklyReportTraceClose"),
   weeklyReportTraceCancel: $("#weeklyReportTraceCancel"),
+  weeklyReportManualReview: $("#weeklyReportManualReview"),
+  weeklyReportManualReviewTitle: $("#weeklyReportManualReviewTitle"),
+  weeklyReportManualReviewSummary: $("#weeklyReportManualReviewSummary"),
+  weeklyReportManualReviewMeta: $("#weeklyReportManualReviewMeta"),
+  weeklyReportManualReviewIssues: $("#weeklyReportManualReviewIssues"),
   generateReadingList: $("#generateReadingList"),
   breadcrumb: $("#breadcrumb"),
   pageEyebrow: $("#pageEyebrow"),
@@ -2614,6 +2619,19 @@ function appendWeeklyReportTraceItem(label, detail, kind = "事件", target = el
   target?.append(row);
 }
 
+function appendWeeklyReportTraceDetail(label, detail, target) {
+  const details = document.createElement("details");
+  details.className = "weekly-report-trace-detail";
+  const summary = document.createElement("summary");
+  summary.textContent = label;
+  const body = document.createElement("pre");
+  body.className = "weekly-report-trace-json";
+  body.textContent = typeof detail === "string" ? detail : JSON.stringify(detail, null, 2);
+  details.append(summary, body);
+  target?.append(details);
+  return details;
+}
+
 const weeklyReportTracePhases = Object.freeze([
   { key: "collect", title: "候选与全文门", description: "确认候选范围，抓取原文，并排除无法支撑写作的论文。" },
   { key: "evidence", title: "证据提取", description: "逐篇提取可追溯的事实、摘录和阅读价值信号。" },
@@ -2621,7 +2639,7 @@ const weeklyReportTracePhases = Object.freeze([
   { key: "calibrate", title: "横向校准", description: "在同批论文之间复核相对评价是否一致。" },
   { key: "select", title: "确定性选稿", description: "按阈值、排序和保底规则确定最终篇目。" },
   { key: "write", title: "策划与写作", description: "生成编辑计划、逐篇正文以及周报首尾内容。" },
-  { key: "qa", title: "发布前 QA", description: "检查事实、数字和表达；必要时进行一次定向修正。" },
+  { key: "qa", title: "发布前 QA", description: "检查事实、数字和表达；最多自动修正三次，仍不通过时等待管理员处理。" },
   { key: "save", title: "发布结果", description: "写入发布稿，或保留拒绝原因和完整 Trace。" }
 ]);
 
@@ -2674,6 +2692,8 @@ function weeklyReportTraceEventText(event = {}) {
     case "model_call_completed": text = `${stage}的模型调用完成${event.attemptType ? `（${event.attemptType}）` : ""}${duration ? `，耗时 ${duration}` : ""}`; break;
     case "model_call_failed": text = `${stage}的模型调用失败`; break;
     case "repair_requested": text = `发现 ${issueCount || "若干"} 项问题，发起一次定向修正`; break;
+    case "manual_review_requested": text = `自动修正 ${event.repairAttempts || 0} 次后仍有问题，等待管理员决策`; break;
+    case "manual_review_decided": text = `管理员已选择：${weeklyReportManualReviewActionLabel(event.action)}`; break;
     case "job_completed": text = `任务结束：${event.outcome === "publish" ? "已发布" : "未发布"}`; break;
     case "job_interrupted": text = "任务已中断"; break;
     default: text = `${stage}：${event.type || "已记录"}`;
@@ -2684,6 +2704,9 @@ function weeklyReportTraceEventText(event = {}) {
 
 function weeklyReportTracePhaseStatus(events) {
   if (!events.length) return "等待执行";
+  const lastManualReviewEvent = [...events].reverse()
+    .find((event) => event.type === "manual_review_requested" || event.type === "manual_review_decided");
+  if (lastManualReviewEvent?.type === "manual_review_requested") return "等待决策";
   if (events.some((event) => /failed|cancelled|interrupted/.test(event.type || "") || event.outcome === "reject")) return "需关注";
   if (events.some((event) => event.type === "stage_started") && !events.some((event) => event.type === "stage_completed")) return "进行中";
   return "已完成";
@@ -2727,18 +2750,22 @@ function appendWeeklyReportTracePhase(phase, events, artifacts, index) {
       item.className = "weekly-report-trace-event";
       const time = document.createElement("time");
       time.textContent = weeklyReportTraceTime(event.timestamp);
-      const text = document.createElement("span");
+      const text = document.createElement("div");
+      text.className = "weekly-report-trace-event-main";
       text.textContent = weeklyReportTraceEventText(event);
+      appendWeeklyReportTraceDetail("查看本条记录详情", event, text);
       item.append(time, text);
       eventList.append(item);
     });
-    artifacts.forEach(([name]) => {
+    artifacts.forEach(([name, artifact]) => {
       const item = document.createElement("li");
       item.className = "weekly-report-trace-event";
       const time = document.createElement("time");
       time.textContent = "产物";
-      const text = document.createElement("span");
+      const text = document.createElement("div");
+      text.className = "weekly-report-trace-event-main";
       text.textContent = `已保存阶段产物：${name}`;
+      appendWeeklyReportTraceDetail("查看产物内容", artifact, text);
       item.append(time, text);
       eventList.append(item);
     });
@@ -2747,6 +2774,65 @@ function appendWeeklyReportTracePhase(phase, events, artifacts, index) {
   details.append(summary, body);
   row.append(details);
   elements.weeklyReportTraceList?.append(row);
+}
+
+const weeklyReportManualReviewActionLabels = Object.freeze({
+  continue_repair: "继续修正一次",
+  exit_task: "退出任务",
+  skip_paper: "跳过这篇论文",
+  ignore_warning: "忽略告警并继续"
+});
+
+function weeklyReportManualReviewActionLabel(action) {
+  return weeklyReportManualReviewActionLabels[action] || String(action || "未知操作");
+}
+
+function weeklyReportManualReviewIssueText(issue) {
+  if (typeof issue === "string") return issue;
+  if (!issue || typeof issue !== "object") return "未提供问题详情";
+  const code = String(issue.code || issue.type || "问题");
+  const detail = [issue.reason, issue.message, issue.detail, issue.claim]
+    .find((value) => typeof value === "string" && value.trim());
+  return detail ? `${code}：${detail}` : code;
+}
+
+function renderWeeklyReportManualReview(job) {
+  const panel = elements.weeklyReportManualReview;
+  if (!panel) return false;
+  const review = job?.state === "running" && job?.manualReview && typeof job.manualReview === "object"
+    ? job.manualReview
+    : null;
+  if (!review) {
+    panel.hidden = true;
+    return false;
+  }
+
+  const newlyShown = panel.hidden;
+  panel.hidden = false;
+  const stage = weeklyReportTraceStageLabel(review.stage);
+  elements.weeklyReportManualReviewTitle.textContent = `${stage}需要管理员决策`;
+  elements.weeklyReportManualReviewSummary.textContent = review.summary || "自动修正后仍未通过质量门，请选择后续处理方式。";
+  elements.weeklyReportManualReviewMeta.textContent = [
+    review.paperId ? `论文：${review.paperId}` : "范围：整份周报",
+    `已修正 ${Number(review.repairAttempts) || 0} 次`
+  ].join(" · ");
+  elements.weeklyReportManualReviewIssues.textContent = "";
+  const issues = Array.isArray(review.issues) ? review.issues : [];
+  (issues.length ? issues : ["没有提供结构化问题详情，请在下方 Trace 中查看阶段记录。"]).forEach((issue) => {
+    const item = document.createElement("li");
+    item.textContent = weeklyReportManualReviewIssueText(issue);
+    elements.weeklyReportManualReviewIssues.append(item);
+  });
+
+  const allowed = new Set(Array.isArray(review.allowedActions) ? review.allowedActions : []);
+  panel.querySelectorAll("[data-manual-review-action]").forEach((button) => {
+    const action = button.dataset.manualReviewAction;
+    button.disabled = !allowed.has(action);
+    button.title = allowed.has(action)
+      ? weeklyReportManualReviewActionLabel(action)
+      : "当前问题不允许执行此操作";
+  });
+  return newlyShown;
 }
 
 async function loadWeeklyReportTrace(jobId = state.readingListJobId) {
@@ -3128,18 +3214,26 @@ function renderWeeklyReportJobProgress(job) {
   if (elements.weeklyReportTraceCancel) {
     elements.weeklyReportTraceCancel.hidden = job?.state !== "running";
   }
+  const shouldOpenManualReview = renderWeeklyReportManualReview(job);
+  if (shouldOpenManualReview && typeof elements.weeklyReportTraceDialog?.showModal === "function") {
+    if (!elements.weeklyReportTraceDialog.open) elements.weeklyReportTraceDialog.showModal();
+    void loadWeeklyReportTrace(job.jobId);
+  }
+  const waitingForAdmin = Boolean(job?.manualReview);
 
   setReadingListProgress(
     job?.state === "reject" ? "failed" : job?.state === "publish" ? "ready" : "loading",
-    job?.state === "publish" ? "质量门通过，允许发布" : job?.state === "reject" ? "质量门拒绝发布" : label,
+    job?.state === "publish" ? "质量门通过，允许发布" : job?.state === "reject" ? "质量门拒绝发布" : waitingForAdmin ? "等待管理员处理" : label,
     job?.state === "running"
-      ? `Agent Loop 正在后台执行。已处理 ${processed}/${total || "?"} 篇${selectedText}${excludedText}${warning}`
+      ? waitingForAdmin
+        ? `自动修正后仍有问题，任务保持运行，等待管理员选择后续处理方式。${warning}`
+        : `Agent Loop 正在后台执行。已处理 ${processed}/${total || "?"} 篇${selectedText}${excludedText}${warning}`
       : job?.state === "publish"
         ? "最终稿已通过全部确定性与语义质量门。"
         : `任务已拒绝发布：${job?.error?.detail || job?.error?.message || job?.result?.reason || "未通过质量门"}`,
     {
       step: job?.state === "publish" ? "save" : step,
-      meta: `${weeklyReportJobElapsed(job)} 秒 · ${label} · ${job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`
+      meta: `${weeklyReportJobElapsed(job)} 秒 · ${label} · ${waitingForAdmin ? "等待决策" : job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`
     }
   );
 }
@@ -5074,6 +5168,31 @@ elements.readingListSourceToggle?.addEventListener("click", () => {
 elements.weeklyReportTraceClose?.addEventListener("click", () => {
   if (elements.weeklyReportTraceDialog.open) {
     elements.weeklyReportTraceDialog.close();
+  }
+});
+
+elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-manual-review-action]");
+  if (!button || button.disabled || !state.readingListJobId) return;
+  const action = button.dataset.manualReviewAction;
+  if (action === "exit_task" && !window.confirm("确认退出当前周报任务？现有草稿和完整 Trace 会保留，但任务不会继续发布。")) return;
+  if (action === "skip_paper" && !window.confirm("确认跳过当前论文？系统会移除这篇论文并重新执行横向校准和选稿。")) return;
+
+  const buttons = [...elements.weeklyReportManualReview.querySelectorAll("[data-manual-review-action]")];
+  buttons.forEach((item) => { item.disabled = true; });
+  try {
+    const job = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action })
+    });
+    renderWeeklyReportJobProgress(job);
+    await loadWeeklyReportTrace(job.jobId);
+    showStatus(`管理员决策已提交：${weeklyReportManualReviewActionLabel(action)}。`, "success");
+  } catch (error) {
+    showStatus(`提交管理员决策失败：${error.message}`, "error");
+    const active = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}`).catch(() => null);
+    if (active) renderWeeklyReportJobProgress(active);
   }
 });
 

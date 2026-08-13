@@ -143,6 +143,11 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /weekly-semantic-review-v2026-07-30/);
   assert.match(html, /id="weeklyReportTraceDialog"/);
   assert.match(html, /id="weeklyReportTraceRawList"/);
+  assert.match(html, /id="weeklyReportManualReview"/);
+  assert.match(html, /data-manual-review-action="continue_repair"/);
+  assert.match(html, /data-manual-review-action="exit_task"/);
+  assert.match(html, /data-manual-review-action="skip_paper"/);
+  assert.match(html, /data-manual-review-action="ignore_warning"/);
   assert.match(html, /确认范围，抓取原文，排除无法支撑写作的论文。/);
   assert.match(html, /id="readingListMaxSelected"/);
 
@@ -153,6 +158,10 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(source, /weekly-report-job/);
   assert.match(source, /weeklyReportTracePhases/);
   assert.match(source, /weeklyReportTraceEventText/);
+  assert.match(source, /appendWeeklyReportTraceDetail/);
+  assert.match(source, /\[name, artifact\]/);
+  assert.match(source, /\/decision/);
+  assert.match(source, /renderWeeklyReportManualReview/);
   assert.match(source, /本步骤做什么：/);
   assert.match(source, /确认取消当前周报任务？/);
 });

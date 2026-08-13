@@ -4280,7 +4280,7 @@ const handleWeeklyReportJobsRequest = async (request, response, url) => {
       return;
     }
 
-    const match = pathname.match(/^\/api\/reading-list\/jobs\/([^/]+)(?:\/(trace|result|cancel))?$/);
+    const match = pathname.match(/^\/api\/reading-list\/jobs\/([^/]+)(?:\/(trace|result|cancel|decision))?$/);
     if (!match) {
       sendJson(response, 404, { error: "READING_LIST_JOB_NOT_FOUND" });
       return;
@@ -4341,8 +4341,17 @@ const handleWeeklyReportJobsRequest = async (request, response, url) => {
       sendJson(response, 200, await weeklyReportJobManager.cancel(jobId));
       return;
     }
+    if (action === "decision") {
+      if (request.method !== "POST") {
+        sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+        return;
+      }
+      const decision = await readJsonBody(request);
+      sendJson(response, 200, await weeklyReportJobManager.decide(jobId, decision));
+      return;
+    }
   } catch (error) {
-    sendJson(response, 500, {
+    sendJson(response, Number(error?.statusCode) || 500, {
       error: error?.code || "READING_LIST_JOB_API_FAILED",
       message: "Weekly report Job API failed.",
       detail: error?.message || "Unknown Job API error."

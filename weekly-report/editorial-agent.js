@@ -900,6 +900,7 @@ export const runEditorialPlanAgent = async ({
   signal,
   onCall,
   onEvent,
+  onRepairExhausted,
   networkRetryDelayMs = 50
 } = {}) => {
   const candidates = selectedInRankOrder(selectedItems);
@@ -1040,7 +1041,32 @@ export const runEditorialPlanAgent = async ({
     });
   }
 
-  for (let repairAttempt = 1; repairAttempt <= 3; repairAttempt += 1) {
+  for (let repairAttempt = 1; ; repairAttempt += 1) {
+    if (repairAttempt > 3) {
+      if (typeof onRepairExhausted !== "function") {
+        throw new EditorialAgentError("Editorial Plan remains unsupported after three structured repairs.", {
+          code: "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED",
+          issues: validation.issues
+        });
+      }
+      await onEvent?.({
+        type: "editorial_plan_manual_review_requested",
+        stage: "editorial_plan",
+        repairAttempts: repairAttempt - 1,
+        issues: validation.issues
+      });
+      const decision = await onRepairExhausted({
+        stage: "editorial_plan",
+        issues: validation.issues,
+        repairAttempts: repairAttempt - 1
+      });
+      if (decision?.action !== "continue_repair") {
+        throw new EditorialAgentError("Editorial Plan generation was stopped by the administrator.", {
+          code: "READING_LIST_ADMIN_REJECTED",
+          issues: validation.issues
+        });
+      }
+    }
     const contentIssues = validation.issues;
     await onEvent?.({
       type: "editorial_plan_repair_requested",
@@ -1086,11 +1112,6 @@ export const runEditorialPlanAgent = async ({
       });
     }
   }
-
-  throw new EditorialAgentError("Editorial Plan remains unsupported after three structured repairs.", {
-    code: "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED",
-    issues: validation.issues
-  });
 };
 
 const allowedHeadTailFields = new Set([

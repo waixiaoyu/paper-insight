@@ -120,6 +120,85 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
         current = await steps.reportSemanticQa(current, context, modelOptions);
       } else if (nextStage === "repair_once") {
         current = await steps.repair(current, context, modelOptions);
+      } else if (nextStage === "manual_review") {
+        if (typeof context.requestManualReview !== "function") {
+          throw new WeeklyReportPipelineError(
+            "Weekly report Pipeline cannot wait for an administrator decision.",
+            {
+              code: "READING_LIST_MANUAL_REVIEW_UNAVAILABLE",
+              stage: String(current?.manualReview?.stage || "manual_review"),
+              traceId: context.traceId
+            }
+          );
+        }
+        const review = current?.manualReview && typeof current.manualReview === "object"
+          ? current.manualReview
+          : {};
+        const decision = await context.requestManualReview(review);
+        const action = String(decision?.action || "");
+        if (action === "exit_task") {
+          return {
+            state: "reject",
+            reason: "admin_rejected",
+            reportKey: String(input.reportKey || current?.reportMeta?.reportKey || ""),
+            markdown: current?.markdown,
+            counts: current?.counts,
+            warnings: current?.warnings || []
+          };
+        }
+        if (action === "continue_repair") {
+          current = {
+            ...current,
+            nextStage: "repair_once",
+            manualReview: null,
+            qaReport: {
+              ...current?.qaReport,
+              status: "repair_required",
+              adminRepairApproved: true
+            }
+          };
+          continue;
+        }
+        if (action === "skip_paper") {
+          const paperId = String(review.paperId || "").trim();
+          if (!paperId) {
+            throw new WeeklyReportPipelineError(
+              "Administrator skip-paper decision requires one concrete paperId.",
+              {
+                code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                stage: String(review.stage || "manual_review"),
+                traceId: context.traceId
+              }
+            );
+          }
+          current = {
+            ...current,
+            nextStage: "calibrate",
+            manualReview: null,
+            counts: current?.counts ? { ...current.counts, selected: 0 } : current?.counts,
+            manualExcludedPaperIds: [...new Set([
+              ...(Array.isArray(current?.manualExcludedPaperIds) ? current.manualExcludedPaperIds : []),
+              paperId
+            ])]
+          };
+          continue;
+        }
+        if (action === "ignore_warning" && review.allowIgnore && review.continueStage) {
+          current = {
+            ...current,
+            nextStage: String(review.continueStage),
+            manualReview: null
+          };
+          continue;
+        }
+        throw new WeeklyReportPipelineError(
+          "Weekly report Pipeline received an invalid administrator decision.",
+          {
+            code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+            stage: String(review.stage || "manual_review"),
+            traceId: context.traceId
+          }
+        );
       } else if (nextStage === "publish") {
         if (!String(current?.markdown || "").trim() || current?.qaReport?.status !== "passed") {
           throw new WeeklyReportPipelineError(

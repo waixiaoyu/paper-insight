@@ -175,3 +175,100 @@ test("Pipeline Runner rejects unknown transitions instead of falling back to the
       && error.rejectJob === true
   );
 });
+
+test("Pipeline Runner waits for an administrator after repair exhaustion and grants one additional repair", async () => {
+  const calls = [];
+  const decisions = ["continue_repair", "exit_task"];
+  const reviews = [];
+  const context = {
+    ...executionContext(),
+    requestManualReview: async (review) => {
+      reviews.push(review);
+      return { action: decisions.shift() };
+    }
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", calls, {
+      markdown: "# Inspectable draft",
+      qaReport: {
+        status: "rejected",
+        repairAttempted: true,
+        repairCount: 3,
+        paperIssues: [{ paperId: "2608.50002", repairTarget: "paper_section", repairable: true }]
+      },
+      manualReview: {
+        stage: "paper_semantic_qa",
+        paperId: "2608.50002",
+        issues: [{ code: "unsupported_fact" }],
+        repairAttempts: 3,
+        allowedActions: ["continue_repair", "exit_task", "skip_paper"]
+      }
+    }),
+    repair: transition("repair_once", "manual_review", calls, {
+      qaReport: { status: "rejected", repairAttempted: true, repairCount: 4 },
+      manualReview: {
+        stage: "paper_semantic_qa",
+        paperId: "2608.50002",
+        issues: [{ code: "unsupported_fact" }],
+        repairAttempts: 4,
+        allowedActions: ["continue_repair", "exit_task", "skip_paper"]
+      }
+    })
+  };
+
+  const result = await runWeeklyReportAgentLoop({}, context, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps
+  });
+
+  assert.deepEqual(calls, ["prepare", "repair_once"]);
+  assert.equal(reviews.length, 2);
+  assert.equal(reviews[0].repairAttempts, 3);
+  assert.equal(result.state, "reject");
+  assert.equal(result.reason, "admin_rejected");
+  assert.equal(result.markdown, "# Inspectable draft");
+});
+
+test("Pipeline Runner restarts calibration after an administrator skips one paper", async () => {
+  const calls = [];
+  let calibrationInput;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({ action: "skip_paper" })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", calls, {
+      manualReview: {
+        stage: "paper_semantic_qa",
+        paperId: "2608.50003",
+        issues: [{ code: "unsupported_fact" }],
+        repairAttempts: 3,
+        allowedActions: ["continue_repair", "exit_task", "skip_paper"]
+      }
+    }),
+    calibrate: async (value) => {
+      calls.push("calibrate");
+      calibrationInput = value;
+      return { ...value, nextStage: "select" };
+    },
+    select: transition("select", "editorial_plan", calls),
+    editorialPlan: transition("editorial_plan", "write_paper_sections", calls),
+    paperSections: transition("write_paper_sections", "write_head_tail", calls),
+    headTail: transition("write_head_tail", "assemble", calls),
+    assemble: transition("assemble", "deterministic_qa", calls, { markdown: "# Rebuilt" }),
+    deterministicQa: transition("deterministic_qa", "paper_semantic_qa", calls, { qaReport: { status: "passed" } }),
+    paperSemanticQa: transition("paper_semantic_qa", "report_semantic_qa", calls, { qaReport: { status: "passed" } }),
+    reportSemanticQa: transition("report_semantic_qa", "publish", calls, { qaReport: { status: "passed" } })
+  };
+
+  const result = await runWeeklyReportAgentLoop({}, context, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps
+  });
+
+  assert.deepEqual(calibrationInput.manualExcludedPaperIds, ["2608.50003"]);
+  assert.equal(result.state, "publish");
+  assert.equal(result.markdown, "# Rebuilt");
+});

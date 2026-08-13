@@ -137,6 +137,13 @@ test("异步周报 Job API 支持创建、复用、查询、Trace、结果和取
     const active = await activeResponse.json();
     assert.equal(active.jobId, firstRunning.jobId);
 
+    const staleDecisionResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${firstRunning.jobId}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "continue_repair" })
+    });
+    const staleDecision = await staleDecisionResponse.json();
+
     const cancelResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${firstRunning.jobId}/cancel`, {
       method: "POST"
     });
@@ -144,6 +151,8 @@ test("异步周报 Job API 支持创建、复用、查询、Trace、结果和取
     assert.equal(cancelResponse.status, 200);
     assert.equal(cancelled.state, "reject");
     assert.equal(cancelled.result.reason, "admin_cancelled");
+    assert.equal(staleDecisionResponse.status, 409);
+    assert.equal(staleDecision.error, "READING_LIST_MANUAL_REVIEW_NOT_PENDING");
 
     const activeAfterCancelResponse = await fetch(`${baseUrl}/api/reading-list/jobs/active`);
     assert.equal(await activeAfterCancelResponse.json(), null);
