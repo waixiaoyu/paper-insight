@@ -140,7 +140,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-type") || "", /text\/html/);
   const html = await page.text();
-  assert.match(html, /weekly-semantic-review-v2026-07-30/);
+  assert.match(html, /weekly-manual-review-v2026-08-13/);
   assert.match(html, /id="weeklyReportTraceDialog"/);
   assert.match(html, /id="weeklyReportTraceRawList"/);
   assert.match(html, /id="weeklyReportManualReview"/);
