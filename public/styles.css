@@ -196,9 +196,9 @@ button {
 }
 
 .weekly-report-trace-dialog {
-  width: min(960px, calc(100vw - 32px));
-  height: min(820px, calc(100dvh - 40px));
-  max-height: calc(100dvh - 40px);
+  width: min(1080px, calc(100vw - 24px));
+  height: min(900px, calc(100dvh - 24px));
+  max-height: calc(100dvh - 24px);
   padding: 0;
   overflow: hidden;
   color: var(--ink);
@@ -220,8 +220,138 @@ button {
 }
 
 .weekly-report-trace-list {
-  max-height: none;
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weekly-report-trace-content {
+  min-height: 0;
   padding: 14px 20px 20px;
+  overflow: auto;
+}
+
+.weekly-report-trace-intro {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.weekly-report-trace-phase {
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid rgba(23, 107, 135, 0.14);
+  border-radius: 8px;
+}
+
+.weekly-report-trace-phase summary {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.weekly-report-trace-phase summary::-webkit-details-marker {
+  display: none;
+}
+
+.weekly-report-trace-phase-number {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.weekly-report-trace-phase .source-badge {
+  min-width: 52px;
+  padding: 2px 6px;
+  color: var(--muted);
+  background: #eef2f6;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  text-align: center;
+}
+
+.weekly-report-trace-phase-meta {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.weekly-report-trace-phase-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid rgba(23, 107, 135, 0.1);
+}
+
+.weekly-report-trace-phase-description {
+  margin: 10px 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.weekly-report-trace-event-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weekly-report-trace-event {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 8px;
+  background: rgba(244, 248, 250, 0.7);
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.weekly-report-trace-event time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.weekly-report-trace-empty {
+  margin: 0;
+  padding: 8px;
+  color: var(--muted);
+  background: rgba(244, 248, 250, 0.7);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.weekly-report-trace-raw {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: rgba(244, 248, 250, 0.7);
+  border: 1px solid rgba(23, 107, 135, 0.12);
+  border-radius: 8px;
+}
+
+.weekly-report-trace-raw summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.weekly-report-trace-raw-list {
+  max-height: none;
+  margin-top: 10px;
 }
 
 .reading-list-shell {
@@ -480,9 +610,11 @@ button {
 }
 
 .reading-list-steps li {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
   gap: 6px;
+  padding: 5px;
   min-width: 0;
   color: var(--muted);
   font-size: 12px;
@@ -503,11 +635,18 @@ button {
 }
 
 .reading-list-steps em {
-  min-width: 0;
-  overflow: hidden;
+  display: block;
+  margin-top: 2px;
   font-style: normal;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.reading-list-steps strong {
+  display: block;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.3;
 }
 
 .reading-list-steps li.done,
@@ -2837,6 +2976,25 @@ button:disabled {
 }
 
 @media (max-width: 680px) {
+  .weekly-report-trace-dialog {
+    width: calc(100vw - 12px);
+    height: calc(100dvh - 12px);
+    max-height: calc(100dvh - 12px);
+  }
+
+  .weekly-report-trace-content {
+    padding: 12px;
+  }
+
+  .weekly-report-trace-phase summary {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .weekly-report-trace-phase-meta {
+    grid-column: 2 / -1;
+    text-align: left;
+  }
+
   .sidebar,
   .content {
     padding: 22px 16px;

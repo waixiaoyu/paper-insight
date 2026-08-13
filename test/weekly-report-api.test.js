@@ -142,6 +142,8 @@ test("首页和静态资源仍可访问", async () => {
   const html = await page.text();
   assert.match(html, /weekly-semantic-review-v2026-07-30/);
   assert.match(html, /id="weeklyReportTraceDialog"/);
+  assert.match(html, /id="weeklyReportTraceRawList"/);
+  assert.match(html, /确认范围，抓取原文，排除无法支撑写作的论文。/);
   assert.match(html, /id="readingListMaxSelected"/);
 
   const app = await fetch(`${baseUrl}/app.js`);
@@ -149,6 +151,10 @@ test("首页和静态资源仍可访问", async () => {
   const source = await app.text();
   assert.match(source, /\/api\/reading-list\/jobs\/active/);
   assert.match(source, /weekly-report-job/);
+  assert.match(source, /weeklyReportTracePhases/);
+  assert.match(source, /weeklyReportTraceEventText/);
+  assert.match(source, /本步骤做什么：/);
+  assert.match(source, /确认取消当前周报任务？/);
 });
 
 test("周报 API 在调用 LLM 前拒绝全部跨周候选", async () => {

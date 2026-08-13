@@ -331,6 +331,7 @@ const elements = {
   weeklyReportTraceDialog: $("#weeklyReportTraceDialog"),
   weeklyReportTraceSummary: $("#weeklyReportTraceSummary"),
   weeklyReportTraceList: $("#weeklyReportTraceList"),
+  weeklyReportTraceRawList: $("#weeklyReportTraceRawList"),
   weeklyReportTraceClose: $("#weeklyReportTraceClose"),
   weeklyReportTraceCancel: $("#weeklyReportTraceCancel"),
   generateReadingList: $("#generateReadingList"),
@@ -2613,6 +2614,141 @@ function appendWeeklyReportTraceItem(label, detail, kind = "事件", target = el
   target?.append(row);
 }
 
+const weeklyReportTracePhases = Object.freeze([
+  { key: "collect", title: "候选与全文门", description: "确认候选范围，抓取原文，并排除无法支撑写作的论文。" },
+  { key: "evidence", title: "证据提取", description: "逐篇提取可追溯的事实、摘录和阅读价值信号。" },
+  { key: "review", title: "独立复评", description: "核对证据是否足以支持评分和推荐理由。" },
+  { key: "calibrate", title: "横向校准", description: "在同批论文之间复核相对评价是否一致。" },
+  { key: "select", title: "确定性选稿", description: "按阈值、排序和保底规则确定最终篇目。" },
+  { key: "write", title: "策划与写作", description: "生成编辑计划、逐篇正文以及周报首尾内容。" },
+  { key: "qa", title: "发布前 QA", description: "检查事实、数字和表达；必要时进行一次定向修正。" },
+  { key: "save", title: "发布结果", description: "写入发布稿，或保留拒绝原因和完整 Trace。" }
+]);
+
+function weeklyReportTracePhaseForArtifact(name) {
+  const normalized = String(name || "").toLowerCase();
+  if (/(candidate|context)/.test(normalized)) return "collect";
+  if (normalized.includes("evidence")) return "evidence";
+  if (normalized.includes("review")) return "review";
+  if (normalized.includes("calibration")) return "calibrate";
+  if (normalized.includes("selection")) return "select";
+  if (/(editorial|paper-section|head-tail|report-draft)/.test(normalized)) return "write";
+  if (/(publish|final)/.test(normalized)) return "save";
+  return "qa";
+}
+
+function weeklyReportTraceTime(value) {
+  if (!value) return "--:--:--";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "--:--:--" : date.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function weeklyReportTraceDuration(value) {
+  const milliseconds = Number(value);
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "";
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+  if (milliseconds < 60000) return `${(milliseconds / 1000).toFixed(1)} 秒`;
+  return `${Math.floor(milliseconds / 60000)} 分 ${Math.round((milliseconds % 60000) / 1000)} 秒`;
+}
+
+function weeklyReportTraceStageLabel(stage) {
+  return weeklyReportJobStageView[stage]?.[1] || String(stage || "当前阶段");
+}
+
+function weeklyReportTraceEventText(event = {}) {
+  const stage = weeklyReportTraceStageLabel(event.stage);
+  const duration = weeklyReportTraceDuration(event.durationMs);
+  const suffix = [event.decision, event.reason, event.message, event.error?.message]
+    .find((value) => typeof value === "string" && value.trim());
+  const issueCount = Array.isArray(event.issues) ? event.issues.length : 0;
+  let text;
+
+  switch (event.type) {
+    case "job_started": text = "后台任务已创建"; break;
+    case "job_cancel_requested": text = "已请求取消任务，等待当前操作结束"; break;
+    case "stage_updated": text = `进度更新：${stage}`; break;
+    case "stage_started": text = `开始：${stage}`; break;
+    case "stage_completed": text = `完成：${stage}${duration ? `（耗时 ${duration}）` : ""}`; break;
+    case "stage_failed": text = `失败：${stage}`; break;
+    case "stage_cancelled": text = `已取消：${stage}`; break;
+    case "model_call_completed": text = `${stage}的模型调用完成${event.attemptType ? `（${event.attemptType}）` : ""}${duration ? `，耗时 ${duration}` : ""}`; break;
+    case "model_call_failed": text = `${stage}的模型调用失败`; break;
+    case "repair_requested": text = `发现 ${issueCount || "若干"} 项问题，发起一次定向修正`; break;
+    case "job_completed": text = `任务结束：${event.outcome === "publish" ? "已发布" : "未发布"}`; break;
+    case "job_interrupted": text = "任务已中断"; break;
+    default: text = `${stage}：${event.type || "已记录"}`;
+  }
+
+  return suffix ? `${text}；${suffix}` : text;
+}
+
+function weeklyReportTracePhaseStatus(events) {
+  if (!events.length) return "等待执行";
+  if (events.some((event) => /failed|cancelled|interrupted/.test(event.type || "") || event.outcome === "reject")) return "需关注";
+  if (events.some((event) => event.type === "stage_started") && !events.some((event) => event.type === "stage_completed")) return "进行中";
+  return "已完成";
+}
+
+function appendWeeklyReportTracePhase(phase, events, artifacts, index) {
+  const row = document.createElement("li");
+  const details = document.createElement("details");
+  details.className = "weekly-report-trace-phase";
+  details.open = events.length > 0 && weeklyReportTracePhaseStatus(events) === "进行中";
+  const summary = document.createElement("summary");
+  const number = document.createElement("span");
+  number.className = "weekly-report-trace-phase-number";
+  number.textContent = String(index + 1);
+  const status = document.createElement("span");
+  status.className = "source-badge";
+  status.textContent = weeklyReportTracePhaseStatus(events);
+  const title = document.createElement("strong");
+  title.textContent = phase.title;
+  const meta = document.createElement("span");
+  meta.className = "weekly-report-trace-phase-meta";
+  meta.textContent = `${events.length} 条记录 · ${artifacts.length} 份产物`;
+  summary.append(number, status, title, meta);
+
+  const body = document.createElement("div");
+  body.className = "weekly-report-trace-phase-body";
+  const description = document.createElement("p");
+  description.className = "weekly-report-trace-phase-description";
+  description.textContent = `本步骤做什么：${phase.description}`;
+  body.append(description);
+  if (!events.length && !artifacts.length) {
+    const empty = document.createElement("p");
+    empty.className = "weekly-report-trace-empty";
+    empty.textContent = "当前任务尚未执行到这一步。";
+    body.append(empty);
+  } else {
+    const eventList = document.createElement("ol");
+    eventList.className = "weekly-report-trace-event-list";
+    events.forEach((event) => {
+      const item = document.createElement("li");
+      item.className = "weekly-report-trace-event";
+      const time = document.createElement("time");
+      time.textContent = weeklyReportTraceTime(event.timestamp);
+      const text = document.createElement("span");
+      text.textContent = weeklyReportTraceEventText(event);
+      item.append(time, text);
+      eventList.append(item);
+    });
+    artifacts.forEach(([name]) => {
+      const item = document.createElement("li");
+      item.className = "weekly-report-trace-event";
+      const time = document.createElement("time");
+      time.textContent = "产物";
+      const text = document.createElement("span");
+      text.textContent = `已保存阶段产物：${name}`;
+      item.append(time, text);
+      eventList.append(item);
+    });
+    body.append(eventList);
+  }
+  details.append(summary, body);
+  row.append(details);
+  elements.weeklyReportTraceList?.append(row);
+}
+
 async function loadWeeklyReportTrace(jobId = state.readingListJobId) {
   if (!jobId || !elements.weeklyReportTraceList) {
     return;
@@ -2625,29 +2761,44 @@ async function loadWeeklyReportTrace(jobId = state.readingListJobId) {
     const trace = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(jobId)}/trace`);
     state.readingListTrace = trace;
     elements.weeklyReportTraceList.textContent = "";
+    if (elements.weeklyReportTraceRawList) elements.weeklyReportTraceRawList.textContent = "";
     const timeline = Array.isArray(trace?.timeline) ? trace.timeline : [];
     const artifacts = trace?.artifacts && typeof trace.artifacts === "object" ? trace.artifacts : {};
+
+    weeklyReportTracePhases.forEach((phase, index) => {
+      const phaseEvents = timeline.filter((event) => {
+        if (event.type === "job_completed" || event.type === "job_interrupted") return phase.key === "save";
+        return (weeklyReportJobStageView[event.stage]?.[0] || "") === phase.key;
+      });
+      const phaseArtifacts = Object.entries(artifacts).filter(([name]) => weeklyReportTracePhaseForArtifact(name) === phase.key);
+      appendWeeklyReportTracePhase(phase, phaseEvents, phaseArtifacts, index);
+    });
 
     timeline.forEach((event) => {
       const time = event.timestamp ? new Date(event.timestamp).toLocaleTimeString("zh-CN", { hour12: false }) : "";
       const title = [time, event.stage, event.type].filter(Boolean).join(" · ");
       const { timestamp: _timestamp, ...detail } = event;
-      appendWeeklyReportTraceItem(title, detail, event.outcome || "事件");
+      appendWeeklyReportTraceItem(title, detail, event.outcome || "事件", elements.weeklyReportTraceRawList);
     });
     Object.entries(artifacts).forEach(([name, artifact]) => {
-      appendWeeklyReportTraceItem(`阶段产物 · ${name}`, artifact, "产物");
+      appendWeeklyReportTraceItem(`阶段产物 · ${name}`, artifact, "产物", elements.weeklyReportTraceRawList);
     });
     elements.readingListSourceSummary.textContent = `${timeline.length} 个事件 · ${Object.keys(artifacts).length} 份阶段产物`;
     elements.weeklyReportTraceSummary.textContent = `Trace ID：${trace?.meta?.traceId || "-"} · ${timeline.length} 个事件 · ${Object.keys(artifacts).length} 份阶段产物`;
 
     if (!timeline.length && !Object.keys(artifacts).length) {
-      appendWeeklyReportTraceItem("Trace 已创建", "尚无阶段事件，任务可能刚刚开始。", "等待");
+      elements.weeklyReportTraceSummary.textContent = `Trace ID：${trace?.meta?.traceId || "-"} · 任务刚刚开始，尚无阶段记录`;
     }
   } catch (error) {
     elements.readingListSourceSummary.textContent = "Trace 读取失败";
     elements.weeklyReportTraceSummary.textContent = "Trace 读取失败";
     elements.weeklyReportTraceList.textContent = "";
-    appendWeeklyReportTraceItem("无法读取 Trace", error.message, "错误");
+    if (elements.weeklyReportTraceRawList) elements.weeklyReportTraceRawList.textContent = "";
+    appendWeeklyReportTraceItem("无法读取 Trace", error.message, "错误", elements.weeklyReportTraceRawList);
+    const message = document.createElement("li");
+    message.className = "weekly-report-trace-empty";
+    message.textContent = `无法读取 Trace：${error.message}`;
+    elements.weeklyReportTraceList.append(message);
   }
 }
 
@@ -4928,6 +5079,9 @@ elements.weeklyReportTraceClose?.addEventListener("click", () => {
 
 elements.weeklyReportTraceCancel?.addEventListener("click", async () => {
   if (!state.readingListJobId) {
+    return;
+  }
+  if (!window.confirm("确认取消当前周报任务？已完成的阶段记录会保留，但未完成的生成不会继续执行。")) {
     return;
   }
   elements.weeklyReportTraceCancel.disabled = true;

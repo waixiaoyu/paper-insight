@@ -241,14 +241,14 @@
             </div>
             <p id="readingListProgressDetail">点击“开始生成周报”后会显示进度。</p>
             <ol id="readingListSteps" class="reading-list-steps" aria-label="阅读清单生成阶段">
-              <li data-reading-step="collect"><span>1</span><em>候选与全文门</em></li>
-              <li data-reading-step="evidence"><span>2</span><em>Evidence Agent</em></li>
-              <li data-reading-step="review"><span>3</span><em>Review Agent</em></li>
-              <li data-reading-step="calibrate"><span>4</span><em>横向校准</em></li>
-              <li data-reading-step="select"><span>5</span><em>确定性选稿</em></li>
-              <li data-reading-step="write"><span>6</span><em>策划与写作</em></li>
-              <li data-reading-step="qa"><span>7</span><em>QA 与一次修正</em></li>
-              <li data-reading-step="save"><span>8</span><em>发布</em></li>
+              <li data-reading-step="collect"><span>1</span><div><strong>候选与全文门</strong><em>确认范围，抓取原文，排除无法支撑写作的论文。</em></div></li>
+              <li data-reading-step="evidence"><span>2</span><div><strong>证据提取</strong><em>逐篇提取事实、摘录和阅读价值信号。</em></div></li>
+              <li data-reading-step="review"><span>3</span><div><strong>独立复评</strong><em>核对证据是否足以支持评分与推荐理由。</em></div></li>
+              <li data-reading-step="calibrate"><span>4</span><div><strong>横向校准</strong><em>在同批论文之间复核相对评价是否一致。</em></div></li>
+              <li data-reading-step="select"><span>5</span><div><strong>确定性选稿</strong><em>按阈值、排序和保底规则确定最终篇目。</em></div></li>
+              <li data-reading-step="write"><span>6</span><div><strong>策划与写作</strong><em>生成编辑计划、逐篇正文以及周报首尾内容。</em></div></li>
+              <li data-reading-step="qa"><span>7</span><div><strong>发布前 QA</strong><em>检查事实、数字和表达；必要时进行一次定向修正。</em></div></li>
+              <li data-reading-step="save"><span>8</span><div><strong>发布结果</strong><em>写入发布稿，或保留拒绝原因和完整 Trace。</em></div></li>
             </ol>
             <div id="readingListSourcePanel" class="reading-list-source-panel" hidden>
               <div class="reading-list-source-heading">
@@ -290,7 +290,14 @@
             <button id="weeklyReportTraceClose" class="ghost-button" type="button">关闭</button>
           </div>
         </header>
-        <ol id="weeklyReportTraceList" class="reading-list-source-list weekly-report-trace-list" aria-label="Agent Loop 完整流程"></ol>
+        <div class="weekly-report-trace-content">
+          <p class="weekly-report-trace-intro">按周报的八个阶段查看任务记录。每个阶段说明其作用，并汇总该阶段的执行结果；原始 Trace 仅用于排查。</p>
+          <ol id="weeklyReportTraceList" class="weekly-report-trace-list" aria-label="Agent Loop 阶段摘要"></ol>
+          <details class="weekly-report-trace-raw">
+            <summary>查看原始 Trace（用于排查）</summary>
+            <ol id="weeklyReportTraceRawList" class="reading-list-source-list weekly-report-trace-raw-list" aria-label="Agent Loop 原始记录"></ol>
+          </details>
+        </div>
       </div>
     </dialog>
 
