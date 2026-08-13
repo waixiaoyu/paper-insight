@@ -238,6 +238,22 @@ test("a one-paper trend or a cross-paper mismatched evidence ref is rejected", (
   assert.equal(mismatchValidation.issues.some((issue) => issue.code === "trend_support_missing_evidence"), true);
 });
 
+test("Editorial Plan normalizes arXiv URL Evidence refs before validating them", () => {
+  const plan = validPlan();
+  plan.trends[0].evidenceRefs = [
+    "https://arxiv.org/abs/2607.50001:method:0",
+    "https://arxiv.org/abs/2607.50002:results:0"
+  ];
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.valid, true);
+  assert.deepEqual(validation.editorialPlan.trends[0].evidenceRefs, [
+    "2607.50001:method:0",
+    "2607.50002:results:0"
+  ]);
+});
+
 test("Editorial Plan rejects a low-information benchmark trend", () => {
   const plan = validPlan();
   plan.trends[0].claim = "两项工作均构建基准以指出现有评测的不足和局限。";
@@ -297,6 +313,16 @@ test("Editorial numeric validation does not treat the 1 in F1 as an exact-number
   assert.equal(validation.issues.some((issue) => (
     issue.code === "numeric_claim_not_in_evidence" && /number 1\b/.test(issue.detail)
   )), false);
+});
+
+test("Editorial Plan permits scientific threshold terminology in a paper caveat", () => {
+  const plan = validPlan();
+  plan.singlePaperObservations[0].caveat = "The pseudo-threshold metric does not fully represent operational performance.";
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((issue) => issue.code === "internal_term_leak"), false);
 });
 
 test("English number words support equivalent Arabic digits in Chinese Editorial claims", () => {
@@ -750,13 +776,41 @@ test("Editorial Plan still invalid after repair becomes a report-level reject er
   );
 });
 
-test("Editorial repair prompt includes issue paths but not issue details", () => {
+test("Editorial Plan uses three content repairs before reporting that the repair budget is exhausted", async () => {
+  const invalid = validPlan();
+  invalid.readingOrder = [];
+  const attempts = [];
+
+  await assert.rejects(
+    () => runEditorialPlanAgent({
+      selectedItems,
+      networkRetryDelayMs: 0,
+      onEvent: (event) => attempts.push(event),
+      callModel: async () => invalid
+    }),
+    (error) => (
+      error instanceof EditorialAgentError
+      && error.code === "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED"
+      && /three structured repairs/.test(error.message)
+    )
+  );
+
+  assert.deepEqual(attempts
+    .filter((event) => event.type === "editorial_plan_repair_requested")
+    .map((event) => event.repairAttempt), [1, 2, 3]);
+});
+
+test("Editorial repair prompt includes safe numeric repair instructions but not issue details", () => {
   const prompt = buildEditorialPlanRepairPrompt({
     selectedItems,
     issues: [{
       code: "reading_order_mismatch",
       path: "readingOrder",
       detail: "SECRET_PRIOR_RAW_RESPONSE"
+    }, {
+      code: "numeric_claim_not_in_evidence",
+      path: "singlePaperObservations[0].claim",
+      detail: "SECRET_UNTRUSTED_400"
     }, {
       code: "rhetorical_prose_style",
       path: "singlePaperObservations[0].caveat",
@@ -778,6 +832,7 @@ test("Editorial repair prompt includes issue paths but not issue details", () =>
 
   assert.match(prompt, /weekly_report_editorial_plan_repair/);
   assert.match(prompt, /readingOrder/);
+  assert.match(prompt, /For every exact number in the affected claim/i);
   assert.match(prompt, /remove resource budgeting\/资源预算/i);
   assert.match(prompt, /remove state tracking\/状态追踪/i);
   assert.match(prompt, /Remove the multidimensional-evaluation claim/i);
@@ -788,6 +843,7 @@ test("Editorial repair prompt includes issue paths but not issue details", () =>
   assert.match(prompt, /state the supported scope and metric directly/i);
   assert.match(prompt, /Do not replace one forbidden contrast with another/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
+  assert.doesNotMatch(prompt, /SECRET_UNTRUSTED_400/);
 });
 
 const paperDrafts = selectedItems.map((selectedItem) => ({

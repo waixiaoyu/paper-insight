@@ -1257,7 +1257,7 @@ test("editorial_plan validates the selected cohort and persists the complete mod
   )), true);
 });
 
-test("editorial_plan rejects the report after its single structured repair remains invalid", async () => {
+test("editorial_plan rejects the report after three structured repairs remain invalid", async () => {
   const execution = fakeExecutionContext();
   const calibratedItems = [
     calibratedItemFor("2607.19401", 88, "must_read"),
@@ -1295,10 +1295,10 @@ test("editorial_plan rejects the report after its single structured repair remai
   );
   const calls = [...execution.sections.keys()]
     .filter((name) => name.startsWith("editorial-call-"));
-  assert.equal(calls.length, 2);
-  assert.equal(execution.events.some((event) => (
-    event.type === "editorial_plan_repair_requested"
-  )), true);
+  assert.equal(calls.length, 4);
+  assert.deepEqual(execution.events
+    .filter((event) => event.type === "editorial_plan_repair_requested")
+    .map((event) => event.repairAttempt), [1, 2, 3]);
   assert.equal(execution.events.some((event) => (
     event.type === "reject_requested"
     && event.stage === "editorial_plan"

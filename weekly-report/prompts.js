@@ -610,6 +610,7 @@ const editorialPlanRules = [
 ];
 
 const WRITING_REPAIR_HINTS = Object.freeze({
+  numeric_claim_not_in_evidence: "For every exact number in the affected claim, cite an existing Evidence ref whose excerpt contains that exact token, or remove the number. Do not retain a number merely because it occurs elsewhere in the paper.",
   resource_management: "At this path, remove resource management/资源管理 unless the cited excerpt directly states resource management; resource budgeting is not equivalent.",
   resource_budgeting: "At this path, remove resource budgeting/资源预算 unless the cited excerpt states that term or lists concrete cross-stage resources together with an immediate-versus-future tradeoff.",
   state_tracking: "At this path, remove state tracking/状态追踪 unless the cited excerpt directly states state tracking.",
@@ -635,8 +636,12 @@ const writingRepairIssue = (itemIssue, fallbackCode) => {
     code: String(itemIssue?.code || fallbackCode),
     path: String(itemIssue?.path || "")
   };
+  const repairKinds = [
+    ...(Array.isArray(itemIssue?.repairKinds) ? itemIssue.repairKinds : []),
+    String(itemIssue?.code || "")
+  ];
   const repairHints = [...new Set(
-    (Array.isArray(itemIssue?.repairKinds) ? itemIssue.repairKinds : [])
+    repairKinds
       .map((kind) => WRITING_REPAIR_HINTS[String(kind || "")])
       .filter(Boolean)
   )];

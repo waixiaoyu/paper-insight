@@ -17,7 +17,7 @@ const EVIDENCE_FIELDS = [
   "limitations",
   "affiliations"
 ];
-const INTERNAL_TERM_PATTERN = /\bfallback\b|\bthresholds?\b|阈值|\bselection\s*reason\b|\bselectionreason\b|\bagent\s+(?:loop|stage)\b|\bprompts?\b|\bartifacts?\b|\binternal\s+json\b|内部\s*json|定向重评|横向校准|复评阈值|保底补入/iu;
+const INTERNAL_TERM_PATTERN = /\bfallback\b|\b(?:score|selection|review)\s+thresholds?\b|(?:评分|选稿|推荐|复评)\s*阈值|\bselection\s*reason\b|\bselectionreason\b|\bagent\s+(?:loop|stage)\b|\bprompts?\b|\bartifacts?\b|\binternal\s+json\b|内部\s*json|定向重评|横向校准|复评阈值|保底补入/iu;
 const GENERIC_TITLE_PATTERN = /新范式|值得关注|加速落地|new\s+paradigm|worth\s+watching|accelerat(?:e|ed|ing)\s+(?:adoption|deployment)/iu;
 const RHETORICAL_STYLE_PATTERN = /不等于|不等同于|并非.{0,12}而是|而非|揭示|迈向|赋能|解锁|重塑|颠覆|革命性?|坚实(?:的)?(?:量化)?证据|有效(?:解决|方法|暴露|测试)|具有(?:较高|很高|重要)的?(?:直接)?参考价值|不排除未来.{0,30}(?:可能|改进|消除)|鸿沟|浪潮|拐点|破局|\breveal(?:s|ed|ing)?\b|\bunlock(?:s|ed|ing)?\b|\breshape(?:s|d|ing)?\b|\brevolutionary\b/iu;
 const LIMITED_TOP_MODEL_EVIDENCE_PATTERN = /\b(?:the\s+)?(?:strongest|best(?:-performing)?|best\s+performer)\s+models?\b/iu;
@@ -483,8 +483,18 @@ const validateInternalText = (value, path, issues) => {
   }
 };
 
+const normalizeEvidenceReference = (value) => {
+  const reference = normalizeText(value, 200);
+  const match = reference.match(/^(.*):(problem|method|systemDesign|experiments|results|limitations|affiliations):(\d+)$/iu);
+  if (!match) {
+    return reference;
+  }
+  const paperId = normalizedPaperId(match[1]);
+  return paperId ? `${paperId}:${match[2]}:${match[3]}` : reference;
+};
+
 const normalizeEvidenceRefs = (value) => [...new Set((Array.isArray(value) ? value : [])
-  .map((entry) => normalizeText(entry, 200))
+  .map(normalizeEvidenceReference)
   .filter(Boolean))];
 
 export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
@@ -1030,47 +1040,57 @@ export const runEditorialPlanAgent = async ({
     });
   }
 
-  const contentIssues = validation.issues;
-  await onEvent?.({
-    type: "editorial_plan_repair_requested",
-    stage: "editorial_plan",
-    issues: contentIssues
-  });
-  validation = await invokeWithNetworkRetry(
-    buildEditorialPlanRepairPrompt({ selectedItems: candidates, issues: contentIssues }),
-    "repair"
-  );
-  if (hasOnlyResponseContractIssues(validation) && !responseRepairAttempted) {
-    const responseIssues = validation.issues;
-    responseRepairAttempted = true;
+  for (let repairAttempt = 1; repairAttempt <= 3; repairAttempt += 1) {
+    const contentIssues = validation.issues;
     await onEvent?.({
-      type: "editorial_plan_response_repair_requested",
+      type: "editorial_plan_repair_requested",
       stage: "editorial_plan",
-      attemptType: "repair",
-      issues: responseIssues
+      repairAttempt,
+      issues: contentIssues
     });
     validation = await invokeWithNetworkRetry(
-      buildEditorialPlanResponseRepairPrompt({
-        selectedItems: candidates,
-        issues: contentIssues,
-        responseIssues
-      }),
-      "repair_response_repair"
+      buildEditorialPlanRepairPrompt({ selectedItems: candidates, issues: contentIssues }),
+      `repair_${repairAttempt}`
     );
-  }
-  if (!validation.valid) {
-    throw new EditorialAgentError("Editorial Plan remains unsupported after one structured repair.", {
-      code: "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED",
-      issues: validation.issues
-    });
+    if (hasOnlyResponseContractIssues(validation) && !responseRepairAttempted) {
+      const responseIssues = validation.issues;
+      responseRepairAttempted = true;
+      await onEvent?.({
+        type: "editorial_plan_response_repair_requested",
+        stage: "editorial_plan",
+        attemptType: `repair_${repairAttempt}`,
+        issues: responseIssues
+      });
+      validation = await invokeWithNetworkRetry(
+        buildEditorialPlanResponseRepairPrompt({
+          selectedItems: candidates,
+          issues: contentIssues,
+          responseIssues
+        }),
+        `repair_${repairAttempt}_response_repair`
+      );
+    }
+    if (validation.valid) {
+      return {
+        editorialPlan: validation.editorialPlan,
+        repairAttempted: true,
+        repairAttempts: repairAttempt,
+        responseRepairAttempted,
+        calls
+      };
+    }
+    if (hasOnlyResponseContractIssues(validation)) {
+      throw new EditorialAgentError("Editorial Plan response remains invalid after one response-format repair.", {
+        code: "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED",
+        issues: validation.issues
+      });
+    }
   }
 
-  return {
-    editorialPlan: validation.editorialPlan,
-    repairAttempted: true,
-    responseRepairAttempted,
-    calls
-  };
+  throw new EditorialAgentError("Editorial Plan remains unsupported after three structured repairs.", {
+    code: "READING_LIST_EDITORIAL_PLAN_UNSUPPORTED",
+    issues: validation.issues
+  });
 };
 
 const allowedHeadTailFields = new Set([
