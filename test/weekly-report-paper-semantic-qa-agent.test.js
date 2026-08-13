@@ -307,6 +307,18 @@ test("Paper Semantic QA batch uses finite concurrency and preserves paper order"
   assert.deepEqual(result.succeeded.map((entry) => entry.qaResult.paperId), items.map((item) => item.paper.id));
 });
 
+test("Paper Semantic QA batch matches an arXiv URL item to its canonical draft ID", async () => {
+  const item = itemFor("https://arxiv.org/abs/2603.20986");
+  const result = await reviewPaperSemanticsBatch([item], [draftFor("2603.20986")], {
+    networkRetryDelayMs: 0,
+    callModel: async () => passResponse("2603.20986")
+  });
+
+  assert.equal(result.failed.length, 0);
+  assert.equal(result.succeeded.length, 1);
+  assert.equal(result.succeeded[0].qaResult.paperId, "2603.20986");
+});
+
 test("a second invalid QA response fails closed", async () => {
   const item = itemFor("2608.10008");
   await assert.rejects(

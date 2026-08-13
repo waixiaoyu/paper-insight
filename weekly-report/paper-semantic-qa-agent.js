@@ -39,7 +39,11 @@ const cleanText = (value, maximum = 1200) => String(value || "")
   .trim()
   .slice(0, maximum);
 
-const normalizedPaperId = (value) => cleanText(value, 200).replace(/v\d+$/i, "");
+const normalizedPaperId = (value) => {
+  const text = cleanText(value, 200).toLowerCase();
+  const match = text.match(/(?:^|\/)(\d{4}\.\d{4,5})(?:v\d+)?(?:$|[?#/])/i);
+  return match?.[1] || text.replace(/v\d+$/i, "");
+};
 
 const requiresChinese = (value) => cleanText(value, 40).toLowerCase() === "zh-cn";
 
