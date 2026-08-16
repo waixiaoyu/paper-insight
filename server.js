@@ -2320,12 +2320,24 @@ const callWeeklyReportAgentModel = async (prompt, {
       payload.thinking = { type: "disabled" };
     }
 
-    const llmResponse = await fetch(endpoint, {
-      method: "POST",
-      signal: controller.signal,
-      headers: llmHeaders(config),
-      body: JSON.stringify(payload)
-    });
+    let llmResponse;
+    try {
+      llmResponse = await fetch(endpoint, {
+        method: "POST",
+        signal: controller.signal,
+        headers: llmHeaders(config),
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      if (error instanceof TypeError && !error?.code) {
+        const callError = new Error(`周报 Agent 模型网络调用失败：${error.message}`);
+        callError.code = "READING_LIST_AGENT_CALL_FAILED";
+        callError.retryable = true;
+        callError.cause = error;
+        throw callError;
+      }
+      throw error;
+    }
     if (!llmResponse.ok) {
       const errorText = await llmResponse.text();
       const error = new Error(`周报 Agent 模型调用失败（${llmResponse.status}）：${truncate(redactSensitive(errorText), 300)}`);

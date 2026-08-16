@@ -96,3 +96,62 @@ test("weekly-report model rejects empty or max-token Anthropic responses as retr
     globalThis.fetch = nativeFetch;
   }
 });
+
+test("weekly-report model classifies a fetch failure as a retryable call error", async () => {
+  const nativeFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+
+    await assert.rejects(
+      () => callWeeklyReportAgentModel("{\"task\":\"test\"}", {
+        role: "evidence_agent",
+        llm: {
+          apiKey: "test-key",
+          endpoint: "https://example.test/api/anthropic/v1/messages",
+          model: "glm-5.2"
+        }
+      }),
+      (error) => (
+        error.code === "READING_LIST_AGENT_CALL_FAILED"
+        && error.retryable === true
+        && /fetch failed/.test(error.message)
+      )
+    );
+  } finally {
+    globalThis.fetch = nativeFetch;
+  }
+});
+
+test("weekly-report model does not misclassify response parsing TypeErrors as network failures", async () => {
+  const nativeFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => {
+        throw new TypeError("response parser bug");
+      }
+    });
+
+    await assert.rejects(
+      () => callWeeklyReportAgentModel("{\"task\":\"test\"}", {
+        role: "evidence_agent",
+        llm: {
+          apiKey: "test-key",
+          endpoint: "https://example.test/api/anthropic/v1/messages",
+          model: "glm-5.2"
+        }
+      }),
+      (error) => (
+        error instanceof TypeError
+        && error.message === "response parser bug"
+        && error.code === undefined
+      )
+    );
+  } finally {
+    globalThis.fetch = nativeFetch;
+  }
+});

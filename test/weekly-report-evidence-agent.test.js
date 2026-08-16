@@ -632,6 +632,40 @@ test("two incomplete model responses fail the Evidence stage instead of excludin
   assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
 });
 
+test("two model transport failures fail the Evidence stage instead of excluding the paper", async () => {
+  let calls = 0;
+  const events = [];
+
+  await assert.rejects(
+    () => extractEvidenceBatch([{
+      paper: { id: "2607.11111" },
+      contextPacket: contextPacketFor()
+    }], {
+      paperConcurrency: 1,
+      networkRetryDelayMs: 0,
+      callModel: async () => {
+        calls += 1;
+        const error = new Error("upstream connection reset");
+        error.code = "READING_LIST_AGENT_CALL_FAILED";
+        error.retryable = true;
+        throw error;
+      },
+      onEvent: async (event) => events.push(event)
+    }),
+    (error) => (
+      error.code === "READING_LIST_AGENT_CALL_FAILED"
+      && error.retryable === true
+      && error.stage === "extract_evidence"
+      && error.paperId === "2607.11111"
+    )
+  );
+
+  assert.equal(calls, 2);
+  assert.equal(events.some((event) => event.type === "network_retry"), true);
+  assert.equal(events.some((event) => event.type === "repair_requested"), false);
+  assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
+});
+
 test("Evidence 批处理有限并发、保持候选顺序，并只排除失败论文", async () => {
   const items = ["2607.10001", "2607.10002", "2607.10003"].map((paperId) => ({
     paper: { id: paperId },

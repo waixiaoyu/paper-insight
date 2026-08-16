@@ -582,7 +582,7 @@ export const runEvidenceAgent = async ({
         if (retryError?.name === "AbortError") {
           throw retryError;
         }
-        if (retryError?.code === "READING_LIST_AGENT_RESPONSE_INCOMPLETE") {
+        if (retryError?.modelCallFailed) {
           throw retryError;
         }
         throw new EvidenceAgentError("Evidence Agent model call failed after one network retry.", {
