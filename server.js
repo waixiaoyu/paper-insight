@@ -57,6 +57,15 @@ const paperOriginalTextTotalMaxChars = Math.min(Math.max(Number(process.env.PAPE
 const paperOriginalTextConcurrency = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_CONCURRENCY || 2), 1), 5);
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
 const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
+const normalizeWeeklyReportAgentMaxOutputTokens = (value) => {
+  const raw = String(value ?? "").trim();
+  const numeric = raw ? Number(raw) : 65536;
+  const finiteValue = Number.isFinite(numeric) ? Math.trunc(numeric) : 65536;
+  return Math.min(Math.max(finiteValue, 12000), 128000);
+};
+const weeklyReportAgentMaxOutputTokens = normalizeWeeklyReportAgentMaxOutputTokens(
+  process.env.WEEKLY_REPORT_AGENT_MAX_OUTPUT_TOKENS
+);
 const llmRequestTimeoutMs = Number(process.env.LLM_REQUEST_TIMEOUT_MS || 10 * 60 * 1000);
 const candidateBatchMax = 100;
 const recommendationListMax = 100;
@@ -2283,7 +2292,7 @@ const callWeeklyReportAgentModel = async (prompt, {
     const payload = {
       model,
       temperature: 0.1,
-      max_tokens: llmMaxOutputTokens,
+      max_tokens: weeklyReportAgentMaxOutputTokens,
       messages: [
         {
           role: "system",
@@ -4191,7 +4200,7 @@ const weeklyReportJobManager = new WeeklyReportJobManager({
       endpoint: config.endpoint,
       protocol: config.protocol,
       temperature: 0.1,
-      maxOutputTokens: llmMaxOutputTokens,
+      maxOutputTokens: weeklyReportAgentMaxOutputTokens,
       requestTimeoutMs: llmRequestTimeoutMs
     } : {
       configured: false
@@ -4455,4 +4464,8 @@ if (isMainModule) {
   });
 }
 
-export { callWeeklyReportAgentModel, server };
+export {
+  callWeeklyReportAgentModel,
+  normalizeWeeklyReportAgentMaxOutputTokens,
+  server
+};

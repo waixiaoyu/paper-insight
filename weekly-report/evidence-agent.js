@@ -437,6 +437,7 @@ const serializedError = (error) => ({
   stage: String(error?.stage || "extract_evidence"),
   paperId: String(error?.paperId || ""),
   retryable: Boolean(error?.retryable),
+  stopReason: String(error?.stopReason || ""),
   excludePaper: Boolean(error?.excludePaper),
   issues: Array.isArray(error?.issues) ? error.issues : []
 });

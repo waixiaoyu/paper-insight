@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { callWeeklyReportAgentModel } from "../server.js";
+import {
+  callWeeklyReportAgentModel,
+  normalizeWeeklyReportAgentMaxOutputTokens
+} from "../server.js";
+
+test("weekly-report output token configuration uses a finite bounded integer", () => {
+  assert.equal(normalizeWeeklyReportAgentMaxOutputTokens(undefined), 65536);
+  assert.equal(normalizeWeeklyReportAgentMaxOutputTokens("not-a-number"), 65536);
+  assert.equal(normalizeWeeklyReportAgentMaxOutputTokens(8000), 12000);
+  assert.equal(normalizeWeeklyReportAgentMaxOutputTokens(200000), 128000);
+  assert.equal(normalizeWeeklyReportAgentMaxOutputTokens("70000.9"), 70000);
+});
 
 test("weekly-report Anthropic requests disable GLM thinking for structured JSON output", async () => {
   const nativeFetch = globalThis.fetch;
@@ -31,6 +42,7 @@ test("weekly-report Anthropic requests disable GLM thinking for structured JSON 
 
     assert.equal(output, "{\"status\":\"ok\"}");
     assert.deepEqual(requestPayload.thinking, { type: "disabled" });
+    assert.equal(requestPayload.max_tokens, 65536);
   } finally {
     globalThis.fetch = nativeFetch;
   }

@@ -239,7 +239,9 @@ node server.js
 - `LLM_MODEL`
 - `LLM_API_URL`
 - `LLM_MAX_OUTPUT_TOKENS`：默认 `12000`，控制 LLM 单次分析的最大输出 token。
+- `WEEKLY_REPORT_AGENT_MAX_OUTPUT_TOKENS`：默认 `65536`、最大 `128000`，仅控制新版周报 Agent 的结构化输出预算；不影响推荐列表分析。
 - `LLM_RESPONSE_MAX_CHARS`：默认 `500000`，只做超大响应保护；不会把模型返回内容截断成短文本。
+- 将周报输出预算提高到接近 `128000` 时，如确需接收极长响应，应同步评估 `LLM_RESPONSE_MAX_CHARS`；超过字符保护会明确失败，不会截断后继续发布。
 - `LLM_REQUEST_TIMEOUT_MS`：默认 `600000`，控制 LLM 分析请求超时时间。
 - `PAPER_ORIGINAL_TEXT_CACHE_DIR`：可选，覆盖论文原文缓存目录；本地测试使用临时目录避免污染项目缓存。
 - `WEEKLY_REPORT_SEMANTIC_REVIEW_MODE`：`off`、`warn` 或 `enforce`，默认 `warn`。

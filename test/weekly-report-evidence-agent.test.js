@@ -612,6 +612,7 @@ test("two incomplete model responses fail the Evidence stage instead of excludin
         const error = new Error("structured response incomplete");
         error.code = "READING_LIST_AGENT_RESPONSE_INCOMPLETE";
         error.retryable = true;
+        error.stopReason = "max_tokens";
         throw error;
       },
       onEvent: async (event) => events.push(event)
@@ -626,6 +627,7 @@ test("two incomplete model responses fail the Evidence stage instead of excludin
 
   assert.equal(calls, 2);
   assert.equal(events.some((event) => event.type === "network_retry"), true);
+  assert.equal(events.find((event) => event.type === "network_retry")?.error?.stopReason, "max_tokens");
   assert.equal(events.some((event) => event.type === "repair_requested"), false);
   assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
 });
