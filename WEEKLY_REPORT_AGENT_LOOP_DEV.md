@@ -1484,6 +1484,8 @@ READING_LIST_TRACE_DIR
 - maxSelectedCount 前端范围 3–20。
 - 不设置 Job 总超时。
 - 每次 fetch/LLM 调用仍有单次超时。
+- GLM-5.2 的受约束 JSON Agent 调用必须关闭 Thinking，避免推理 token 挤占结构化输出；该设置不影响 Trace 对输入、产物、校验和决策的记录。
+- 模型返回空正文或因 `max_tokens`/`length` 停止而只返回不完整 JSON 时，按可重试调用失败处理，不得计入内容修正次数，也不得据此排除论文。
 - 新版 QA 强制，不提供 warn/off 发布配置。
 
 ## 17. 错误码

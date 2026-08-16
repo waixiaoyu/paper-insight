@@ -2305,6 +2305,7 @@ const callWeeklyReportAgentModel = async (prompt, {
       const [systemMessage, userMessage] = payload.messages;
       payload.system = systemMessage.content;
       payload.messages = [userMessage];
+      payload.thinking = { type: "disabled" };
     }
     if (disableThinking && protocol === "openai") {
       payload.thinking = { type: "disabled" };
@@ -2325,7 +2326,22 @@ const callWeeklyReportAgentModel = async (prompt, {
     }
 
     const data = await llmResponse.json();
-    return ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol));
+    const content = ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol));
+    const stopReason = String(data?.stop_reason || data?.choices?.[0]?.finish_reason || "").toLowerCase();
+
+    if (!content || ["max_tokens", "length"].includes(stopReason)) {
+      const error = new Error(
+        !content
+          ? "周报 Agent 模型返回了空正文。"
+          : "周报 Agent 模型输出达到 token 上限，JSON 响应不完整。"
+      );
+      error.code = "READING_LIST_AGENT_RESPONSE_INCOMPLETE";
+      error.retryable = true;
+      error.stopReason = stopReason || "empty_content";
+      throw error;
+    }
+
+    return content;
   } catch (error) {
     if (error?.name === "AbortError") {
       if (signal?.aborted && !timedOut) {
@@ -4439,4 +4455,4 @@ if (isMainModule) {
   });
 }
 
-export { server };
+export { callWeeklyReportAgentModel, server };

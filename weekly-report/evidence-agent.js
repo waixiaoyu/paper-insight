@@ -501,6 +501,8 @@ export const runEvidenceAgent = async ({
         await onCall(record);
       }
       error.modelCallFailed = true;
+      error.stage = error.stage || "extract_evidence";
+      error.paperId = error.paperId || expectedPaperId;
       throw error;
     }
 
@@ -577,6 +579,9 @@ export const runEvidenceAgent = async ({
         return await invoke(prompt, retryAttemptType, repairContext);
       } catch (retryError) {
         if (retryError?.name === "AbortError") {
+          throw retryError;
+        }
+        if (retryError?.code === "READING_LIST_AGENT_RESPONSE_INCOMPLETE") {
           throw retryError;
         }
         throw new EvidenceAgentError("Evidence Agent model call failed after one network retry.", {
@@ -779,6 +784,9 @@ export const extractEvidenceBatch = async (items, {
     } catch (error) {
       if (error?.name === "AbortError" || signal?.aborted) {
         throw abortError();
+      }
+      if (error?.excludePaper !== true) {
+        throw error;
       }
       await onEvent?.({
         type: "evidence_excluded",
