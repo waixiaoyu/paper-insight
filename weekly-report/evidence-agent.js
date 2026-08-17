@@ -786,6 +786,15 @@ export const extractEvidenceBatch = async (items, {
       if (error?.name === "AbortError" || signal?.aborted) {
         throw abortError();
       }
+      if (error?.modelCallFailed) {
+        await onEvent?.({
+          type: "evidence_processing_failed",
+          stage: "extract_evidence",
+          paperId: String(item?.contextPacket?.paperId || item?.paper?.id || ""),
+          error: serializedError(error)
+        });
+        return { ok: false, processingFailed: true, item, error };
+      }
       if (error?.excludePaper !== true) {
         throw error;
       }
@@ -800,6 +809,7 @@ export const extractEvidenceBatch = async (items, {
   });
   const succeeded = [];
   const excluded = [];
+  const processingFailed = [];
 
   results.forEach((entry) => {
     if (entry.ok) {
@@ -809,6 +819,11 @@ export const extractEvidenceBatch = async (items, {
         valueSignals: entry.result.valueSignals,
         validation: entry.result.validation,
         repairAttempted: entry.result.repairAttempted
+      });
+    } else if (entry.processingFailed) {
+      processingFailed.push({
+        ...entry.item,
+        error: serializedError(entry.error)
       });
     } else {
       excluded.push({
@@ -821,6 +836,7 @@ export const extractEvidenceBatch = async (items, {
   return {
     succeeded,
     excluded,
+    processingFailed,
     attempted: candidates.length,
     concurrency
   };

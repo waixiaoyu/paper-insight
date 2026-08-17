@@ -2692,7 +2692,9 @@ function weeklyReportTraceEventText(event = {}) {
     case "model_call_completed": text = `${stage}的模型调用完成${event.attemptType ? `（${event.attemptType}）` : ""}${duration ? `，耗时 ${duration}` : ""}`; break;
     case "model_call_failed": text = `${stage}的模型调用失败`; break;
     case "repair_requested": text = `发现 ${issueCount || "若干"} 项问题，发起一次定向修正`; break;
-    case "manual_review_requested": text = `自动修正 ${event.repairAttempts || 0} 次后仍有问题，等待管理员决策`; break;
+    case "manual_review_requested": text = event.kind === "execution_failure"
+      ? "自动处理未完成，等待管理员决定是否重新执行任务"
+      : `自动修正 ${event.repairAttempts || 0} 次后仍有问题，等待管理员决策`; break;
     case "manual_review_decided": text = `管理员已选择：${weeklyReportManualReviewActionLabel(event.action)}`; break;
     case "job_completed": text = `任务结束：${event.outcome === "publish" ? "已发布" : "未发布"}`; break;
     case "job_interrupted": text = "任务已中断"; break;
@@ -2777,6 +2779,7 @@ function appendWeeklyReportTracePhase(phase, events, artifacts, index) {
 }
 
 const weeklyReportManualReviewActionLabels = Object.freeze({
+  retry_job: "重新执行任务",
   continue_repair: "继续修正一次",
   exit_task: "退出任务",
   skip_paper: "跳过这篇论文",
@@ -2811,10 +2814,12 @@ function renderWeeklyReportManualReview(job) {
   panel.hidden = false;
   const stage = weeklyReportTraceStageLabel(review.stage);
   elements.weeklyReportManualReviewTitle.textContent = `${stage}需要管理员决策`;
-  elements.weeklyReportManualReviewSummary.textContent = review.summary || "自动修正后仍未通过质量门，请选择后续处理方式。";
+  elements.weeklyReportManualReviewSummary.textContent = review.summary || "自动处理未完成，请选择后续处理方式。";
   elements.weeklyReportManualReviewMeta.textContent = [
     review.paperId ? `论文：${review.paperId}` : "范围：整份周报",
-    `已修正 ${Number(review.repairAttempts) || 0} 次`
+    review.kind === "execution_failure"
+      ? "可重新执行任务"
+      : `已修正 ${Number(review.repairAttempts) || 0} 次`
   ].join(" · ");
   elements.weeklyReportManualReviewIssues.textContent = "";
   const issues = Array.isArray(review.issues) ? review.issues : [];

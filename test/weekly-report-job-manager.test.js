@@ -32,6 +32,15 @@ const createHarness = async (options = {}) => {
   return { jobsDir, manager, rootDir, traceStore };
 };
 
+const waitForManualReview = async (manager, jobId) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const job = await manager.getJob(jobId);
+    if (job?.manualReview) return job;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for weekly report manual review.");
+};
+
 afterEach(async () => {
   await Promise.all(tempDirectories.splice(0).map((directory) => (
     rm(directory, { recursive: true, force: true })
@@ -135,11 +144,116 @@ test("执行失败和非法完成态统一转为 reject，不存在隐式旧链�
   });
 
   const created = await manager.createOrReuse({ reportKey: "2026-W31" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const waiting = await manager.getActive();
+  assert.equal(waiting.state, "running");
+  assert.deepEqual(waiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
+
+  await manager.decide(created.jobId, { action: "exit_task" });
   const completed = await manager.waitForCompletion(created.jobId);
 
   assert.equal(completed.state, "reject");
-  assert.equal(completed.result.reason, "invalid_job_result");
+  assert.equal(completed.result.reason, "admin_rejected");
+  assert.equal(completed.error.code, "READING_LIST_PUBLISH_REJECTED");
   assert.equal(legacyFallbackCalls, 0);
+});
+
+test("自动拒绝先等待管理员决定，重试后才继续执行任务", async () => {
+  const requestingReview = deferred();
+  let executions = 0;
+  const { manager, traceStore } = await createHarness({
+    execute: async () => {
+      executions += 1;
+      if (executions === 1) {
+        requestingReview.resolve();
+        const error = new Error("Evidence model call failed twice.");
+        error.code = "READING_LIST_AGENT_CALL_FAILED";
+        error.stage = "extract_evidence";
+        error.paperId = "2608.08996";
+        error.retryable = true;
+        error.rejectJob = true;
+        throw error;
+      }
+      return { state: "publish", markdown: "# 已重试周报" };
+    }
+  });
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W32-retry" });
+  await requestingReview.promise;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const waiting = await manager.getActive();
+
+  assert.equal(waiting.state, "running");
+  assert.equal(waiting.manualReview.stage, "extract_evidence");
+  assert.equal(waiting.manualReview.paperId, "2608.08996");
+  assert.deepEqual(waiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
+
+  await manager.decide(created.jobId, { action: "retry_job" });
+  const completed = await manager.waitForCompletion(created.jobId);
+  const trace = await traceStore.readTrace(created.traceId);
+
+  assert.equal(executions, 2);
+  assert.equal(completed.state, "publish");
+  assert.equal(trace.timeline.some((event) => event.type === "manual_review_decided" && event.action === "retry_job"), true);
+});
+
+test("未标记的执行异常也会等待管理员决定", async () => {
+  const { manager } = await createHarness({
+    execute: async () => {
+      throw new Error("unexpected pipeline failure");
+    }
+  });
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W32-unmarked-error" });
+  const waiting = await waitForManualReview(manager, created.jobId);
+  assert.equal(waiting.manualReview.stage, "create_job");
+  assert.deepEqual(waiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
+
+  await manager.decide(created.jobId, { action: "exit_task" });
+  const completed = await manager.waitForCompletion(created.jobId);
+  assert.equal(completed.state, "reject");
+  assert.equal(completed.result.reason, "admin_rejected");
+  assert.match(completed.error.message, /unexpected pipeline failure/);
+});
+
+test("发布写入失败会等待管理员决定", async () => {
+  let publishCalls = 0;
+  const { manager } = await createHarness({
+    execute: async () => ({ state: "publish", markdown: "# Report" }),
+    publish: async () => {
+      publishCalls += 1;
+      throw new Error("report storage unavailable");
+    }
+  });
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W32-publish-failure" });
+  const waiting = await waitForManualReview(manager, created.jobId);
+  assert.equal(waiting.manualReview.stage, "publish");
+
+  await manager.decide(created.jobId, { action: "exit_task" });
+  const completed = await manager.waitForCompletion(created.jobId);
+  assert.equal(publishCalls, 1);
+  assert.equal(completed.result.reason, "admin_rejected");
+  assert.equal(completed.error.code, "READING_LIST_PUBLISH_FAILED");
+});
+
+test("已确认的管理员退出不会再次请求任务重试", async () => {
+  const { manager } = await createHarness({
+    execute: async () => {
+      const error = new Error("Administrator exited Editorial Plan review.");
+      error.code = "READING_LIST_ADMIN_REJECTED";
+      error.stage = "editorial_plan";
+      error.rejectJob = true;
+      throw error;
+    }
+  });
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W32-editorial-exit" });
+  const completed = await manager.waitForCompletion(created.jobId);
+  assert.equal(completed.state, "reject");
+  assert.equal(completed.result.reason, "admin_rejected");
+  assert.equal(completed.error.code, "READING_LIST_ADMIN_REJECTED");
+  assert.equal((await manager.getActive()), null);
 });
 
 test("服务启动发现遗留 running Job 时标记 agent_interrupted 并释放全局锁", async () => {
@@ -173,6 +287,8 @@ test("服务启动发现遗留 running Job 时标记 agent_interrupted 并释放
   const next = await restartedManager.createOrReuse({ reportKey: "2026-W32" });
   assert.equal(next.reusedActiveJob, false);
   assert.notEqual(next.jobId, running.jobId);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await restartedManager.decide(next.jobId, { action: "exit_task" });
   await restartedManager.waitForCompletion(next.jobId);
 });
 
@@ -207,6 +323,8 @@ test("Job 输入只以脱敏快照进入 Trace，认证信息不写入 Job 文�
     llmApiKey: "job-file-secret",
     headers: { Cookie: "sid=job-cookie" }
   });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await manager.decide(created.jobId, { action: "exit_task" });
   await manager.waitForCompletion(created.jobId);
 
   const jobText = await readFile(join(jobsDir, `job-${created.jobId}.json`), "utf8");

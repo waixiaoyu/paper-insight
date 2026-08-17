@@ -22,6 +22,14 @@ import {
 import { WeeklyReportTraceStore } from "../weekly-report/trace-store.js";
 
 const tempDirectories = [];
+const waitForManualReview = async (manager, jobId) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const job = await manager.getJob(jobId);
+    if (job?.manualReview) return job;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for weekly report manual review.");
+};
 const inWeek = "2026-07-30T00:00:00.000Z";
 const inputRange = {
   weekStart: "2026-07-27T00:00:00.000Z",
@@ -529,6 +537,8 @@ test("Orchestrator 通过 JobManager 持久化计数、阶段和 Trace artifacts
     reservePapers: [],
     sourceSnapshot: [{ id: "2607.12345", llmApiKey: "must-redact" }]
   });
+  await waitForManualReview(manager, created.jobId);
+  await manager.decide(created.jobId, { action: "exit_task" });
   const completed = await manager.waitForCompletion(created.jobId);
   const trace = await traceStore.readTrace(created.traceId);
 
@@ -559,10 +569,17 @@ test("Orchestrator 整体拒绝原因会成为 Job 的直接结果，而不是�
     primaryPapers: [{ id: "invalid", published: inWeek }],
     reservePapers: []
   });
-  const completed = await manager.waitForCompletion(created.jobId);
+  const waiting = await waitForManualReview(manager, created.jobId);
 
+  assert.equal(waiting.state, "running");
+  assert.equal(waiting.agentStage, "prepare_context");
+  assert.equal(waiting.manualReview.kind, "execution_failure");
+  assert.deepEqual(waiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
+
+  await manager.decide(created.jobId, { action: "exit_task" });
+  const completed = await manager.waitForCompletion(created.jobId);
   assert.equal(completed.state, "reject");
-  assert.equal(completed.result.reason, "READING_LIST_NO_ELIGIBLE_PAPERS");
+  assert.equal(completed.result.reason, "admin_rejected");
   assert.equal(completed.error.code, "READING_LIST_NO_ELIGIBLE_PAPERS");
   assert.equal(completed.error.stage, "prepare_context");
   assert.equal(completed.error.rejectJob, true);
@@ -708,6 +725,51 @@ test("Evidence below target continues when at least one paper succeeds", async (
   assert.equal(partial.evidenceItems.length, 1);
   assert.equal(partial.warnings.some((warning) => (
     warning.code === "READING_LIST_EVIDENCE_BELOW_TARGET"
+  )), true);
+});
+
+test("Evidence model transport failures preserve other papers and record processing failure", async () => {
+  const execution = fakeExecutionContext();
+  const prepared = await prepareWeeklyReportJob({
+    ...inputRange,
+    minSelectedCount: 2,
+    paperConcurrency: 1,
+    primaryPapers: [
+      { id: "2607.12005", published: inWeek },
+      { id: "2607.12006", published: inWeek }
+    ],
+    reservePapers: []
+  }, execution.context, {
+    buildContext: async (paper) => evidencePacketFor(paper.id)
+  });
+
+  const partial = await extractWeeklyReportEvidence(prepared, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const paperId = JSON.parse(prompt).paper.paperId;
+      if (paperId === "2607.12005") {
+        const error = new Error("model transport failed");
+        error.code = "READING_LIST_AGENT_CALL_FAILED";
+        error.modelCallFailed = true;
+        error.retryable = true;
+        throw error;
+      }
+      return evidenceResponseFor(paperId);
+    }
+  });
+
+  assert.equal(partial.nextStage, "review");
+  assert.deepEqual(partial.evidenceItems.map((item) => item.paper.id), ["2607.12006"]);
+  assert.equal(partial.evidenceResult.excluded.length, 0);
+  assert.equal(partial.evidenceResult.processingFailed.length, 1);
+  assert.equal(partial.evidenceResult.processingFailed[0].paper.id, "2607.12005");
+  assert.equal(partial.counts.excluded, 0);
+  assert.equal(partial.warnings.some((warning) => (
+    warning.code === "READING_LIST_EVIDENCE_PROCESSING_FAILED"
+    && warning.paperId === "2607.12005"
+  )), true);
+  assert.equal(execution.events.some((event) => (
+    event.type === "evidence_processing_failed" && event.paperId === "2607.12005"
   )), true);
 });
 

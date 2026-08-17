@@ -11,6 +11,7 @@ import { redactTraceValue } from "./trace-store.js";
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const MANUAL_REVIEW_ACTIONS = new Set([
   "continue_repair",
+  "retry_job",
   "exit_task",
   "skip_paper",
   "ignore_warning"
@@ -251,40 +252,97 @@ export class WeeklyReportJobManager {
       }
 
       if (output?.state === "reject") {
-        await this.finish(jobId, {
-          state: "reject",
-          reason: output.reason || "rejected",
-          result: persistedResult(output),
-          markdown: output.markdown
-        });
-        return;
+        if (output.reason === "admin_rejected" || output.reason === "admin_cancelled") {
+          await this.finish(jobId, {
+            state: "reject",
+            reason: output.reason,
+            result: persistedResult(output),
+            markdown: output.markdown
+          });
+          return;
+        }
+        const error = new Error(output.reason || "The Agent Loop rejected publication.");
+        error.code = String(output?.error?.code || "READING_LIST_PUBLISH_REJECTED");
+        error.stage = String(output?.stage || output?.agentStage || this.activeJob.agentStage || "pipeline");
+        error.paperId = String(output?.paperId || "");
+        error.retryable = Boolean(output?.error?.retryable);
+        error.rejectJob = true;
+        error.markdown = output.markdown;
+        error.result = persistedResult(output);
+        throw error;
       }
 
-      await this.finish(jobId, {
-        state: "reject",
-        reason: "invalid_job_result",
-        error: {
-          code: "READING_LIST_PUBLISH_REJECTED",
-          message: "Agent Loop returned a final state other than publish or reject.",
-          retryable: false
-        },
-        markdown: output?.markdown
-      });
+      const error = new Error("Agent Loop returned a final state other than publish or reject.");
+      error.code = "READING_LIST_PUBLISH_REJECTED";
+      error.stage = String(this.activeJob.agentStage || "pipeline");
+      error.retryable = false;
+      error.rejectJob = true;
+      error.markdown = output?.markdown;
+      throw error;
     } catch (error) {
       if (!this.isActiveRunning(jobId)) {
         return;
       }
 
+      if (error?.code === "READING_LIST_JOB_CANCELLED") {
+        await this.finish(jobId, {
+          state: "reject",
+          reason: "admin_cancelled",
+          error: errorRecord(error),
+          markdown: error?.markdown
+        });
+        return;
+      }
+
+      if (error?.code === "READING_LIST_ADMIN_REJECTED") {
+        await this.finish(jobId, {
+          state: "reject",
+          reason: "admin_rejected",
+          result: error?.result,
+          error: errorRecord(error),
+          markdown: error?.markdown
+        });
+        return;
+      }
+
+      let decision;
+      try {
+          decision = await this.requestManualReview(jobId, {
+            kind: "execution_failure",
+            stage: String(error?.stage || this.activeJob.agentStage || "pipeline"),
+            paperId: String(error?.paperId || ""),
+            summary: String(error?.detail || error?.message || "自动处理无法继续，需要管理员决定是否重试任务。"),
+            issues: [errorRecord(error)],
+            repairAttempts: 0,
+            allowedActions: ["retry_job", "exit_task"]
+          }, signal);
+      } catch (reviewError) {
+        await this.finish(jobId, {
+          state: "reject",
+          reason: reviewError?.code === "READING_LIST_JOB_CANCELLED"
+            ? "admin_cancelled"
+            : "manual_review_failed",
+          error: errorRecord(reviewError),
+          markdown: error?.markdown
+        });
+        return;
+      }
+
+      if (decision?.action === "retry_job") {
+        await this.updateStage(jobId, "create_job");
+        await this.run(jobId, input, signal);
+        return;
+      }
+
       await this.finish(jobId, {
         state: "reject",
-        reason: error?.code === "READING_LIST_JOB_CANCELLED"
-          ? "admin_cancelled"
-          : error?.rejectJob && error?.code
-            ? String(error.code)
-            : "execution_failed",
+        reason: "admin_rejected",
+        result: error?.result,
         error: errorRecord(error),
         markdown: error?.markdown
       });
+      return;
+
     }
   }
 
@@ -361,6 +419,7 @@ export class WeeklyReportJobManager {
     }
     const requestedAt = new Date().toISOString();
     const manualReview = redactTraceValue({
+      kind: String(review.kind || "quality_repair"),
       stage: String(review.stage || this.activeJob.agentStage || "manual_review"),
       paperId: String(review.paperId || ""),
       summary: String(review.summary || "Content remains invalid after automatic repairs."),
@@ -401,9 +460,11 @@ export class WeeklyReportJobManager {
       await this.persistJob(waiting, { active: true });
       await this.traceStore.appendTimeline(waiting.traceId, {
         type: "manual_review_requested",
+        kind: manualReview.kind,
         stage: manualReview.stage,
         scope: manualReview.paperId ? "paper" : "job",
         paperId: manualReview.paperId,
+        summary: manualReview.summary,
         issues: manualReview.issues,
         repairAttempts: manualReview.repairAttempts,
         allowedActions
@@ -511,7 +572,12 @@ export class WeeklyReportJobManager {
 
     const operation = this.finishOnce(jobId, options);
     this.finalizations.set(jobId, operation);
-    return operation;
+    try {
+      return await operation;
+    } catch (error) {
+      this.finalizations.delete(jobId);
+      throw error;
+    }
   }
 
   async finishOnce(jobId, {
@@ -541,10 +607,14 @@ export class WeeklyReportJobManager {
           signal: publishSignal
         });
       } catch (publishError) {
-        finalState = "reject";
-        finalReason = "publish_failed";
-        finalResult = {};
-        finalError = errorRecord(publishError);
+        const error = publishError instanceof Error
+          ? publishError
+          : new Error(String(publishError || "Weekly report publication failed."));
+        error.code = String(error.code || "READING_LIST_PUBLISH_FAILED");
+        error.stage = "publish";
+        error.retryable = Boolean(error.retryable);
+        error.rejectJob = true;
+        throw error;
       }
     }
 

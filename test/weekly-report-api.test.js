@@ -145,6 +145,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /id="weeklyReportTraceRawList"/);
   assert.match(html, /id="weeklyReportManualReview"/);
   assert.match(html, /data-manual-review-action="continue_repair"/);
+  assert.match(html, /data-manual-review-action="retry_job"/);
   assert.match(html, /data-manual-review-action="exit_task"/);
   assert.match(html, /data-manual-review-action="skip_paper"/);
   assert.match(html, /data-manual-review-action="ignore_warning"/);

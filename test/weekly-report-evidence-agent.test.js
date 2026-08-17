@@ -596,74 +596,67 @@ test("网络错误自动重试一次，不消耗结构化修正机会", async ()
   assert.deepEqual(callRecords.map((record) => record.attemptType), ["initial", "network_retry"]);
 });
 
-test("two incomplete model responses fail the Evidence stage instead of excluding the paper", async () => {
+test("two incomplete model responses are recorded without excluding the paper", async () => {
   let calls = 0;
   const events = [];
 
-  await assert.rejects(
-    () => extractEvidenceBatch([{
-      paper: { id: "2607.11111" },
-      contextPacket: contextPacketFor()
-    }], {
-      paperConcurrency: 1,
-      networkRetryDelayMs: 0,
-      callModel: async () => {
-        calls += 1;
-        const error = new Error("structured response incomplete");
-        error.code = "READING_LIST_AGENT_RESPONSE_INCOMPLETE";
-        error.retryable = true;
-        error.stopReason = "max_tokens";
-        throw error;
-      },
-      onEvent: async (event) => events.push(event)
-    }),
-    (error) => (
-      error.code === "READING_LIST_AGENT_RESPONSE_INCOMPLETE"
-      && error.retryable === true
-      && error.stage === "extract_evidence"
-      && error.paperId === "2607.11111"
-    )
-  );
+  const result = await extractEvidenceBatch([{
+    paper: { id: "2607.11111" },
+    contextPacket: contextPacketFor()
+  }], {
+    paperConcurrency: 1,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      const error = new Error("structured response incomplete");
+      error.code = "READING_LIST_AGENT_RESPONSE_INCOMPLETE";
+      error.retryable = true;
+      error.stopReason = "max_tokens";
+      throw error;
+    },
+    onEvent: async (event) => events.push(event)
+  });
 
   assert.equal(calls, 2);
+  assert.equal(result.succeeded.length, 0);
+  assert.equal(result.excluded.length, 0);
+  assert.equal(result.processingFailed[0].error.code, "READING_LIST_AGENT_RESPONSE_INCOMPLETE");
   assert.equal(events.some((event) => event.type === "network_retry"), true);
   assert.equal(events.find((event) => event.type === "network_retry")?.error?.stopReason, "max_tokens");
   assert.equal(events.some((event) => event.type === "repair_requested"), false);
   assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
+  assert.equal(events.some((event) => event.type === "evidence_processing_failed"), true);
 });
 
-test("two model transport failures fail the Evidence stage instead of excluding the paper", async () => {
+test("two model transport failures are recorded without excluding the paper", async () => {
   let calls = 0;
   const events = [];
 
-  await assert.rejects(
-    () => extractEvidenceBatch([{
-      paper: { id: "2607.11111" },
-      contextPacket: contextPacketFor()
-    }], {
-      paperConcurrency: 1,
-      networkRetryDelayMs: 0,
-      callModel: async () => {
-        calls += 1;
-        const error = new Error("upstream connection reset");
-        error.code = "READING_LIST_AGENT_CALL_FAILED";
-        error.retryable = true;
-        throw error;
-      },
-      onEvent: async (event) => events.push(event)
-    }),
-    (error) => (
-      error.code === "READING_LIST_AGENT_CALL_FAILED"
-      && error.retryable === true
-      && error.stage === "extract_evidence"
-      && error.paperId === "2607.11111"
-    )
-  );
+  const result = await extractEvidenceBatch([{
+    paper: { id: "2607.11111" },
+    contextPacket: contextPacketFor()
+  }], {
+    paperConcurrency: 1,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      const error = new Error("upstream connection reset");
+      error.code = "READING_LIST_AGENT_CALL_FAILED";
+      error.retryable = true;
+      throw error;
+    },
+    onEvent: async (event) => events.push(event)
+  });
 
   assert.equal(calls, 2);
+  assert.equal(result.succeeded.length, 0);
+  assert.equal(result.excluded.length, 0);
+  assert.equal(result.processingFailed.length, 1);
+  assert.equal(result.processingFailed[0].error.code, "READING_LIST_AGENT_CALL_FAILED");
   assert.equal(events.some((event) => event.type === "network_retry"), true);
   assert.equal(events.some((event) => event.type === "repair_requested"), false);
   assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
+  assert.equal(events.some((event) => event.type === "evidence_processing_failed"), true);
 });
 
 test("Evidence 批处理有限并发、保持候选顺序，并只排除失败论文", async () => {

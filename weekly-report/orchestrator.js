@@ -372,6 +372,7 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
   let counts = { ...prepared.counts };
   const evidenceItems = [];
   const evidenceExcluded = [];
+  const evidenceProcessingFailed = [];
   const refillContextEligible = [];
   const refillContextExcluded = [];
 
@@ -420,6 +421,7 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
     });
     evidenceItems.push(...result.succeeded);
     evidenceExcluded.push(...result.excluded);
+    evidenceProcessingFailed.push(...result.processingFailed);
     counts = {
       ...counts,
       excluded: counts.excluded + result.excluded.length
@@ -490,21 +492,29 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
   const warnings = [
     ...(Array.isArray(prepared.warnings) ? prepared.warnings : []),
     ...evidenceStageWarnings({
-      attempted: evidenceItems.length + evidenceExcluded.length,
+      attempted: evidenceItems.length + evidenceExcluded.length + evidenceProcessingFailed.length,
       excluded: evidenceExcluded.length,
       accepted: evidenceItems.length,
       target
-    })
+    }),
+    ...evidenceProcessingFailed.map((item) => ({
+      code: "READING_LIST_EVIDENCE_PROCESSING_FAILED",
+      stage: "extract_evidence",
+      paperId: String(item?.contextPacket?.paperId || item?.paper?.id || ""),
+      message: "该论文的 Evidence 模型调用在自动重试后仍未完成，已继续处理其它论文。",
+      severity: "warning"
+    }))
   ];
   const evidenceResult = {
     targetEligibleCount: target,
-    attempted: evidenceItems.length + evidenceExcluded.length,
+    attempted: evidenceItems.length + evidenceExcluded.length + evidenceProcessingFailed.length,
     concurrency,
     reserveAttempted: reserveCursor,
     reserveRemaining: Math.max(0, reserveCandidates.length - reserveCursor),
     underTarget: evidenceItems.length < target,
     succeeded: evidenceItems,
-    excluded: evidenceExcluded
+    excluded: evidenceExcluded,
+    processingFailed: evidenceProcessingFailed
   };
   const refill = {
     contextEligible: refillContextEligible,
@@ -611,6 +621,7 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
   let counts = { ...evidenced.counts };
   const reviewItems = [];
   const excluded = [];
+  const processingFailed = [];
   const refillContextEligible = [];
   const refillContextExcluded = [];
   const refillEvidenceSucceeded = [];
@@ -675,6 +686,7 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
     });
     reviewItems.push(...result.succeeded);
     excluded.push(...result.excluded.map((item) => ({ ...item, failedStage: "review" })));
+    processingFailed.push(...result.processingFailed.map((item) => ({ ...item, failedStage: "review" })));
     counts = {
       ...counts,
       reviewed: reviewItems.length,
@@ -745,6 +757,10 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
         })
       });
       refillEvidenceSucceeded.push(...evidenceResult.succeeded);
+      processingFailed.push(...evidenceResult.processingFailed.map((item) => ({
+        ...item,
+        failedStage: "extract_evidence"
+      })));
       const evidenceFailures = evidenceResult.excluded.map((item) => ({
         ...item,
         failedStage: "extract_evidence"
@@ -775,21 +791,29 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
     ...(Array.isArray(evidenced.warnings) ? evidenced.warnings : []),
     ...administratorWarnings,
     ...reviewStageWarnings({
-      attempted: reviewItems.length + excluded.length,
+      attempted: reviewItems.length + excluded.length + processingFailed.length,
       excluded: excluded.length,
       accepted: reviewItems.length,
       target
-    })
+    }),
+    ...processingFailed.map((item) => ({
+      code: "READING_LIST_REVIEW_PROCESSING_FAILED",
+      stage: String(item.failedStage || "review"),
+      paperId: String(item?.contextPacket?.paperId || item?.paper?.id || ""),
+      message: "该论文的模型调用在自动重试后仍未完成，已继续处理其它论文。",
+      severity: "warning"
+    }))
   ];
   const reviewResult = {
     targetReviewedCount: target,
-    attempted: reviewItems.length + excluded.length,
+    attempted: reviewItems.length + excluded.length + processingFailed.length,
     concurrency,
     reserveAttempted: reserveCursor,
     reserveRemaining: Math.max(0, reserveCandidates.length - reserveCursor),
     underTarget: reviewItems.length < target,
     succeeded: reviewItems,
-    excluded
+    excluded,
+    processingFailed
   };
   const refill = {
     contextEligible: refillContextEligible,

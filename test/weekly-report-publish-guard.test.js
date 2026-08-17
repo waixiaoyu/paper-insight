@@ -55,10 +55,9 @@ test("缺少入选论文并混入未知 arXiv 论文时阻止发布", () => {
 });
 
 test("保底论文进入本周必读时阻止发布", () => {
-  const mustReadMarker = "## 本周必读\n";
   const invalid = markdown.replace(
-    mustReadMarker,
-    `${mustReadMarker}\nDigital Twin Evaluation for Closed-Loop Network Control\n`
+    /## 本周必读\r?\n/,
+    (marker) => `${marker}\nDigital Twin Evaluation for Closed-Loop Network Control\n`
   );
   const result = validateWeeklyReportMarkdown({
     markdown: invalid,

@@ -28,6 +28,18 @@ const waitForFinalJob = async (baseUrl, jobId, fetchImpl) => {
   throw new Error("Weekly report Job did not finish in time.");
 };
 
+const waitForManualReview = async (baseUrl, jobId, fetchImpl) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const response = await fetchImpl(`${baseUrl}/api/reading-list/jobs/${jobId}`);
+    const job = await response.json();
+    if (job.state === "running" && job.manualReview) {
+      return job;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Weekly report Job did not reach manual review in time.");
+};
+
 test("异步周报 Job API 支持创建、复用、查询、Trace、结果和取消", async () => {
   const rootDir = await mkdtemp(join(tmpdir(), "paper-insight-job-api-"));
   const nativeFetch = globalThis.fetch;
@@ -90,9 +102,21 @@ test("异步周报 Job API 支持创建、复用、查询、Trace、结果和取
     const hiddenCreated = await hiddenResponse.json();
     assert.equal(hiddenResponse.status, 202);
     assert.equal(hiddenCreated.state, "running");
+    const hiddenWaiting = await waitForManualReview(baseUrl, hiddenCreated.jobId, fetch);
+    assert.equal(hiddenWaiting.manualReview.kind, "execution_failure");
+    assert.deepEqual(hiddenWaiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
+
+    const hiddenDecisionResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${hiddenCreated.jobId}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "exit_task" })
+    });
+    assert.equal(hiddenDecisionResponse.status, 200);
+
     const hiddenFinal = await waitForFinalJob(baseUrl, hiddenCreated.jobId, fetch);
     assert.equal(hiddenFinal.state, "reject");
-    assert.equal(hiddenFinal.result.reason, "READING_LIST_NO_ELIGIBLE_PAPERS");
+    assert.equal(hiddenFinal.result.reason, "admin_rejected");
+    assert.equal(hiddenFinal.error.code, "READING_LIST_NO_ELIGIBLE_PAPERS");
 
     const traceResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${hiddenCreated.jobId}/trace`);
     const trace = await traceResponse.json();
@@ -103,7 +127,7 @@ test("异步周报 Job API 支持创建、复用、查询、Trace、结果和取
     const resultResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${hiddenCreated.jobId}/result`);
     const rejectedResult = await resultResponse.json();
     assert.equal(rejectedResult.state, "reject");
-    assert.equal(rejectedResult.reason, "READING_LIST_NO_ELIGIBLE_PAPERS");
+    assert.equal(rejectedResult.reason, "admin_rejected");
 
     const runningPayload = {
       reportKey: "2026-W32-running",

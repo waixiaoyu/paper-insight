@@ -2,6 +2,7 @@ const JOB_STATES = new Set(["running", "publish", "reject"]);
 const FINAL_JOB_STATES = new Set(["publish", "reject"]);
 const MANUAL_REVIEW_ACTIONS = new Set([
   "continue_repair",
+  "retry_job",
   "exit_task",
   "skip_paper",
   "ignore_warning"

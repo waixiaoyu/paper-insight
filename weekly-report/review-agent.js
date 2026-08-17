@@ -487,6 +487,9 @@ export const runReviewAgent = async ({
         if (retryError?.name === "AbortError") {
           throw retryError;
         }
+        if (retryError?.modelCallFailed) {
+          throw retryError;
+        }
         throw new ReviewAgentError("Review model call failed after one network retry.", {
           code: "READING_LIST_REVIEW_FAILED",
           paperId,
@@ -662,6 +665,18 @@ export const reviewEvidenceBatch = async (items, {
       if (error?.name === "AbortError" || signal?.aborted) {
         throw abortError();
       }
+      if (error?.modelCallFailed) {
+        await onEvent?.({
+          type: "review_processing_failed",
+          stage: "review",
+          paperId: String(item?.contextPacket?.paperId || item?.paper?.id || ""),
+          error: serializedError(error)
+        });
+        return { ok: false, processingFailed: true, item, error };
+      }
+      if (error?.excludePaper !== true) {
+        throw error;
+      }
       await onEvent?.({
         type: "review_excluded",
         stage: "review",
@@ -673,6 +688,7 @@ export const reviewEvidenceBatch = async (items, {
   });
   const succeeded = [];
   const excluded = [];
+  const processingFailed = [];
   results.forEach((entry) => {
     if (entry.ok) {
       succeeded.push({
@@ -682,6 +698,11 @@ export const reviewEvidenceBatch = async (items, {
         reviewResult: entry.result.reviewResult,
         evidenceRepairAttempted: entry.result.evidenceRepairAttempted,
         reviewRepairAttempted: entry.result.reviewRepairAttempted
+      });
+    } else if (entry.processingFailed) {
+      processingFailed.push({
+        ...entry.item,
+        error: serializedError(entry.error)
       });
     } else {
       excluded.push({
@@ -693,6 +714,7 @@ export const reviewEvidenceBatch = async (items, {
   return {
     succeeded,
     excluded,
+    processingFailed,
     attempted: candidates.length,
     concurrency
   };

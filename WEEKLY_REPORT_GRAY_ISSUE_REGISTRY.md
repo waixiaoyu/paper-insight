@@ -183,7 +183,9 @@
 | GRAY-090 | Trace 阶段视图重构后只显示 artifact 名称，阶段内的事件和产物详细内容无法展开；管理员必须转到复杂的原始 Trace 才能排查。 | 八阶段视图中的每条事件和每份 artifact 都提供独立的原生 details 展开项，直接显示该记录的结构化内容；Trace 对话框使用完整视口高度并独立滚动。静态资源回归用例要求阶段详情渲染函数保留 `[name, artifact]` payload。 | 已关闭 |
 | GRAY-091 | 使用 GLM-5.2 Anthropic 协议复跑 14 篇真实候选时，Evidence Agent 前 10 次调用多数返回空正文，少数只返回截断 JSON；旧调用没有关闭模型默认 Thinking，也没有检查 `stop_reason=max_tokens` 或空正文，导致响应被记为论文 Evidence 内容问题并连续排除论文。 | 新版周报的受约束 JSON 调用固定发送 `thinking: { type: "disabled" }`，避免推理过程占用结构化输出预算；空正文或 token 上限截断统一抛出可重试的 `READING_LIST_AGENT_RESPONSE_INCOMPLETE`，不得消耗论文内容修正机会或将论文误判为 Evidence 不合格。请求参数和两类不完整响应均有回归用例。 | 已加防护，待真实复核 |
 | GRAY-092 | GRAY-091 部署后的真实复跑中，智谱 Coding Plan 的 Anthropic 和 OpenAI 兼容端点都在请求携带 `thinking.disabled` 与 `reasoning_effort=none` 时继续返回推理内容；周报 Agent 沿用的 12,000 token 上限仍被推理占满，首批两篇连续两次返回空正文。调用层防护已避免误排论文，但任务无法继续。 | 保留关闭 Thinking 参数以兼容标准 API，同时给新版周报 Agent 增加独立 `WEEKLY_REPORT_AGENT_MAX_OUTPUT_TOKENS`，默认 65,536、最大 128,000，不影响推荐列表调用；Trace 模型配置记录实际上限，不完整响应记录 `stopReason`。回归用例固定默认预算和 Trace 错误字段。 | 已加防护，待真实复核 |
-| GRAY-093 | 65,536 token 配置部署后的真实复跑中，首篇 Evidence 正常生成，另一篇模型请求返回 `fetch failed`。旧 Evidence 重试逻辑会把连续两次传输失败包装成可排除的论文 Evidence 错误，导致系统故障被误记为论文内容不合格。 | 周报模型调用层把原始 fetch `TypeError` 归一化为可重试的 `READING_LIST_AGENT_CALL_FAILED`；Evidence 自动重试一次后继续失败时，将带 stage、paperId 的调用错误上抛，使 Job fail closed，不产生 `evidence_excluded`。真正的 Evidence 内容校验失败仍按单篇排除。调用层和 Evidence 批处理回归用例分别覆盖。 | 已加防护，待真实复核 |
+| GRAY-093 | 65,536 token 配置部署后的真实复跑中，首篇 Evidence 正常生成，另一篇模型请求返回 `fetch failed`。旧 Evidence 重试逻辑会把连续两次传输失败包装成可排除的论文 Evidence 错误，导致系统故障被误记为论文内容不合格。 | 周报模型调用层把原始 fetch `TypeError` 归一化为可重试的 `READING_LIST_AGENT_CALL_FAILED`；连续失败不产生 `evidence_excluded`。后续按 GRAY-095 将该论文记录为处理失败并继续同批其他论文。真正的 Evidence 内容校验失败仍按单篇排除。调用层和 Evidence 批处理回归用例分别覆盖。 | 已加防护，待真实复核 |
+| GRAY-094 | Windows 工作区中发布质量门测试使用固定 `\n` 替换 CRLF fixture，替换未生效，导致应被修改为非法稿的回归用例误通过。 | 测试 fixture 修改使用 `\r?\n`，保证 CRLF 与 LF 下都实际注入非法内容；对应发布质量门用例覆盖。 | 已关闭 |
+| GRAY-095 | 真实周报运行中，已完成的多篇 Evidence 因另一篇论文连续模型传输失败而被整份任务直接拒绝，管理员无法选择重新执行。 | Evidence 和 Review 批处理把连续调用失败记录为 `processingFailed`，继续处理其他论文和候选增补；不计入内容排除。所有自动 `reject` 先进入持久化 `manualReview`，管理员可重新执行任务或退出。Agent、Job、Orchestrator、API 与前端回归用例覆盖。 | 已加防护，待真实复核 |
 
 ## 下一轮进入条件
 

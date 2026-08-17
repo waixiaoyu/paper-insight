@@ -347,6 +347,48 @@ test("Review model network failure retries once", async () => {
   assert.equal(result.reviewResult.rawScore, 64);
 });
 
+test("Review batch records a repeated transport failure and continues with other papers", async () => {
+  const events = [];
+  const result = await reviewEvidenceBatch([
+    reviewItemFor("2607.21001"),
+    reviewItemFor("2607.21002")
+  ], {
+    paperConcurrency: 1,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const paperId = JSON.parse(prompt).paper.paperId;
+      if (paperId === "2607.21001") {
+        const error = new Error("connection reset");
+        error.code = "READING_LIST_AGENT_CALL_FAILED";
+        error.retryable = true;
+        throw error;
+      }
+      return reviewResponseFor(paperId);
+    },
+    onEvent: async (event) => events.push(event)
+  });
+
+  assert.deepEqual(result.succeeded.map((item) => item.paper.id), ["2607.21002"]);
+  assert.equal(result.excluded.length, 0);
+  assert.equal(result.processingFailed.length, 1);
+  assert.equal(result.processingFailed[0].paper.id, "2607.21001");
+  assert.equal(events.some((event) => event.type === "review_processing_failed"), true);
+  assert.equal(events.some((event) => event.type === "review_excluded"), false);
+});
+
+test("Review batch propagates a non-paper system failure instead of excluding the paper", async () => {
+  await assert.rejects(
+    () => reviewEvidenceBatch([reviewItemFor("2607.21003")], {
+      networkRetryDelayMs: 0,
+      callModel: async () => reviewResponseFor("2607.21003"),
+      onEvent: async () => {
+        throw new Error("trace storage unavailable");
+      }
+    }),
+    /trace storage unavailable/
+  );
+});
+
 test("Review batch has finite concurrency, stable order, and paper-level exclusion", async () => {
   const items = ["2607.22001", "2607.22002", "2607.22003"].map((id) => reviewItemFor(id));
   let active = 0;
