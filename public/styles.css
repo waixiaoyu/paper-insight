@@ -250,6 +250,23 @@ button {
   color: var(--muted);
 }
 
+.weekly-report-manual-review-details {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(172, 112, 18, 0.08);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.weekly-report-manual-review-details[hidden] {
+  display: none;
+}
+
 .weekly-report-manual-review-issues {
   display: grid;
   gap: 4px;

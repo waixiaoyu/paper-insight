@@ -207,6 +207,7 @@ test("未标记的执行异常也会等待管理员决定", async () => {
   const created = await manager.createOrReuse({ reportKey: "2026-W32-unmarked-error" });
   const waiting = await waitForManualReview(manager, created.jobId);
   assert.equal(waiting.manualReview.stage, "create_job");
+  assert.equal(waiting.manualReview.issues[0].detail, "");
   assert.deepEqual(waiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
 
   await manager.decide(created.jobId, { action: "exit_task" });

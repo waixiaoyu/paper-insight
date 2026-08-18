@@ -1,4 +1,6 @@
-﻿const legacyIndustrialDefaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
+﻿import { describeWeeklyReportManualReview } from "./manual-review-details.js";
+
+const legacyIndustrialDefaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
 ("anomaly detection" OR "traffic prediction" OR "network optimization" OR "root cause analysis" OR
 "digital twin network" OR "intent-based networking" OR "network automation" OR "orchestration" OR
@@ -338,6 +340,7 @@ const elements = {
   weeklyReportManualReviewTitle: $("#weeklyReportManualReviewTitle"),
   weeklyReportManualReviewSummary: $("#weeklyReportManualReviewSummary"),
   weeklyReportManualReviewMeta: $("#weeklyReportManualReviewMeta"),
+  weeklyReportManualReviewDetails: $("#weeklyReportManualReviewDetails"),
   weeklyReportManualReviewIssues: $("#weeklyReportManualReviewIssues"),
   generateReadingList: $("#generateReadingList"),
   breadcrumb: $("#breadcrumb"),
@@ -2812,15 +2815,24 @@ function renderWeeklyReportManualReview(job) {
 
   const newlyShown = panel.hidden;
   panel.hidden = false;
-  const stage = weeklyReportTraceStageLabel(review.stage);
-  elements.weeklyReportManualReviewTitle.textContent = `${stage}需要管理员决策`;
-  elements.weeklyReportManualReviewSummary.textContent = review.summary || "自动处理未完成，请选择后续处理方式。";
+  const description = describeWeeklyReportManualReview(review);
+  elements.weeklyReportManualReviewTitle.textContent = description.title;
+  elements.weeklyReportManualReviewSummary.textContent = description.summary;
   elements.weeklyReportManualReviewMeta.textContent = [
     review.paperId ? `论文：${review.paperId}` : "范围：整份周报",
     review.kind === "execution_failure"
       ? "可重新执行任务"
       : `已修正 ${Number(review.repairAttempts) || 0} 次`
   ].join(" · ");
+  elements.weeklyReportManualReviewDetails.textContent = "";
+  description.details.forEach(({ label, value }) => {
+    const item = document.createElement("li");
+    const name = document.createElement("strong");
+    name.textContent = `${label}：`;
+    item.append(name, document.createTextNode(value));
+    elements.weeklyReportManualReviewDetails.append(item);
+  });
+  elements.weeklyReportManualReviewDetails.hidden = description.details.length === 0;
   elements.weeklyReportManualReviewIssues.textContent = "";
   const issues = Array.isArray(review.issues) ? review.issues : [];
   (issues.length ? issues : ["没有提供结构化问题详情，请在下方 Trace 中查看阶段记录。"]).forEach((issue) => {

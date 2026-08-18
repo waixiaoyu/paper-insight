@@ -67,7 +67,7 @@ const errorRecord = (error) => redactTraceValue({
   paperId: String(error?.paperId || ""),
   retryable: Boolean(error?.retryable),
   traceId: String(error?.traceId || ""),
-  detail: String(error?.detail || error?.message || "Weekly report Job failed."),
+  detail: typeof error?.detail === "string" ? error.detail : "",
   rejectJob: Boolean(error?.rejectJob)
 });
 

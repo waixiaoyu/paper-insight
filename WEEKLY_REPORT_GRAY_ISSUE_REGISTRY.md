@@ -186,6 +186,7 @@
 | GRAY-093 | 65,536 token 配置部署后的真实复跑中，首篇 Evidence 正常生成，另一篇模型请求返回 `fetch failed`。旧 Evidence 重试逻辑会把连续两次传输失败包装成可排除的论文 Evidence 错误，导致系统故障被误记为论文内容不合格。 | 周报模型调用层把原始 fetch `TypeError` 归一化为可重试的 `READING_LIST_AGENT_CALL_FAILED`；连续失败不产生 `evidence_excluded`。后续按 GRAY-095 将该论文记录为处理失败并继续同批其他论文。真正的 Evidence 内容校验失败仍按单篇排除。调用层和 Evidence 批处理回归用例分别覆盖。 | 已加防护，待真实复核 |
 | GRAY-094 | Windows 工作区中发布质量门测试使用固定 `\n` 替换 CRLF fixture，替换未生效，导致应被修改为非法稿的回归用例误通过。 | 测试 fixture 修改使用 `\r?\n`，保证 CRLF 与 LF 下都实际注入非法内容；对应发布质量门用例覆盖。 | 已关闭 |
 | GRAY-095 | 真实周报运行中，已完成的多篇 Evidence 因另一篇论文连续模型传输失败而被整份任务直接拒绝，管理员无法选择重新执行。 | Evidence 和 Review 批处理把连续调用失败记录为 `processingFailed`，继续处理其他论文和候选增补；不计入内容排除。所有自动 `reject` 先进入持久化 `manualReview`，管理员可重新执行任务或退出。Agent、Job、Orchestrator、API 与前端回归用例覆盖。 | 已加防护，待真实复核 |
+| GRAY-096 | `READING_LIST_QA_REPAIR_FAILED` 进入管理员处理时，面板只显示“需要管理员决策”和通用英文错误信息，管理员无法判断自动修正的目标、缺失的产物或是否应重试。 | 为自动处理失败新增结构化说明：修正目标、必须满足、实际失败、可选操作。对逐篇稿件缺失明确说明需要与论文 ID 一致的 `paperDraft`；优先展示结构化 `detail`，缺失时明确提示未记录原因。纯函数回归用例覆盖逐篇稿件和通用失败路径。 | 已加防护，待真实复核 |
 
 ## 下一轮进入条件
 
