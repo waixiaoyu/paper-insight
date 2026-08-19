@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   EditorialAgentError,
+  deriveEditorialPlanReviewScope,
   runEditorialPlanAgent,
   runHeadTailWriter,
   validateEditorialPlan,
@@ -689,6 +690,9 @@ test("Editorial Plan gets one structured repair and does not include the prior r
   const invalid = validPlan();
   invalid.trends[0].supportingPaperIds = ["2607.50001"];
   invalid.trends[0].evidenceRefs = ["2607.50001:method:0"];
+  const repairedTrend = structuredClone(invalid.trends[0]);
+  repairedTrend.supportingPaperIds = ["2607.50001", "2607.50002"];
+  repairedTrend.evidenceRefs = ["2607.50001:method:0", "2607.50002:method:0"];
   const prompts = [];
   const result = await runEditorialPlanAgent({
     selectedItems,
@@ -696,7 +700,15 @@ test("Editorial Plan gets one structured repair and does not include the prior r
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
       prompts.push(payload);
-      return payload.task === "weekly_report_editorial_plan" ? invalid : validPlan();
+      return payload.task === "weekly_report_editorial_plan" ? invalid : {
+        patches: [{
+          path: "trends[0].supportingPaperIds",
+          value: repairedTrend.supportingPaperIds
+        }, {
+          path: "trends[0].evidenceRefs",
+          value: repairedTrend.evidenceRefs
+        }]
+      };
     }
   });
 
@@ -705,7 +717,60 @@ test("Editorial Plan gets one structured repair and does not include the prior r
     "weekly_report_editorial_plan",
     "weekly_report_editorial_plan_repair"
   ]);
+  assert.deepEqual(prompts[1].currentEditorialPlan.singlePaperObservations, invalid.singlePaperObservations);
+  assert.equal(prompts[1].outputSchema.patches[0].path, "one validation issue path");
+  assert.deepEqual(result.editorialPlan.singlePaperObservations, invalid.singlePaperObservations);
   assert.doesNotMatch(JSON.stringify(prompts[1]), /SECRET_PRIOR_RAW_RESPONSE/);
+});
+
+test("Editorial numeric validation does not treat an arXiv identifier as an experimental number", () => {
+  const plan = validPlan();
+  plan.singlePaperObservations[0].claim = "论文 2607.50003 给出约束验证方法的背景补充。";
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.issues.some((entry) => entry.code === "numeric_claim_not_in_evidence"), false);
+});
+
+test("Editorial Plan repair scope identifies one observation's paper and a cross-paper trend", () => {
+  const plan = validPlan();
+  const observationScope = deriveEditorialPlanReviewScope({
+    editorialPlan: plan,
+    issues: [{ path: "singlePaperObservations[0].claim" }]
+  });
+  const trendScope = deriveEditorialPlanReviewScope({
+    editorialPlan: plan,
+    issues: [{ path: "trends[0].claim" }]
+  });
+
+  assert.equal(observationScope.paperId, "2607.50003");
+  assert.deepEqual(observationScope.relatedPaperIds, ["2607.50003"]);
+  assert.deepEqual(trendScope.relatedPaperIds, ["2607.50001", "2607.50002"]);
+  assert.equal(trendScope.paperId, "");
+});
+
+test("Editorial Plan rejects a repair patch that changes an unaffected path", async () => {
+  const invalid = validPlan();
+  invalid.singlePaperObservations[0].caveat = "该指标得分为零，而非指标本身为零。";
+  const changedCoreTheme = "不应随局部修正改变的全局主题";
+
+  await assert.rejects(
+    () => runEditorialPlanAgent({
+      selectedItems,
+      networkRetryDelayMs: 0,
+      callModel: async (prompt) => {
+        const payload = JSON.parse(prompt);
+        if (payload.task === "weekly_report_editorial_plan") {
+          return invalid;
+        }
+        return {
+          patches: [{ path: "coreTheme", value: changedCoreTheme }]
+        };
+      }
+    }),
+    (error) => error instanceof EditorialAgentError
+      && error.issues.some((entry) => entry.code === "editorial_repair_path_not_allowed")
+  );
 });
 
 test("Editorial Plan gets one response-format repair after a malformed content repair", async () => {
@@ -724,7 +789,12 @@ test("Editorial Plan gets one response-format repair after a malformed content r
       if (payload.task === "weekly_report_editorial_plan_repair") {
         return '{"coreTheme":"broken"';
       }
-      return validPlan();
+      return {
+        patches: [{
+          path: "singlePaperObservations[0].caveat",
+          value: validPlan().singlePaperObservations[0].caveat
+        }]
+      };
     }
   });
 
@@ -737,6 +807,7 @@ test("Editorial Plan gets one response-format repair after a malformed content r
   ]);
   assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
   assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
+  assert.deepEqual(prompts[2].currentEditorialPlan.singlePaperObservations[0].claim, invalid.singlePaperObservations[0].claim);
   assert.doesNotMatch(JSON.stringify(prompts[2]), /\{\"coreTheme\":\"broken\"/);
 });
 

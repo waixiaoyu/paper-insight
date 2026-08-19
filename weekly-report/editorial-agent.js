@@ -319,6 +319,7 @@ const parseModelJson = (raw) => {
         .map((block) => block.text || "")
         .join("\n"));
     }
+    return raw;
   }
 
   const text = String(raw || "").trim()
@@ -330,6 +331,102 @@ const parseModelJson = (raw) => {
     throw new TypeError("Editorial Agent did not return a JSON object.");
   }
   return JSON.parse(text.slice(start, end + 1));
+};
+
+const editableEditorialPlanPath = /^(?:coreTheme|titleAngle|trends\[\d+\](?:\.(?:claim|supportingPaperIds|evidenceRefs|maturity|caveat))?|singlePaperObservations\[\d+\](?:\.(?:paperId|claim|evidenceRefs|caveat))?|readingOrder(?:\[\d+\](?:\.(?:paperId|reason))?)?)$/u;
+
+const editorialRepairPaths = (issues = []) => {
+  const paths = new Set((Array.isArray(issues) ? issues : [])
+    .map((entry) => String(entry?.path || ""))
+    .filter((path) => editableEditorialPlanPath.test(path)));
+  [...paths].forEach((path) => {
+    const trendMatch = path.match(/^(trends\[\d+\])\.(supportingPaperIds|evidenceRefs)$/u);
+    if (trendMatch) {
+      paths.add(`${trendMatch[1]}.${trendMatch[2] === "supportingPaperIds" ? "evidenceRefs" : "supportingPaperIds"}`);
+    }
+  });
+  return paths;
+};
+
+const patchPathParts = (path) => [...String(path || "").matchAll(/([A-Za-z]+)|\[(\d+)\]/g)]
+  .map((match) => match[1] || Number(match[2]));
+
+const valueAtEditorialPlanPath = (editorialPlan, path) => patchPathParts(path)
+  .reduce((current, part) => (current && typeof current === "object" ? current[part] : undefined), editorialPlan);
+
+const repairIssue = (code, path, detail) => ({
+  valid: false,
+  editorialPlan: null,
+  issues: [issue(code, path, detail)]
+});
+
+export const applyEditorialPlanPatch = ({ editorialPlan, issues = [], patchResponse } = {}) => {
+  const allowedPaths = editorialRepairPaths(issues);
+  const patches = patchResponse?.patches;
+  if (!Array.isArray(patches) || !patches.length || patches.length > 20) {
+    return repairIssue("editorial_repair_schema_invalid", "response", "Repair response must contain 1-20 patches.");
+  }
+  const next = structuredClone(editorialPlan || {});
+  const seenPaths = new Set();
+  for (const patch of patches) {
+    const path = String(patch?.path || "");
+    if (!allowedPaths.has(path)) {
+      return repairIssue("editorial_repair_path_not_allowed", path || "response", "Repair may only change a current validation issue path.");
+    }
+    if (seenPaths.has(path)) {
+      return repairIssue("editorial_repair_duplicate_path", path, "A repair path may occur only once.");
+    }
+    seenPaths.add(path);
+    const parts = patchPathParts(path);
+    let target = next;
+    for (let index = 0; index < parts.length - 1; index += 1) {
+      const part = parts[index];
+      if (target === null || typeof target !== "object" || !(part in target)) {
+        return repairIssue("editorial_repair_path_not_allowed", path, "Repair path does not exist in the current Editorial Plan.");
+      }
+      target = target[part];
+    }
+    const finalPart = parts.at(-1);
+    if (target === null || typeof target !== "object" || !(finalPart in target)) {
+      return repairIssue("editorial_repair_path_not_allowed", path, "Repair path does not exist in the current Editorial Plan.");
+    }
+    target[finalPart] = patch?.value;
+  }
+  return { valid: true, editorialPlan: next, issues: [] };
+};
+
+export const deriveEditorialPlanReviewScope = ({ editorialPlan = {}, issues = [] } = {}) => {
+  const relatedPaperIds = new Set();
+  (Array.isArray(issues) ? issues : []).forEach((entry) => {
+    const path = String(entry?.path || "");
+    const observationMatch = path.match(/^singlePaperObservations\[(\d+)\]/u);
+    if (observationMatch) {
+      const observation = editorialPlan?.singlePaperObservations?.[Number(observationMatch[1])];
+      const paperId = normalizedPaperId(observation?.paperId);
+      if (paperId) relatedPaperIds.add(paperId);
+      return;
+    }
+    const trendMatch = path.match(/^trends\[(\d+)\]/u);
+    if (trendMatch) {
+      const trend = editorialPlan?.trends?.[Number(trendMatch[1])];
+      (Array.isArray(trend?.supportingPaperIds) ? trend.supportingPaperIds : [])
+        .map(normalizedPaperId)
+        .filter(Boolean)
+        .forEach((paperId) => relatedPaperIds.add(paperId));
+      return;
+    }
+    const readingOrderMatch = path.match(/^readingOrder\[(\d+)\]/u);
+    if (readingOrderMatch) {
+      const entryAtPath = editorialPlan?.readingOrder?.[Number(readingOrderMatch[1])];
+      const paperId = normalizedPaperId(entryAtPath?.paperId);
+      if (paperId) relatedPaperIds.add(paperId);
+    }
+  });
+  const ids = [...relatedPaperIds];
+  return {
+    paperId: ids.length === 1 ? ids[0] : "",
+    relatedPaperIds: ids
+  };
 };
 
 const selectedPaperId = (item) => normalizedPaperId(
@@ -375,7 +472,8 @@ const ENGLISH_NUMBER_WORDS = Object.freeze({
 const numericTokens = (value) => {
   const text = normalizeText(value, 12000);
   const explicit = text.match(/(?<![A-Za-z0-9_])\d+(?:[.,]\d+)*(?:\s*%)?/g)
-    ?.map((token) => token.replace(/\s+/g, "").replace(/,/g, "")) || [];
+    ?.map((token) => token.replace(/\s+/g, "").replace(/,/g, ""))
+    .filter((token) => !/^\d{4}\.\d{4,5}$/u.test(token)) || [];
   const numberWords = [...text.matchAll(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/giu)]
     .map((match) => ENGLISH_NUMBER_WORDS[match[1].toLowerCase()]);
   return [...explicit, ...numberWords];
@@ -392,11 +490,13 @@ const validateClaimNumbers = ({ claim, refs, evidenceRefs, path, issues }) => {
   const citedNumbers = new Set(numericTokens(citedText));
   claimedNumbers.forEach((number) => {
     if (!citedNumbers.has(number)) {
-      issues.push(issue(
+      const validationIssue = issue(
         "numeric_claim_not_in_evidence",
         path,
         `Exact number ${number} does not occur in the cited Evidence.`
-      ));
+      );
+      validationIssue.triggerText = normalizeText(claim, 800);
+      issues.push(validationIssue);
     }
   });
 };
@@ -463,6 +563,7 @@ const validateInternalText = (value, path, issues) => {
       "Editorial Plan text must use direct, neutral technical description without rhetorical or promotional wording."
     );
     validationIssue.repairKinds = ["neutral_direct_statement"];
+    validationIssue.triggerText = normalizeText(value, 800);
     issues.push(validationIssue);
   }
   if (AWKWARD_TRANSLATION_PATTERN.test(value)) {
@@ -974,9 +1075,9 @@ export const runEditorialPlanAgent = async ({
     return validation;
   };
 
-  const invokeWithNetworkRetry = async (prompt, attemptType) => {
+  const invokeWithNetworkRetry = async (prompt, attemptType, invokeCall = invoke) => {
     try {
-      return await invoke(prompt, attemptType);
+      return await invokeCall(prompt, attemptType);
     } catch (error) {
       if (!error?.modelCallFailed || error?.name === "AbortError" || signal?.aborted) {
         throw error;
@@ -990,7 +1091,7 @@ export const runEditorialPlanAgent = async ({
       });
       await waitForRetry(networkRetryDelayMs, signal);
       try {
-        return await invoke(prompt, `${attemptType}_network_retry`);
+        return await invokeCall(prompt, `${attemptType}_network_retry`);
       } catch (retryError) {
         if (retryError?.name === "AbortError") {
           throw retryError;
@@ -1026,6 +1127,82 @@ export const runEditorialPlanAgent = async ({
       "initial_response_repair"
     );
   }
+
+  const invokePatch = async (prompt, attemptType, currentEditorialPlan, contentIssues) => {
+    if (signal?.aborted) {
+      throw abortError();
+    }
+    const startedAt = Date.now();
+    let rawOutput;
+    try {
+      rawOutput = await callModel(prompt, {
+        role: "editorial_planning",
+        paperId: "",
+        attemptType,
+        signal
+      });
+    } catch (error) {
+      const record = {
+        role: "editorial_planning",
+        paperId: "",
+        attemptType,
+        prompt,
+        rawOutput: null,
+        normalizedOutput: null,
+        validation: null,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        error: serializedError(error)
+      };
+      calls.push(record);
+      await onCall?.(record);
+      error.modelCallFailed = true;
+      throw error;
+    }
+
+    let patchResult;
+    let repairedValidation;
+    try {
+      const patchResponse = parseModelJson(rawOutput);
+      patchResult = applyEditorialPlanPatch({
+        editorialPlan: currentEditorialPlan,
+        issues: contentIssues,
+        patchResponse
+      });
+      repairedValidation = patchResult.valid
+        ? validateEditorialPlan(patchResult.editorialPlan, { selectedItems: candidates })
+        : patchResult;
+      if (patchResult.valid) {
+        await onEvent?.({
+          type: "editorial_plan_patch_applied",
+          stage: "editorial_plan",
+          attemptType,
+          repairPaths: patchResponse.patches.map((patch) => String(patch.path || "")),
+          diff: patchResponse.patches.map((patch) => ({
+            path: String(patch.path || ""),
+            before: valueAtEditorialPlanPath(currentEditorialPlan, patch.path),
+            after: valueAtEditorialPlanPath(patchResult.editorialPlan, patch.path)
+          })),
+          remainingIssues: repairedValidation.issues
+        });
+      }
+    } catch (error) {
+      repairedValidation = repairIssue("invalid_json", "response", error.message);
+    }
+    const record = {
+      role: "editorial_planning",
+      paperId: "",
+      attemptType,
+      prompt,
+      rawOutput,
+      normalizedOutput: repairedValidation.editorialPlan,
+      validation: { valid: repairedValidation.valid, issues: repairedValidation.issues },
+      durationMs: Math.max(0, Date.now() - startedAt),
+      error: null
+    };
+    calls.push(record);
+    await onCall?.(record);
+    return repairedValidation;
+  };
   if (validation.valid) {
     return {
       editorialPlan: validation.editorialPlan,
@@ -1058,7 +1235,12 @@ export const runEditorialPlanAgent = async ({
       const decision = await onRepairExhausted({
         stage: "editorial_plan",
         issues: validation.issues,
-        repairAttempts: repairAttempt - 1
+        repairAttempts: repairAttempt - 1,
+        editorialPlan: validation.editorialPlan,
+        ...deriveEditorialPlanReviewScope({
+          editorialPlan: validation.editorialPlan,
+          issues: validation.issues
+        })
       });
       if (decision?.action !== "continue_repair") {
         throw new EditorialAgentError("Editorial Plan generation was stopped by the administrator.", {
@@ -1074,9 +1256,15 @@ export const runEditorialPlanAgent = async ({
       repairAttempt,
       issues: contentIssues
     });
+    const currentEditorialPlan = validation.editorialPlan;
     validation = await invokeWithNetworkRetry(
-      buildEditorialPlanRepairPrompt({ selectedItems: candidates, issues: contentIssues }),
-      `repair_${repairAttempt}`
+      buildEditorialPlanRepairPrompt({
+        selectedItems: candidates,
+        currentEditorialPlan,
+        issues: contentIssues
+      }),
+      `repair_${repairAttempt}`,
+      (prompt, attemptType) => invokePatch(prompt, attemptType, currentEditorialPlan, contentIssues)
     );
     if (hasOnlyResponseContractIssues(validation) && !responseRepairAttempted) {
       const responseIssues = validation.issues;
@@ -1090,10 +1278,12 @@ export const runEditorialPlanAgent = async ({
       validation = await invokeWithNetworkRetry(
         buildEditorialPlanResponseRepairPrompt({
           selectedItems: candidates,
+          currentEditorialPlan,
           issues: contentIssues,
           responseIssues
         }),
-        `repair_${repairAttempt}_response_repair`
+        `repair_${repairAttempt}_response_repair`,
+        (prompt, attemptType) => invokePatch(prompt, attemptType, currentEditorialPlan, contentIssues)
       );
     }
     if (validation.valid) {

@@ -1454,13 +1454,14 @@ export const planWeeklyReportEditorial = async (selected, context = {}, {
       onCall: persistCall,
       onEvent: (event) => context.recordTrace(event),
       onRepairExhausted: typeof context.requestManualReview === "function"
-        ? ({ issues, repairAttempts }) => context.requestManualReview({
+        ? ({ issues, repairAttempts, paperId, relatedPaperIds }) => context.requestManualReview({
           stage: "editorial_plan",
-          paperId: "",
+          paperId,
+          relatedPaperIds,
           summary: "编辑计划在三次自动修正后仍未通过证据和结构检查。",
           issues,
           repairAttempts,
-          allowedActions: ["continue_repair", "exit_task"]
+          allowedActions: ["continue_repair", "exit_task", ...(paperId || relatedPaperIds?.length ? ["skip_paper"] : [])]
         })
         : undefined
     });

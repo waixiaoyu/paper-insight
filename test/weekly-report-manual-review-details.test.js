@@ -56,3 +56,21 @@ test("没有结构化 detail 时明确说明未记录具体失败原因", () => 
 
   assert.equal(result.details[1].value, "未记录具体失败原因。");
 });
+
+test("编辑计划人工决策使用中文业务说明而不暴露规则码", () => {
+  const result = describeWeeklyReportManualReview({
+    stage: "editorial_plan",
+    paperId: "2608.02764",
+    relatedPaperIds: ["2608.02764"],
+    issues: [{
+      code: "rhetorical_prose_style",
+      path: "singlePaperObservations[0].caveat",
+      detail: "Editorial Plan text must use direct, neutral technical description.",
+      triggerText: "评估工作负载为受控基准而非部署轨迹。"
+    }]
+  });
+
+  assert.match(result.title, /编辑计划需要修正/);
+  assert.match(result.details.map((item) => item.value).join(" "), /评估工作负载/);
+  assert.doesNotMatch(JSON.stringify(result), /rhetorical_prose_style|Editorial Plan text/);
+});

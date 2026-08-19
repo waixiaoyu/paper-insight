@@ -378,6 +378,40 @@ test("manual review keeps the Job running until the administrator decides", asyn
   assert.equal(trace.timeline.some((event) => event.type === "manual_review_decided" && event.action === "exit_task"), true);
 });
 
+test("manual review requires skip-paper to select one related paper and records that selection", async () => {
+  const requestingReview = deferred();
+  const { manager, traceStore } = await createHarness({
+    execute: async (_input, context) => {
+      requestingReview.resolve();
+      const decision = await context.requestManualReview({
+        stage: "editorial_plan",
+        paperId: "",
+        relatedPaperIds: ["2608.02764", "2608.08037"],
+        issues: [{ code: "rhetorical_prose_style", path: "trends[0].caveat" }],
+        repairAttempts: 3,
+        allowedActions: ["skip_paper", "exit_task"]
+      });
+      return decision.action === "skip_paper" && decision.paperId === "2608.08037"
+        ? { state: "reject", reason: "admin_rejected" }
+        : { state: "reject", reason: "unexpected_decision" };
+    }
+  });
+  const created = await manager.createOrReuse({ reportKey: "2026-W32-scoped-skip" });
+  await requestingReview.promise;
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  await assert.rejects(
+    () => manager.decide(created.jobId, { action: "skip_paper" }),
+    /select one related paper/i
+  );
+  await manager.decide(created.jobId, { action: "skip_paper", paperId: "2608.08037" });
+  await manager.waitForCompletion(created.jobId);
+  const trace = await traceStore.readTrace(created.traceId);
+
+  assert.equal(trace.timeline.some((event) => event.type === "manual_review_decided"
+    && event.action === "skip_paper" && event.paperId === "2608.08037"), true);
+});
+
 test("a failed decision Trace write leaves manual review visible and retryable", async () => {
   const requestingReview = deferred();
   const { manager, traceStore } = await createHarness({

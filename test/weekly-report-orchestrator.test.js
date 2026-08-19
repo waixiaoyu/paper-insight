@@ -1394,9 +1394,18 @@ test("editorial_plan waits after three repairs and an administrator can grant on
   let callsMade = 0;
   const planned = await planWeeklyReportEditorial(selected, execution.context, {
     networkRetryDelayMs: 0,
-    callModel: async () => {
+    callModel: async (prompt) => {
       callsMade += 1;
-      return callsMade <= 4 ? invalidPlan : editorialPlanFor(selected.selectedItems);
+      const payload = JSON.parse(prompt);
+      if (payload.task === "weekly_report_editorial_plan") {
+        return invalidPlan;
+      }
+      return {
+        patches: [{
+          path: "readingOrder",
+          value: callsMade <= 4 ? [] : editorialPlanFor(selected.selectedItems).readingOrder
+        }]
+      };
     }
   });
   const calls = [...execution.sections.keys()]

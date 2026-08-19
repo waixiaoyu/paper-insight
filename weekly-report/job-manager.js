@@ -418,10 +418,14 @@ export class WeeklyReportJobManager {
       throw new TypeError("Manual review requires at least one allowed administrator action.");
     }
     const requestedAt = new Date().toISOString();
+    const relatedPaperIds = [...new Set((Array.isArray(review.relatedPaperIds) ? review.relatedPaperIds : [])
+      .map((paperId) => String(paperId || "").trim())
+      .filter(Boolean))];
     const manualReview = redactTraceValue({
       kind: String(review.kind || "quality_repair"),
       stage: String(review.stage || this.activeJob.agentStage || "manual_review"),
       paperId: String(review.paperId || ""),
+      relatedPaperIds,
       summary: String(review.summary || "Content remains invalid after automatic repairs."),
       issues: Array.isArray(review.issues) ? review.issues.slice(0, 50) : [],
       repairAttempts: Math.max(0, Math.trunc(Number(review.repairAttempts) || 0)),
@@ -464,6 +468,7 @@ export class WeeklyReportJobManager {
         stage: manualReview.stage,
         scope: manualReview.paperId ? "paper" : "job",
         paperId: manualReview.paperId,
+        relatedPaperIds: manualReview.relatedPaperIds,
         summary: manualReview.summary,
         issues: manualReview.issues,
         repairAttempts: manualReview.repairAttempts,
@@ -504,6 +509,24 @@ export class WeeklyReportJobManager {
       error.statusCode = 409;
       throw error;
     }
+    const requestedPaperId = String(decision.paperId || "").trim();
+    const relatedPaperIds = Array.isArray(this.activeJob.manualReview.relatedPaperIds)
+      ? this.activeJob.manualReview.relatedPaperIds
+      : [];
+    let paperId = "";
+    if (action === "skip_paper") {
+      paperId = requestedPaperId || String(this.activeJob.manualReview.paperId || "").trim();
+      const allowedPaperIds = new Set([
+        ...relatedPaperIds,
+        String(this.activeJob.manualReview.paperId || "").trim()
+      ].filter(Boolean));
+      if (!paperId || !allowedPaperIds.has(paperId)) {
+        const error = new Error("Skip-paper requires the administrator to select one related paper.");
+        error.code = "READING_LIST_MANUAL_REVIEW_ACTION_INVALID";
+        error.statusCode = 409;
+        throw error;
+      }
+    }
 
     const decidedAt = new Date().toISOString();
     const next = {
@@ -515,14 +538,15 @@ export class WeeklyReportJobManager {
     await this.traceStore.appendTimeline(next.traceId, {
       type: "manual_review_decided",
       stage: next.agentStage,
-      scope: "job",
+      scope: paperId ? "paper" : "job",
       action,
+      paperId,
       decidedAt
     });
     await this.persistJob(next, { active: true });
     this.activeJob = next;
     this.jobs.set(jobId, next);
-    pending.resolve({ action, decidedAt });
+    pending.resolve({ action, paperId, decidedAt });
     return publicJob(next);
   }
 

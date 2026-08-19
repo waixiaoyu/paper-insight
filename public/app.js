@@ -342,6 +342,8 @@ const elements = {
   weeklyReportManualReviewMeta: $("#weeklyReportManualReviewMeta"),
   weeklyReportManualReviewDetails: $("#weeklyReportManualReviewDetails"),
   weeklyReportManualReviewIssues: $("#weeklyReportManualReviewIssues"),
+  weeklyReportManualReviewSkipPaper: $("#weeklyReportManualReviewSkipPaper"),
+  weeklyReportManualReviewSkipPaperSelect: $("#weeklyReportManualReviewSkipPaperSelect"),
   generateReadingList: $("#generateReadingList"),
   breadcrumb: $("#breadcrumb"),
   pageEyebrow: $("#pageEyebrow"),
@@ -2835,11 +2837,30 @@ function renderWeeklyReportManualReview(job) {
   elements.weeklyReportManualReviewDetails.hidden = description.details.length === 0;
   elements.weeklyReportManualReviewIssues.textContent = "";
   const issues = Array.isArray(review.issues) ? review.issues : [];
-  (issues.length ? issues : ["没有提供结构化问题详情，请在下方 Trace 中查看阶段记录。"]).forEach((issue) => {
-    const item = document.createElement("li");
-    item.textContent = weeklyReportManualReviewIssueText(issue);
-    elements.weeklyReportManualReviewIssues.append(item);
-  });
+  if (review.stage !== "editorial_plan") {
+    (issues.length ? issues : ["没有提供结构化问题详情，请在下方 Trace 中查看阶段记录。"]).forEach((issue) => {
+      const item = document.createElement("li");
+      item.textContent = weeklyReportManualReviewIssueText(issue);
+      elements.weeklyReportManualReviewIssues.append(item);
+    });
+  }
+  elements.weeklyReportManualReviewIssues.hidden = review.stage === "editorial_plan";
+
+  const relatedPaperIds = [...new Set([
+    ...(Array.isArray(review.relatedPaperIds) ? review.relatedPaperIds : []),
+    review.paperId || ""
+  ].filter(Boolean))];
+  const skipSelect = elements.weeklyReportManualReviewSkipPaperSelect;
+  if (elements.weeklyReportManualReviewSkipPaper && skipSelect) {
+    elements.weeklyReportManualReviewSkipPaper.hidden = relatedPaperIds.length === 0;
+    skipSelect.textContent = "";
+    relatedPaperIds.forEach((paperId) => {
+      const option = document.createElement("option");
+      option.value = paperId;
+      option.textContent = paperId;
+      skipSelect.append(option);
+    });
+  }
 
   const allowed = new Set(Array.isArray(review.allowedActions) ? review.allowedActions : []);
   panel.querySelectorAll("[data-manual-review-action]").forEach((button) => {
@@ -5195,13 +5216,17 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
   if (action === "exit_task" && !window.confirm("确认退出当前周报任务？现有草稿和完整 Trace 会保留，但任务不会继续发布。")) return;
   if (action === "skip_paper" && !window.confirm("确认跳过当前论文？系统会移除这篇论文并重新执行横向校准和选稿。")) return;
 
+  const selectedPaperId = action === "skip_paper"
+    ? String(elements.weeklyReportManualReviewSkipPaperSelect?.value || "").trim()
+    : "";
+
   const buttons = [...elements.weeklyReportManualReview.querySelectorAll("[data-manual-review-action]")];
   buttons.forEach((item) => { item.disabled = true; });
   try {
     const job = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}/decision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action })
+      body: JSON.stringify({ action, ...(selectedPaperId ? { paperId: selectedPaperId } : {}) })
     });
     renderWeeklyReportJobProgress(job);
     await loadWeeklyReportTrace(job.jobId);

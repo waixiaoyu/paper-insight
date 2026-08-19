@@ -580,6 +580,13 @@ const editorialPlanOutputSchema = {
   }]
 };
 
+const editorialPlanPatchOutputSchema = {
+  patches: [{
+    path: "one validation issue path",
+    value: "replacement value for exactly that path"
+  }]
+};
+
 const editorialPlanRules = [
   "Use only the supplied selected compact artifacts. Do not use original full text, abstracts, outside knowledge, or unselected papers.",
   "Only evidence field sources excerpts are factual Evidence. Evidence summaries and factual Value Signal prose are intentionally omitted; do not reconstruct or assume them.",
@@ -668,27 +675,48 @@ export const buildEditorialPlanPrompt = ({ selectedItems = [] } = {}) => JSON.st
 
 export const buildEditorialPlanRepairPrompt = ({
   selectedItems = [],
+  currentEditorialPlan = {},
   issues = []
 } = {}) => JSON.stringify({
-  ...baseEditorialPlanPayload({
-    task: "weekly_report_editorial_plan_repair",
-    selectedItems
-  }),
-  repairInstruction: "Regenerate the complete Editorial Plan and correct only the listed validation classes.",
+  task: "weekly_report_editorial_plan_repair",
+  agentRole: "editorial_planning",
+  papers: (Array.isArray(selectedItems) ? selectedItems : []).map(editorialPaper),
+  rules: editorialPlanRules,
+  currentEditorialPlan,
+  outputSchema: editorialPlanPatchOutputSchema,
+  repairInstruction: "Return a JSON patch only. Each patch path must exactly equal one listed repairPaths item. Change only those values; every unpatched value is retained by the server. Do not regenerate the complete Editorial Plan.",
+  repairPaths: [...new Set((Array.isArray(issues) ? issues : []).flatMap((itemIssue) => {
+    const path = String(itemIssue?.path || "");
+    const trendMatch = path.match(/^(trends\[\d+\])\.(supportingPaperIds|evidenceRefs)$/u);
+    return trendMatch
+      ? [path, `${trendMatch[1]}.${trendMatch[2] === "supportingPaperIds" ? "evidenceRefs" : "supportingPaperIds"}`]
+      : [path];
+  }).filter(Boolean))],
   issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
     .map((itemIssue) => writingRepairIssue(itemIssue, "editorial_plan_validation_failed"))
 });
 
 export const buildEditorialPlanResponseRepairPrompt = ({
   selectedItems = [],
+  currentEditorialPlan = null,
   issues = [],
   responseIssues = []
 } = {}) => JSON.stringify({
-  ...baseEditorialPlanPayload({
+  ...(currentEditorialPlan ? {
+    task: "weekly_report_editorial_plan_response_repair",
+    agentRole: "editorial_planning",
+    papers: (Array.isArray(selectedItems) ? selectedItems : []).map(editorialPaper),
+    rules: editorialPlanRules,
+    currentEditorialPlan,
+    outputSchema: editorialPlanPatchOutputSchema,
+    repairInstruction: "The preceding patch response was malformed. Return a valid JSON patch only, limited to the listed validation issue paths. Every unpatched value is retained by the server; do not regenerate the complete Editorial Plan. Do not reproduce the malformed response."
+  } : baseEditorialPlanPayload({
     task: "weekly_report_editorial_plan_response_repair",
     selectedItems
-  }),
-  repairInstruction: "Regenerate the complete Editorial Plan with valid JSON and schema. Preserve the original content-repair scope when issues are present; do not introduce a second or broader content repair. Do not reproduce or depend on the prior malformed raw response.",
+  })),
+  ...(!currentEditorialPlan ? {
+    repairInstruction: "Regenerate the complete Editorial Plan with valid JSON and schema. Preserve the original content-repair scope when issues are present; do not introduce a second or broader content repair. Do not reproduce or depend on the prior malformed raw response."
+  } : {}),
   issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
     .map((itemIssue) => writingRepairIssue(itemIssue, "editorial_plan_validation_failed")),
   responseValidationIssues: (Array.isArray(responseIssues) ? responseIssues : []).slice(0, 40)

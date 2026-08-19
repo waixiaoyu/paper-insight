@@ -288,6 +288,10 @@ export const assertWeeklyReportJob = (job) => {
     if (!Array.isArray(review.issues)) {
       throw new TypeError("Weekly report Job manualReview.issues must be an array.");
     }
+    if (review.relatedPaperIds !== undefined && (!Array.isArray(review.relatedPaperIds)
+      || review.relatedPaperIds.some((paperId) => !normalizedText(paperId, 160)))) {
+      throw new TypeError("Weekly report Job manualReview.relatedPaperIds is invalid.");
+    }
   }
 
   const normalizedOptions = normalizeWeeklyReportJobOptions(job.options);

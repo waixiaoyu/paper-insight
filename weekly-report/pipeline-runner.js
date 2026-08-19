@@ -160,7 +160,7 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           continue;
         }
         if (action === "skip_paper") {
-          const paperId = String(review.paperId || "").trim();
+          const paperId = String(decision?.paperId || review.paperId || "").trim();
           if (!paperId) {
             throw new WeeklyReportPipelineError(
               "Administrator skip-paper decision requires one concrete paperId.",
