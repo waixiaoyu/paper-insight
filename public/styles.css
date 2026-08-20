@@ -217,6 +217,8 @@ button {
   grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .weekly-report-manual-review {

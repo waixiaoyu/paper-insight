@@ -163,6 +163,11 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(source, /\[name, artifact\]/);
   assert.match(source, /\/decision/);
   assert.match(source, /renderWeeklyReportManualReview/);
+  const styles = await fetch(`${baseUrl}/styles.css`);
+  assert.equal(styles.status, 200);
+  const stylesheet = await styles.text();
+  assert.match(stylesheet, /\.weekly-report-trace-shell\s*\{[^}]*overflow-y:\s*auto/s);
+  assert.match(stylesheet, /\.weekly-report-trace-shell\s*\{[^}]*overscroll-behavior:\s*contain/s);
   assert.match(source, /本步骤做什么：/);
   assert.match(source, /确认取消当前周报任务？/);
 });
