@@ -163,6 +163,8 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(source, /\[name, artifact\]/);
   assert.match(source, /\/decision/);
   assert.match(source, /renderWeeklyReportManualReview/);
+  assert.match(source, /submitWeeklyReportManualReviewDecision/);
+  assert.match(source, /if \(!report\)\s*\{[\s\S]*?renderWeeklyReportJobProgress\(job\);/);
   const styles = await fetch(`${baseUrl}/styles.css`);
   assert.equal(styles.status, 200);
   const stylesheet = await styles.text();

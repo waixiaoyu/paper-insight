@@ -1,5 +1,7 @@
 ﻿import { describeWeeklyReportManualReview } from "./manual-review-details.js";
 
+import { submitWeeklyReportManualReviewDecision } from "./manual-review-actions.js";
+
 const legacyIndustrialDefaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
 ("anomaly detection" OR "traffic prediction" OR "network optimization" OR "root cause analysis" OR
@@ -3752,6 +3754,7 @@ async function restoreActiveWeeklyReportJob() {
     const report = state.reports.find((item) => item.key === reportKey);
     if (!report) {
       state.readingListJobId = job.jobId;
+      renderWeeklyReportJobProgress(job);
       if (typeof elements.weeklyReportTraceDialog?.showModal === "function" && !elements.weeklyReportTraceDialog.open) {
         elements.weeklyReportTraceDialog.showModal();
       }
@@ -5221,20 +5224,29 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
     : "";
 
   const buttons = [...elements.weeklyReportManualReview.querySelectorAll("[data-manual-review-action]")];
-  buttons.forEach((item) => { item.disabled = true; });
-  try {
-    const job = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}/decision`, {
+  const result = await submitWeeklyReportManualReviewDecision({
+    requestDecision: () => readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}/decision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action, ...(selectedPaperId ? { paperId: selectedPaperId } : {}) })
-    });
+    }),
+    refreshJob: () => readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}`),
+    setPending: (pending) => {
+      buttons.forEach((item) => { item.disabled = pending; });
+    }
+  });
+  if (result.error) {
+    showStatus(`提交管理员决策失败：${result.error.message}。本次选择未提交；恢复连接后可再次操作。`, "error");
+    if (result.job) renderWeeklyReportJobProgress(result.job);
+    return;
+  }
+  try {
+    const job = result.job;
     renderWeeklyReportJobProgress(job);
     await loadWeeklyReportTrace(job.jobId);
     showStatus(`管理员决策已提交：${weeklyReportManualReviewActionLabel(action)}。`, "success");
   } catch (error) {
-    showStatus(`提交管理员决策失败：${error.message}`, "error");
-    const active = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}`).catch(() => null);
-    if (active) renderWeeklyReportJobProgress(active);
+    showStatus(`刷新任务状态失败：${error.message}。决策已提交，重新打开页面后会恢复当前任务。`, "warning");
   }
 });
 
