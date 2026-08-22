@@ -326,6 +326,31 @@ ExecStart=/usr/bin/node /home/<user>/paper-insight/server.js
 http://localhost:3001
 ```
 
+### 本机 SSH 隧道守护
+
+为避免 SSH 隧道在本机断开后需要手动重连，仓库提供了守护程序。守护程序每 10 秒请求本地周报任务接口；连接异常或它创建的 SSH 子进程退出时，会按 2、5、10、30 秒退避自动重连。它只终止自身创建的 SSH 子进程，不会操作远端服务、历史数据或其他手工 SSH 进程。
+
+Windows 上，每台机器使用自己的服务器地址、SSH 用户和私钥安装登录后常驻任务。私钥和本机配置仅保存在 `.cache/tunnel-watchdog/`，该目录不进入 Git：
+
+```powershell
+.\scripts\install-tunnel-watchdog.ps1 -Install -RepositoryPath C:\work\code\paper-insight -Host <server> -User <user> -IdentityPath C:\keys\paper_insight_ed25519
+```
+
+安装后可查看状态或移除计划任务；卸载只删除计划任务和状态文件，不删除私钥、日志、远端数据或仓库文件：
+
+```powershell
+.\scripts\install-tunnel-watchdog.ps1 -Status -RepositoryPath C:\work\code\paper-insight
+.\scripts\install-tunnel-watchdog.ps1 -Uninstall -RepositoryPath C:\work\code\paper-insight
+```
+
+首次排查可在前台运行。先通过安装脚本生成 `.cache/tunnel-watchdog/config.json`，再执行：
+
+```powershell
+npm run tunnel:watchdog -- --config .cache\tunnel-watchdog\config.json
+```
+
+日志位于 `.cache/tunnel-watchdog/tunnel-watchdog.log`，状态位于 `.cache/tunnel-watchdog/state.json`。守护核心是 Node 脚本，在其他操作系统可以使用同一份本机配置前台运行；Windows 的登录后自动启动由安装脚本负责。
+
 常用远端命令：
 
 ```bash
