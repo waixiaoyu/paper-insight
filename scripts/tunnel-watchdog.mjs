@@ -230,7 +230,8 @@ export const runWatchdogFromCli = async (argv = process.argv.slice(2), dependenc
   const configIndex = argv.indexOf("--config");
   const configPath = configIndex >= 0 ? String(argv[configIndex + 1] || "") : "";
   if (!configPath) throw new TypeError("Tunnel watchdog requires --config <path>.");
-  const config = normalizeWatchdogConfig(JSON.parse(await readFile(resolve(configPath), "utf8")));
+  const configText = (await readFile(resolve(configPath), "utf8")).replace(/^\uFEFF/u, "");
+  const config = normalizeWatchdogConfig(JSON.parse(configText));
   await access(config.identity);
   const watchdog = new TunnelWatchdog({ config, ...fileDependencies(config), ...dependencies });
   await watchdog.start();

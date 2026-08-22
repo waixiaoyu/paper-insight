@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   normalizeWatchdogConfig,
+  runWatchdogFromCli,
   TunnelWatchdog
 } from "../scripts/tunnel-watchdog.mjs";
 
@@ -130,4 +134,35 @@ test("an exited SSH child is replaced and stop never targets another process", a
   assert.equal(second.killed, 1);
   assert.equal(first.killed, 0);
   assert.equal(removed, 1);
+});
+
+test("CLI accepts the UTF-8 BOM configuration written by Windows PowerShell", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "tunnel-watchdog-"));
+  const identity = join(directory, "identity");
+  const configPath = join(directory, "config.json");
+  await writeFile(identity, "test identity", "utf8");
+  await writeFile(configPath, `\uFEFF${JSON.stringify({
+    host: "host",
+    user: "user",
+    identity,
+    stateDirectory: directory
+  })}`, "utf8");
+  try {
+    const watchdog = await runWatchdogFromCli(["--config", configPath], {
+      spawnSsh: () => createChild(71),
+      requestHealth: async () => ({ statusCode: 200 }),
+      setTimer: () => 1,
+      clearTimer() {},
+      wait: async () => {},
+      now: () => "2026-08-22T00:00:00.000Z",
+      logger: { info() {}, error() {} },
+      writeState: async () => {},
+      removeState: async () => {},
+      processId: 9002
+    });
+    assert.equal(watchdog.child.pid, 71);
+    await watchdog.stop("test");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

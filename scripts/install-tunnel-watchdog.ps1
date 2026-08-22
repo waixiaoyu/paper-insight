@@ -8,7 +8,8 @@ param(
   [switch]$Status,
   [string]$RepositoryPath = (Join-Path $PSScriptRoot ".."),
   [Parameter(ParameterSetName = "Install", Mandatory = $true)]
-  [string]$Host,
+  [Alias("Host")]
+  [string]$ServerHost,
   [Parameter(ParameterSetName = "Install", Mandatory = $true)]
   [string]$User,
   [Parameter(ParameterSetName = "Install", Mandatory = $true)]
@@ -53,7 +54,7 @@ if ($Install) {
   $ssh = Get-Command $SshPath -ErrorAction Stop
   New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
   $config = [ordered]@{
-    host = $Host
+    host = $ServerHost
     user = $User
     identity = (Resolve-Path -LiteralPath $IdentityPath).Path
     sshPath = $ssh.Source
