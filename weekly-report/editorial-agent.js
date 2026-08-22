@@ -943,13 +943,18 @@ export class EditorialAgentError extends Error {
     stage = "editorial_plan",
     retryable = false,
     issues = [],
+    paperId = "",
+    relatedPaperIds = [],
+    repairAttempts = 0,
     cause
   } = {}) {
     super(message, cause ? { cause } : undefined);
     this.name = "EditorialAgentError";
     this.code = code;
     this.stage = stage;
-    this.paperId = "";
+    this.paperId = String(paperId || "");
+    this.relatedPaperIds = Array.isArray(relatedPaperIds) ? relatedPaperIds : [];
+    this.repairAttempts = Number.isInteger(repairAttempts) ? repairAttempts : 0;
     this.retryable = Boolean(retryable);
     this.excludePaper = false;
     this.rejectJob = true;
@@ -1232,16 +1237,26 @@ export const runEditorialPlanAgent = async ({
         repairAttempts: repairAttempt - 1,
         issues: validation.issues
       });
+      const reviewScope = deriveEditorialPlanReviewScope({
+        editorialPlan: validation.editorialPlan,
+        issues: validation.issues
+      });
       const decision = await onRepairExhausted({
         stage: "editorial_plan",
         issues: validation.issues,
         repairAttempts: repairAttempt - 1,
         editorialPlan: validation.editorialPlan,
-        ...deriveEditorialPlanReviewScope({
-          editorialPlan: validation.editorialPlan,
-          issues: validation.issues
-        })
+        ...reviewScope
       });
+      if (decision?.action === "skip_paper") {
+        throw new EditorialAgentError("An administrator skipped one paper after Editorial Plan repair exhaustion.", {
+          code: "READING_LIST_ADMIN_SKIPPED_PAPER",
+          issues: validation.issues,
+          paperId: String(decision?.paperId || reviewScope.paperId || ""),
+          relatedPaperIds: reviewScope.relatedPaperIds,
+          repairAttempts: repairAttempt - 1
+        });
+      }
       if (decision?.action !== "continue_repair") {
         throw new EditorialAgentError("Editorial Plan generation was stopped by the administrator.", {
           code: "READING_LIST_ADMIN_REJECTED",

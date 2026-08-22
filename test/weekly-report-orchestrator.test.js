@@ -1420,6 +1420,54 @@ test("editorial_plan waits after three repairs and an administrator can grant on
     .map((event) => event.repairAttempt), [1, 2, 3, 4]);
 });
 
+test("editorial_plan resumes calibration when an administrator skips the blocking paper", async () => {
+  const manualReviews = [];
+  const execution = fakeExecutionContext({
+    requestManualReview: async (review) => {
+      manualReviews.push(review);
+      return { action: "skip_paper", paperId: "2607.19411" };
+    }
+  });
+  const calibratedItems = [
+    calibratedItemFor("2607.19411", 88, "must_read"),
+    calibratedItemFor("2607.19412", 78, "worth_reading")
+  ];
+  const selected = await selectWeeklyReportPapers({
+    nextStage: "select",
+    reviewScoreThreshold: 70,
+    options: { minSelectedCount: 2, maxSelectedCount: 2 },
+    calibratedItems,
+    counts: {
+      primary: 2,
+      reserve: 0,
+      fullTextEligible: 2,
+      reviewed: 2,
+      calibrated: 2,
+      selected: 0,
+      excluded: 0
+    },
+    warnings: []
+  }, execution.context);
+  const invalidPlan = editorialPlanFor(selected.selectedItems);
+  invalidPlan.readingOrder = [];
+
+  const result = await planWeeklyReportEditorial(selected, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      return payload.task === "weekly_report_editorial_plan"
+        ? invalidPlan
+        : { patches: [{ path: "readingOrder", value: [] }] };
+    }
+  });
+
+  assert.equal(result.nextStage, "calibrate");
+  assert.deepEqual(result.manualExcludedPaperIds, ["2607.19411"]);
+  assert.equal(result.counts.selected, 0);
+  assert.equal(manualReviews.length, 1);
+  assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
+});
+
 test("write_paper_sections generates one isolated paperDraft per selected paper and persists every call", async () => {
   const execution = fakeExecutionContext();
   const calibratedItems = [

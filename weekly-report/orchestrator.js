@@ -1500,6 +1500,28 @@ export const planWeeklyReportEditorial = async (selected, context = {}, {
       throw error;
     }
 
+    if (error?.code === "READING_LIST_ADMIN_SKIPPED_PAPER" && String(error?.paperId || "").trim()) {
+      const paperId = String(error.paperId).trim();
+      await context.recordTrace({
+        type: "paper_skipped_by_administrator",
+        stage: "editorial_plan",
+        scope: "paper",
+        paperId,
+        relatedPaperIds: Array.isArray(error.relatedPaperIds) ? error.relatedPaperIds : [],
+        repairAttempts: Number(error.repairAttempts) || 0,
+        issues: Array.isArray(error.issues) ? error.issues : []
+      });
+      return {
+        ...selected,
+        nextStage: "calibrate",
+        counts: selected.counts ? { ...selected.counts, selected: 0 } : selected.counts,
+        manualExcludedPaperIds: [...new Set([
+          ...(Array.isArray(selected.manualExcludedPaperIds) ? selected.manualExcludedPaperIds : []),
+          paperId
+        ])]
+      };
+    }
+
     const rejected = error instanceof WeeklyReportOrchestratorError
       ? error
       : new WeeklyReportOrchestratorError(
