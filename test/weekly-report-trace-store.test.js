@@ -108,3 +108,19 @@ test("Trace 同时执行最近 20 次与最长 30 天保留策略", async () => 
   assert.equal(remaining.some((item) => item.traceId === "trace-01"), false);
   assert.equal(remaining.some((item) => item.traceId === "trace-21"), true);
 });
+
+test("Trace summary returns an artifact manifest without loading large artifact payloads", async () => {
+  const rootDir = await makeTempDirectory();
+  const store = new WeeklyReportTraceStore({ rootDir });
+  await store.createTrace({ traceId: "trace-summary", jobId: "job-summary" });
+  await store.appendTimeline("trace-summary", { stage: "review", type: "stage_started" });
+  await store.writeJson("trace-summary", "evidence-artifacts", {
+    payload: "x".repeat(1024 * 1024)
+  });
+
+  const summary = await store.readTraceSummary("trace-summary");
+
+  assert.equal(summary.timeline.length, 1);
+  assert.equal(summary.artifacts["evidence-artifacts"].sizeBytes > 1024 * 1024, true);
+  assert.equal(JSON.stringify(summary).includes("x".repeat(100)), false);
+});

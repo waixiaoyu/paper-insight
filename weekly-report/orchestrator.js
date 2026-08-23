@@ -1648,37 +1648,39 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
 
   if (result.failed.length) {
     const firstFailure = result.failed[0];
-    const rejected = new WeeklyReportOrchestratorError(
-      "At least one selected paper failed Paper Section writing.",
-      {
-        code: firstFailure.error.code || "READING_LIST_PAPER_SECTION_FAILED",
-        stage: "write_paper_sections",
-        paperId: firstFailure.error.paperId || paperIdForStage(firstFailure.item),
-        retryable: false,
-        traceId: context.traceId,
-        detail: firstFailure.error.message || "A selected paper did not produce a valid paperDraft.",
-        rejectJob: true
-      }
-    );
+    const failedPaperId = firstFailure.error.paperId || paperIdForStage(firstFailure.item);
+    const failureDetail = firstFailure.error.message || "A selected paper did not produce a valid paperDraft.";
+    const failureIssues = [{
+      code: firstFailure.error.code || "READING_LIST_PAPER_SECTION_FAILED",
+      paperId: failedPaperId,
+      reason: failureDetail,
+      details: Array.isArray(firstFailure.error.issues) ? firstFailure.error.issues : []
+    }];
     await context.recordTrace({
       type: "stage_failed",
       stage: "write_paper_sections",
       scope: "job",
       durationMs: elapsed(stageStartedAt),
-      code: rejected.code,
-      paperId: rejected.paperId,
+      code: failureIssues[0].code,
+      paperId: failedPaperId,
       failedPaperIds: result.failed.map((entry) => paperIdForStage(entry.item)),
-      reason: rejected.detail
+      reason: failureDetail,
+      decision: "manual_review"
     });
-    await context.recordTrace({
-      type: "reject_requested",
-      stage: "write_paper_sections",
-      scope: "job",
-      code: rejected.code,
-      paperId: rejected.paperId,
-      reason: rejected.detail
-    });
-    throw rejected;
+    return {
+      ...planned,
+      nextStage: "manual_review",
+      paperDrafts: result.succeeded.map((entry) => entry.paperDraft),
+      paperDraftResult: result,
+      manualReview: {
+        stage: "write_paper_sections",
+        paperId: failedPaperId,
+        summary: "该论文的逐篇稿件在自动修正后仍无法通过证据校验，可跳过该论文并重新校准其余候选。",
+        issues: failureIssues,
+        repairAttempts: 1,
+        allowedActions: failedPaperId ? ["exit_task", "skip_paper"] : ["exit_task"]
+      }
+    };
   }
 
   const paperDrafts = result.succeeded.map((entry) => entry.paperDraft);

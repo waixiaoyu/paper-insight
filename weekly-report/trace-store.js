@@ -6,6 +6,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   writeFile
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -229,6 +230,29 @@ export class WeeklyReportTraceStore {
       artifacts,
       resultMarkdown: await readTextIfPresent(join(directory, "result.md"))
     };
+  }
+
+  async readTraceSummary(traceId) {
+    const directory = this.traceDirectory(traceId);
+    const meta = await readJsonIfPresent(join(directory, "meta.json"));
+    if (!meta) {
+      return null;
+    }
+    const timelineText = await readTextIfPresent(join(directory, "timeline.ndjson"));
+    const timeline = timelineText
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const entries = await readdir(directory, { withFileTypes: true });
+    const artifacts = {};
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === "meta.json") {
+        continue;
+      }
+      const file = await stat(join(directory, entry.name));
+      artifacts[entry.name.slice(0, -5)] = { sizeBytes: file.size };
+    }
+    return { meta, timeline, artifacts, resultMarkdown: "" };
   }
 
   async listTraces() {

@@ -1,6 +1,6 @@
 ﻿import { describeWeeklyReportManualReview } from "./manual-review-details.js";
 
-import { submitWeeklyReportManualReviewDecision } from "./manual-review-actions.js";
+import { manualReviewDecisionStatusText, submitWeeklyReportManualReviewDecision } from "./manual-review-actions.js";
 
 const legacyIndustrialDefaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
@@ -2881,10 +2881,10 @@ async function loadWeeklyReportTrace(jobId = state.readingListJobId) {
   }
 
   elements.readingListSourceSummary.textContent = "正在读取 Trace…";
-  elements.weeklyReportTraceSummary.textContent = "正在读取完整 Trace…";
+  elements.weeklyReportTraceSummary.textContent = "正在读取 Trace 摘要…";
 
   try {
-    const trace = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(jobId)}/trace`);
+    const trace = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(jobId)}/trace?view=summary`);
     state.readingListTrace = trace;
     elements.weeklyReportTraceList.textContent = "";
     if (elements.weeklyReportTraceRawList) elements.weeklyReportTraceRawList.textContent = "";
@@ -2920,10 +2920,13 @@ async function loadWeeklyReportTrace(jobId = state.readingListJobId) {
     elements.weeklyReportTraceSummary.textContent = "Trace 读取失败";
     elements.weeklyReportTraceList.textContent = "";
     if (elements.weeklyReportTraceRawList) elements.weeklyReportTraceRawList.textContent = "";
-    appendWeeklyReportTraceItem("无法读取 Trace", error.message, "错误", elements.weeklyReportTraceRawList);
+    const detail = error.message === "Failed to fetch"
+      ? "连接在读取阶段记录时中断。任务状态不受影响，可点击“查看 Trace”重试。"
+      : error.message;
+    appendWeeklyReportTraceItem("无法读取 Trace", detail, "错误", elements.weeklyReportTraceRawList);
     const message = document.createElement("li");
     message.className = "weekly-report-trace-empty";
-    message.textContent = `无法读取 Trace：${error.message}`;
+    message.textContent = `无法读取 Trace：${detail}`;
     elements.weeklyReportTraceList.append(message);
   }
 }
@@ -5231,6 +5234,11 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
       body: JSON.stringify({ action, ...(selectedPaperId ? { paperId: selectedPaperId } : {}) })
     }),
     refreshJob: () => readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}`),
+    onAccepted: (job) => {
+      renderWeeklyReportJobProgress(job);
+      showStatus(manualReviewDecisionStatusText(action, job), "success");
+      void loadWeeklyReportTrace(job.jobId);
+    },
     setPending: (pending) => {
       buttons.forEach((item) => { item.disabled = pending; });
     }
@@ -5243,8 +5251,6 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
   try {
     const job = result.job;
     renderWeeklyReportJobProgress(job);
-    await loadWeeklyReportTrace(job.jobId);
-    showStatus(`管理员决策已提交：${weeklyReportManualReviewActionLabel(action)}。`, "success");
   } catch (error) {
     showStatus(`刷新任务状态失败：${error.message}。决策已提交，重新打开页面后会恢复当前任务。`, "warning");
   }

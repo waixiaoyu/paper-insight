@@ -749,7 +749,7 @@ test("Editorial Plan repair scope identifies one observation's paper and a cross
   assert.equal(trendScope.paperId, "");
 });
 
-test("Editorial Plan rejects a repair patch that changes an unaffected path", async () => {
+test("Editorial Plan preserves the original issue after an unaffected patch", async () => {
   const invalid = validPlan();
   invalid.singlePaperObservations[0].caveat = "该指标得分为零，而非指标本身为零。";
   const changedCoreTheme = "不应随局部修正改变的全局主题";
@@ -769,7 +769,7 @@ test("Editorial Plan rejects a repair patch that changes an unaffected path", as
       }
     }),
     (error) => error instanceof EditorialAgentError
-      && error.issues.some((entry) => entry.code === "editorial_repair_path_not_allowed")
+      && error.issues.some((entry) => entry.code === "rhetorical_prose_style")
   );
 });
 
@@ -1541,4 +1541,28 @@ test("Head/Tail repair prompt carries issue codes and paths but not issue detail
   assert.match(prompt, /Do not replace one forbidden contrast with another/i);
   assert.match(prompt, /Preserve the exact supported metric name/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
+});
+test("Editorial Plan keeps the last valid plan after an out-of-scope patch", async () => {
+  const invalid = validPlan();
+  invalid.readingOrder = [];
+  let repairCalls = 0;
+
+  const result = await runEditorialPlanAgent({
+    selectedItems,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      if (payload.task === "weekly_report_editorial_plan") {
+        return invalid;
+      }
+      repairCalls += 1;
+      return repairCalls === 1
+        ? { patches: [{ path: "trends[0].claim", value: "out of scope" }] }
+        : { patches: [{ path: "readingOrder", value: validPlan().readingOrder }] };
+    }
+  });
+
+  assert.equal(repairCalls, 2);
+  assert.equal(result.repairAttempts, 2);
+  assert.deepEqual(result.editorialPlan.readingOrder, validPlan().readingOrder);
 });

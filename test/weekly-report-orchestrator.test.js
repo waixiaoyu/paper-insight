@@ -1518,7 +1518,7 @@ test("write_paper_sections generates one isolated paperDraft per selected paper 
   )), true);
 });
 
-test("write_paper_sections rejects the report when any selected paper remains invalid after repair", async () => {
+test("write_paper_sections preserves valid drafts while requesting an administrator decision", async () => {
   const execution = fakeExecutionContext();
   const selectedItems = [
     calibratedItemFor("2607.19601", 88, "must_read"),
@@ -1549,8 +1549,7 @@ test("write_paper_sections rejects the report when any selected paper remains in
     warnings: []
   };
 
-  await assert.rejects(
-    () => writeWeeklyReportPaperSections(planned, execution.context, {
+  const written = await writeWeeklyReportPaperSections(planned, execution.context, {
       networkRetryDelayMs: 0,
       callModel: async (prompt) => {
         const paperId = JSON.parse(prompt).paper.paperId;
@@ -1560,20 +1559,13 @@ test("write_paper_sections rejects the report when any selected paper remains in
         }
         return draft;
       }
-    }),
-    (error) => (
-      error.code === "READING_LIST_PAPER_SECTION_UNSUPPORTED"
-      && error.stage === "write_paper_sections"
-      && error.paperId === "2607.19602"
-      && error.rejectJob === true
-    )
-  );
+    });
+  assert.equal(written.nextStage, "manual_review");
+  assert.equal(written.manualReview.paperId, "2607.19602");
+  assert.deepEqual(written.manualReview.allowedActions, ["exit_task", "skip_paper"]);
   assert.equal(execution.sections.get("paper-drafts").succeeded.length, 1);
   assert.equal(execution.sections.get("paper-drafts").failed.length, 1);
-  assert.equal(execution.events.some((event) => (
-    event.type === "reject_requested"
-    && event.stage === "write_paper_sections"
-  )), true);
+  assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
 test("write_head_tail completes the existing Editorial Agent and persists its model call and normalized artifact", async () => {
@@ -2409,4 +2401,50 @@ test("an administrator can grant exactly one repair after the three automatic at
   assert.equal(result.qaReport.repairCount, 4);
   assert.equal(result.qaReport.adminRepairApproved, false);
   assert.equal(execution.sections.has("repair-result-4"), true);
+});
+test("write_paper_sections exposes a skip decision for one unsupported selected paper", async () => {
+  const execution = fakeExecutionContext();
+  const selectedItems = [
+    calibratedItemFor("2607.19601", 88, "must_read"),
+    calibratedItemFor("2607.19602", 78, "worth_reading")
+  ].map((entry, index) => ({
+    ...entry,
+    selection: {
+      selected: true,
+      finalScore: entry.reviewResult.rawScore,
+      readingTier: entry.calibrationResult.readingTier,
+      rank: index + 1
+    }
+  }));
+  const planned = {
+    nextStage: "write_paper_sections",
+    options: { paperConcurrency: 2 },
+    selectedItems,
+    editorialPlan: editorialPlanFor(selectedItems),
+    counts: {
+      primary: 2,
+      reserve: 0,
+      fullTextEligible: 2,
+      reviewed: 2,
+      calibrated: 2,
+      selected: 2,
+      excluded: 0
+    },
+    warnings: []
+  };
+
+  const written = await writeWeeklyReportPaperSections(planned, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const paperId = JSON.parse(prompt).paper.paperId;
+      const draft = paperDraftFor(paperId);
+      if (paperId === "2607.19602") draft.limitationsAndConstraints = [];
+      return draft;
+    }
+  });
+
+  assert.equal(written.nextStage, "manual_review");
+  assert.equal(written.manualReview.paperId, "2607.19602");
+  assert.deepEqual(written.manualReview.allowedActions, ["exit_task", "skip_paper"]);
+  assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });

@@ -4346,7 +4346,10 @@ const handleWeeklyReportJobsRequest = async (request, response, url) => {
         sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
         return;
       }
-      sendJson(response, 200, await weeklyReportTraceStore.readTrace(job.traceId));
+      const trace = url.searchParams.get("view") === "summary"
+        ? await weeklyReportTraceStore.readTraceSummary(job.traceId)
+        : await weeklyReportTraceStore.readTrace(job.traceId);
+      sendJson(response, 200, trace);
       return;
     }
     if (action === "result") {

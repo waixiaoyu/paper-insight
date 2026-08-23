@@ -1175,7 +1175,11 @@ export const runEditorialPlanAgent = async ({
       });
       repairedValidation = patchResult.valid
         ? validateEditorialPlan(patchResult.editorialPlan, { selectedItems: candidates })
-        : patchResult;
+        : {
+          valid: false,
+          editorialPlan: currentEditorialPlan,
+          issues: contentIssues
+        };
       if (patchResult.valid) {
         await onEvent?.({
           type: "editorial_plan_patch_applied",
@@ -1188,6 +1192,13 @@ export const runEditorialPlanAgent = async ({
             after: valueAtEditorialPlanPath(patchResult.editorialPlan, patch.path)
           })),
           remainingIssues: repairedValidation.issues
+        });
+      } else {
+        await onEvent?.({
+          type: "editorial_plan_patch_rejected",
+          stage: "editorial_plan",
+          attemptType,
+          issues: patchResult.issues
         });
       }
     } catch (error) {
