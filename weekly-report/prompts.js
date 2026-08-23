@@ -181,6 +181,31 @@ export const buildEvidenceRepairPrompt = ({
   issues: (Array.isArray(issues) ? issues : []).slice(0, 30).map(evidenceRepairIssue)
 });
 
+export const buildEvidenceResponseRepairPrompt = ({
+  paper,
+  contextPacket,
+  repairTargets = null,
+  issues = []
+} = {}) => JSON.stringify({
+  ...baseEvidencePayload({
+    task: "weekly_report_extract_evidence_response_repair",
+    paper,
+    contextPacket
+  }),
+  repairInstruction: "Return one complete Evidence response as valid JSON that conforms to outputSchema and completenessContract. Correct only the response structure. Do not rely on, quote, or reproduce the prior malformed raw response. When repairTargets is present, preserve that content-repair scope and return all required fields so the server can apply the existing scope restriction.",
+  ...(repairTargets ? {
+    repairTargets: {
+      mode: String(repairTargets?.mode || "full_response"),
+      evidenceFields: [...new Set((Array.isArray(repairTargets?.evidenceFields)
+        ? repairTargets.evidenceFields
+        : []).map(String).filter((field) => EVIDENCE_REPAIR_FIELDS.has(field)))],
+      rebuildValueSignals: Boolean(repairTargets?.rebuildValueSignals)
+    },
+    serverMergePolicy: "When repairTargets is present, only fields named in repairTargets.evidenceFields and valueSignals when rebuildValueSignals is true may replace retained normalized artifacts. Changes outside that scope are ignored and the merged complete artifacts are fully revalidated."
+  } : {}),
+  responseIssues: (Array.isArray(issues) ? issues : []).slice(0, 30).map(evidenceRepairIssue)
+});
+
 const reviewEvidenceFields = [
   "problem",
   "method",

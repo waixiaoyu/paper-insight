@@ -312,6 +312,7 @@ export class ReviewAgentError extends Error {
     paperId = "",
     retryable = false,
     excludePaper = true,
+    processingFailed = false,
     issues = [],
     cause
   } = {}) {
@@ -322,6 +323,7 @@ export class ReviewAgentError extends Error {
     this.paperId = paperId;
     this.retryable = Boolean(retryable);
     this.excludePaper = Boolean(excludePaper);
+    this.processingFailed = Boolean(processingFailed);
     this.issues = issues;
   }
 }
@@ -356,6 +358,7 @@ const serializedError = (error) => ({
   paperId: String(error?.paperId || ""),
   retryable: Boolean(error?.retryable),
   excludePaper: Boolean(error?.excludePaper),
+  processingFailed: Boolean(error?.processingFailed),
   issues: Array.isArray(error?.issues) ? error.issues : []
 });
 
@@ -583,6 +586,16 @@ export const runReviewAgent = async ({
     if (error?.name === "AbortError") {
       throw error;
     }
+    if (error?.processingFailed === true) {
+      throw new ReviewAgentError("Review-requested Evidence repair did not return a complete structured response.", {
+        code: "READING_LIST_REVIEW_EVIDENCE_REPAIR_FAILED",
+        paperId,
+        excludePaper: false,
+        processingFailed: true,
+        issues: error?.issues || repairIssues,
+        cause: error
+      });
+    }
     throw new ReviewAgentError("Review-requested Evidence repair failed.", {
       code: "READING_LIST_REVIEW_EVIDENCE_REPAIR_FAILED",
       paperId,
@@ -665,7 +678,7 @@ export const reviewEvidenceBatch = async (items, {
       if (error?.name === "AbortError" || signal?.aborted) {
         throw abortError();
       }
-      if (error?.modelCallFailed) {
+      if (error?.modelCallFailed || error?.processingFailed === true) {
         await onEvent?.({
           type: "review_processing_failed",
           stage: "review",

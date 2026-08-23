@@ -4,8 +4,20 @@ import {
 } from "./schema.js";
 import {
   buildEvidencePrompt,
-  buildEvidenceRepairPrompt
+  buildEvidenceRepairPrompt,
+  buildEvidenceResponseRepairPrompt
 } from "./prompts.js";
+
+const RESPONSE_CONTRACT_ISSUE_CODES = new Set(["invalid_json", "schema_invalid"]);
+const MAX_EVIDENCE_RESPONSE_REPAIRS = 2;
+const MAX_EVIDENCE_CONTENT_REPAIRS = 3;
+
+const hasOnlyResponseContractIssues = (validation) => (
+  validation?.valid === false
+  && Array.isArray(validation?.issues)
+  && validation.issues.length > 0
+  && validation.issues.every((entry) => RESPONSE_CONTRACT_ISSUE_CODES.has(String(entry?.code || "")))
+);
 
 const normalizeText = (value) => String(value || "")
   .replace(/&nbsp;/gi, " ")
@@ -27,7 +39,7 @@ const numericTokens = (value) => {
 };
 
 const UNRESOLVED_LEADING_ANAPHORA_PATTERN = /^(?:it|they)\s+also\b/iu;
-const PROBLEM_EVIDENCE_SIGNAL_PATTERN = /\b(?:problem|challenge|gap|issue|risk|unsafe|under[-\s]?test|fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|limitation|limited|cannot|can't|need(?:s|ed)?|require(?:s|d)?|ability\s+to|we\s+(?:study|consider|investigate|ask))\b|问题|挑战|不足|缺乏|风险|不安全|无法|需要|要求|研究.{0,16}(?:问题|能力)/iu;
+const PROBLEM_EVIDENCE_SIGNAL_PATTERN = /\b(?:problem|challenge|gap|issue|risk|unsafe|under[-\s]?test|fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|limitation|limited|cannot|can't|need(?:s|ed)?|require(?:s|d)?|ability\s+to|we\s+(?:study|consider|investigate|ask)|(?:we|this\s+(?:paper|work|study))\s+(?:assess(?:es|ed|ing)?|evaluate(?:s|d|ing)?|examine(?:s|d|ing)?))\b|问题|挑战|不足|缺乏|风险|不安全|无法|需要|要求|研究.{0,16}(?:问题|能力)/iu;
 const LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN = /\b(?:Gemini|GPT|Claude|DeepSeek|Grok|Reducto|LlamaExtract)\b|\bbest\s+(?:overall|method|model|system)\b/iu;
 const BROAD_METHOD_SYSTEM_SUBJECT_PATTERN = /(?:当前|现有|多数|大多数)(?:抽取)?(?:系统|方法|模型)|\bmost\s+(?:systems?|methods?|models?)\b/iu;
 const NEGATIVE_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|退化|较差|不佳|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?)\b/iu;
@@ -393,6 +405,7 @@ export class EvidenceAgentError extends Error {
     paperId = "",
     retryable = false,
     excludePaper = true,
+    processingFailed = false,
     issues = [],
     cause
   } = {}) {
@@ -403,6 +416,7 @@ export class EvidenceAgentError extends Error {
     this.paperId = paperId;
     this.retryable = Boolean(retryable);
     this.excludePaper = Boolean(excludePaper);
+    this.processingFailed = Boolean(processingFailed);
     this.issues = issues;
   }
 }
@@ -597,6 +611,48 @@ export const runEvidenceAgent = async ({
   };
 
   const initialPrompt = buildEvidencePrompt({ paper, contextPacket });
+  let responseRepairCount = 0;
+  const repairResponseContract = async (validation, repairContext = null) => {
+    let currentValidation = validation;
+    while (hasOnlyResponseContractIssues(currentValidation)
+      && responseRepairCount < MAX_EVIDENCE_RESPONSE_REPAIRS) {
+      responseRepairCount += 1;
+      await onEvent?.({
+        type: "evidence_response_repair_requested",
+        stage: "extract_evidence",
+        paperId: expectedPaperId,
+        attempt: responseRepairCount,
+        issues: currentValidation.issues,
+        repairScope: repairContext?.repairScope || null
+      });
+      currentValidation = await invokeWithNetworkRetry(
+        buildEvidenceResponseRepairPrompt({
+          paper,
+          contextPacket,
+          repairTargets: repairContext?.repairScope || null,
+          issues: currentValidation.issues
+        }),
+        `response_repair_${responseRepairCount}`,
+        `response_repair_${responseRepairCount}_network_retry`,
+        repairContext
+      );
+    }
+    return currentValidation;
+  };
+  const responseRepairFields = () => ({
+    responseRepairAttempted: responseRepairCount > 0,
+    responseRepairCount
+  });
+  const throwResponseProcessingFailure = (validation) => {
+    throw new EvidenceAgentError("Evidence Agent could not return a complete structured response after two response-format repairs.", {
+      code: "READING_LIST_EVIDENCE_RESPONSE_INVALID",
+      paperId: expectedPaperId,
+      retryable: false,
+      excludePaper: false,
+      processingFailed: true,
+      issues: validation.issues
+    });
+  };
 
   if (Array.isArray(repairIssues) && repairIssues.length) {
     let reviewBaseArtifacts = null;
@@ -620,24 +676,56 @@ export const runEvidenceAgent = async ({
         repairScope: reviewRepairScope
       });
     }
-    const reviewRepairPrompt = buildEvidenceRepairPrompt({
-      paper,
-      contextPacket,
-      repairTargets: reviewRepairScope,
-      issues: repairIssues
-    });
-    const reviewRepaired = await invokeWithNetworkRetry(
-      reviewRepairPrompt,
+    const reviewRepairContext = reviewBaseArtifacts ? {
+      baseArtifacts: reviewBaseArtifacts,
+      repairScope: reviewRepairScope
+    } : null;
+    let reviewRepaired = await invokeWithNetworkRetry(
+      buildEvidenceRepairPrompt({
+        paper,
+        contextPacket,
+        repairTargets: reviewRepairScope,
+        issues: repairIssues
+      }),
       "review_evidence_repair",
       "review_evidence_repair_network_retry",
-      reviewBaseArtifacts ? {
-        baseArtifacts: reviewBaseArtifacts,
-        repairScope: reviewRepairScope
-      } : null
+      reviewRepairContext
     );
+    reviewRepaired = await repairResponseContract(reviewRepaired, reviewRepairContext);
+    if (hasOnlyResponseContractIssues(reviewRepaired)) {
+      throwResponseProcessingFailure(reviewRepaired);
+    }
+
+    let reviewRepairCount = 1;
+    while (!reviewRepaired.valid && reviewRepairCount < MAX_EVIDENCE_CONTENT_REPAIRS) {
+      reviewRepairCount += 1;
+      await onEvent?.({
+        type: "review_evidence_repair_started",
+        stage: "review",
+        paperId: expectedPaperId,
+        attempt: reviewRepairCount,
+        issues: reviewRepaired.issues,
+        repairScope: reviewRepairScope
+      });
+      reviewRepaired = await invokeWithNetworkRetry(
+        buildEvidenceRepairPrompt({
+          paper,
+          contextPacket,
+          repairTargets: reviewRepairScope,
+          issues: reviewRepaired.issues
+        }),
+        `review_evidence_repair_${reviewRepairCount}`,
+        `review_evidence_repair_${reviewRepairCount}_network_retry`,
+        reviewRepairContext
+      );
+      reviewRepaired = await repairResponseContract(reviewRepaired, reviewRepairContext);
+      if (hasOnlyResponseContractIssues(reviewRepaired)) {
+        throwResponseProcessingFailure(reviewRepaired);
+      }
+    }
 
     if (!reviewRepaired.valid) {
-      throw new EvidenceAgentError("Evidence remains unsupported after the Review-requested repair.", {
+      throw new EvidenceAgentError("Evidence remains unsupported after three Review-requested repairs.", {
         code: "READING_LIST_EVIDENCE_REVIEW_REPAIR_FAILED",
         paperId: expectedPaperId,
         retryable: false,
@@ -650,57 +738,69 @@ export const runEvidenceAgent = async ({
       ...reviewRepaired.artifacts,
       validation: reviewRepaired,
       repairAttempted: true,
+      repairCount: reviewRepairCount,
       repairSource: "review",
       repairScope: reviewRepairScope,
+      ...responseRepairFields(),
       calls: callRecords
     };
   }
 
-  const initial = await invokeWithNetworkRetry(initialPrompt, "initial", "network_retry");
+  let initial = await invokeWithNetworkRetry(initialPrompt, "initial", "network_retry");
+  initial = await repairResponseContract(initial);
+
+  if (hasOnlyResponseContractIssues(initial)) {
+    throwResponseProcessingFailure(initial);
+  }
 
   if (initial.valid) {
     return {
       ...initial.artifacts,
       validation: initial,
       repairAttempted: false,
+      repairCount: 0,
+      ...responseRepairFields(),
       calls: callRecords
     };
   }
 
-  if (typeof onEvent === "function") {
-    const plannedRepairScope = evidenceRepairScope({
-      issues: initial.issues,
-      baseArtifacts: initial.artifacts
+  let repaired = initial;
+  let plannedRepairScope = null;
+  let repairCount = 0;
+  while (!repaired.valid && repairCount < MAX_EVIDENCE_CONTENT_REPAIRS) {
+    plannedRepairScope = evidenceRepairScope({
+      issues: repaired.issues,
+      baseArtifacts: repaired.artifacts
     });
-    await onEvent({
+    repairCount += 1;
+    await onEvent?.({
       type: "repair_requested",
       stage: "extract_evidence",
       paperId: expectedPaperId,
-      issues: initial.issues,
+      attempt: repairCount,
+      issues: repaired.issues,
       repairScope: plannedRepairScope
     });
-  }
-  const plannedRepairScope = evidenceRepairScope({
-    issues: initial.issues,
-    baseArtifacts: initial.artifacts
-  });
-  const repairPrompt = buildEvidenceRepairPrompt({
-    paper,
-    contextPacket,
-    repairTargets: plannedRepairScope,
-    issues: initial.issues
-  });
-  const repaired = await invokeWithNetworkRetry(
-    repairPrompt,
-    "repair",
-    "repair_network_retry",
-    initial.artifacts ? {
-      baseArtifacts: initial.artifacts,
+    const repairContext = repaired.artifacts ? {
+      baseArtifacts: repaired.artifacts,
       repairScope: plannedRepairScope
-    } : null
-  );
+    } : null;
+    repaired = await invokeWithNetworkRetry(
+      buildEvidenceRepairPrompt({
+        paper,
+        contextPacket,
+        repairTargets: plannedRepairScope,
+        issues: repaired.issues
+      }),
+      `repair_${repairCount}`,
+      `repair_${repairCount}_network_retry`,
+      repairContext
+    );
+    repaired = await repairResponseContract(repaired, repairContext);
+    if (hasOnlyResponseContractIssues(repaired)) {
+      throwResponseProcessingFailure(repaired);
+    }
 
-  if (!repaired.valid) {
     const sanitized = sanitizedNumericEvidence(repaired, { contextPacket, expectedPaperId });
     if (sanitized) {
       await onEvent?.({
@@ -713,12 +813,17 @@ export const runEvidenceAgent = async ({
         ...sanitized.artifacts,
         validation: sanitized,
         repairAttempted: true,
+        repairCount,
         repairScope: plannedRepairScope,
         deterministicSanitizationApplied: true,
+        ...responseRepairFields(),
         calls: callRecords
       };
     }
-    throw new EvidenceAgentError("Evidence artifacts remain unsupported after one targeted repair.", {
+  }
+
+  if (!repaired.valid) {
+    throw new EvidenceAgentError("Evidence artifacts remain unsupported after three targeted repairs.", {
       code: "READING_LIST_EVIDENCE_UNSUPPORTED",
       paperId: expectedPaperId,
       retryable: false,
@@ -731,7 +836,9 @@ export const runEvidenceAgent = async ({
     ...repaired.artifacts,
     validation: repaired,
     repairAttempted: true,
+    repairCount,
     repairScope: plannedRepairScope,
+    ...responseRepairFields(),
     calls: callRecords
   };
 };
@@ -786,7 +893,7 @@ export const extractEvidenceBatch = async (items, {
       if (error?.name === "AbortError" || signal?.aborted) {
         throw abortError();
       }
-      if (error?.modelCallFailed) {
+      if (error?.modelCallFailed || error?.processingFailed === true) {
         await onEvent?.({
           type: "evidence_processing_failed",
           stage: "extract_evidence",
@@ -818,7 +925,10 @@ export const extractEvidenceBatch = async (items, {
         evidenceCard: entry.result.evidenceCard,
         valueSignals: entry.result.valueSignals,
         validation: entry.result.validation,
-        repairAttempted: entry.result.repairAttempted
+        repairAttempted: entry.result.repairAttempted,
+        repairCount: entry.result.repairCount || 0,
+        responseRepairAttempted: entry.result.responseRepairAttempted,
+        responseRepairCount: entry.result.responseRepairCount || 0
       });
     } else if (entry.processingFailed) {
       processingFailed.push({

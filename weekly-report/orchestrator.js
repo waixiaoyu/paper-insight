@@ -497,13 +497,18 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
       accepted: evidenceItems.length,
       target
     }),
-    ...evidenceProcessingFailed.map((item) => ({
-      code: "READING_LIST_EVIDENCE_PROCESSING_FAILED",
-      stage: "extract_evidence",
-      paperId: String(item?.contextPacket?.paperId || item?.paper?.id || ""),
-      message: "该论文的 Evidence 模型调用在自动重试后仍未完成，已继续处理其它论文。",
-      severity: "warning"
-    }))
+    ...evidenceProcessingFailed.map((item) => {
+      const responseInvalid = String(item?.error?.code || "") === "READING_LIST_EVIDENCE_RESPONSE_INVALID";
+      return {
+        code: "READING_LIST_EVIDENCE_PROCESSING_FAILED",
+        stage: "extract_evidence",
+        paperId: String(item?.contextPacket?.paperId || item?.paper?.id || ""),
+        message: responseInvalid
+          ? "该论文连续两次未返回完整的 Evidence 结构化结果，已作为模型处理失败跳过，并继续处理其它论文。"
+          : "该论文的 Evidence 模型调用在自动重试后仍未完成，已作为模型处理失败跳过，并继续处理其它论文。",
+        severity: "warning"
+      };
+    })
   ];
   const evidenceResult = {
     targetEligibleCount: target,

@@ -316,6 +316,25 @@ test("Problem Evidence must state a problem or capability instead of only announ
   assert.equal(validation.issues.some((entry) => entry.code === "problem_excerpt_not_problem_statement"), true);
 });
 
+test("研究目标可以作为 Problem Evidence，不需要命中固定问题关键词", () => {
+  const contextPacket = contextPacketFor();
+  const excerpt = "This paper assesses the deployment-time effectiveness of topology constraints in configuration workflows.";
+  contextPacket.inputSections[1].text += ` ${excerpt}`;
+  const response = validResponseFor();
+  response.evidenceCard.problem = {
+    summary: "The paper assesses the deployment-time effectiveness of topology constraints in configuration workflows.",
+    status: "supported",
+    sources: [source("S1", "1 Introduction", excerpt)]
+  };
+
+  const validation = validateEvidenceArtifacts(response, {
+    contextPacket,
+    expectedPaperId: contextPacket.paperId
+  });
+
+  assert.equal(validation.issues.some((entry) => entry.code === "problem_excerpt_not_problem_statement"), false);
+});
+
 test("伪造摘录触发一次定向修正，修正 prompt 仍只读取当前论文", async () => {
   const invalid = validResponseFor();
   invalid.evidenceCard.method.sources[0].excerpt = "A fabricated method excerpt from another paper.";
@@ -347,7 +366,7 @@ test("伪造摘录触发一次定向修正，修正 prompt 仍只读取当前论
   assert.match(calls[1].serverMergePolicy, /ignored/i);
   assert.match(JSON.stringify(calls[1].issues), /excerpt_not_in_source/);
   assert.doesNotMatch(JSON.stringify(calls[1]), /ABSTRACT_SECRET|2607\.22222/);
-  assert.deepEqual(callRecords.map((record) => record.attemptType), ["initial", "repair"]);
+  assert.deepEqual(callRecords.map((record) => record.attemptType), ["initial", "repair_1"]);
   assert.equal(
     result.evidenceCard.problem.sources[0].excerpt,
     validResponseFor().evidenceCard.problem.sources[0].excerpt
@@ -356,7 +375,7 @@ test("伪造摘录触发一次定向修正，修正 prompt 仍只读取当前论
   assert.deepEqual(callRecords[1].validation.repairScope.evidenceFields, ["method"]);
 });
 
-test("malformed initial Evidence is repaired once and the recovered content still passes every evidence guard", async () => {
+test("malformed initial Evidence uses independent format recovery before bounded content repair", async () => {
   const contextPacket = contextPacketFor();
   contextPacket.inputSections[4].text += " Commercial VLMs show weaker results. Long documents remain a separate challenge.";
   const repairedResponse = validResponseFor();
@@ -393,13 +412,69 @@ test("malformed initial Evidence is repaired once and the recovered content stil
     )
   );
 
-  assert.equal(calls, 2);
-  assert.equal(prompts[1].task, "weekly_report_extract_evidence_repair");
-  assert.equal(prompts[1].repairTargets.mode, "full_response");
-  assert.equal(prompts[1].issues.some((entry) => entry.code === "invalid_json"), true);
+  assert.equal(calls, 5);
+  assert.equal(prompts[1].task, "weekly_report_extract_evidence_response_repair");
+  assert.equal(prompts[1].responseIssues.some((entry) => entry.code === "invalid_json"), true);
+  assert.equal(prompts.filter((prompt) => prompt.task === "weekly_report_extract_evidence_repair").length, 3);
 });
 
-test("a schema-incomplete Evidence content repair fails closed instead of reaching numeric sanitization", async () => {
+test("Evidence 格式错误最多独立修正两次，耗尽后记为处理失败而非内容排除", async () => {
+  const events = [];
+  const callRecords = [];
+  let calls = 0;
+
+  await assert.rejects(
+    () => runEvidenceAgent({
+      paper: { id: "2607.11111" },
+      contextPacket: contextPacketFor(),
+      callModel: async () => {
+        calls += 1;
+        return "{\"evidenceCard\":";
+      },
+      onCall: async (record) => callRecords.push(record),
+      onEvent: async (event) => events.push(event)
+    }),
+    (error) => (
+      error instanceof EvidenceAgentError
+      && error.code === "READING_LIST_EVIDENCE_RESPONSE_INVALID"
+      && error.processingFailed === true
+      && error.excludePaper === false
+    )
+  );
+
+  assert.equal(calls, 3);
+  assert.deepEqual(callRecords.map((record) => record.attemptType), [
+    "initial",
+    "response_repair_1",
+    "response_repair_2"
+  ]);
+  assert.equal(events.filter((event) => event.type === "evidence_response_repair_requested").length, 2);
+});
+
+test("Evidence 第二次格式修正成功后可以进入后续验证", async () => {
+  const callRecords = [];
+  let calls = 0;
+  const result = await runEvidenceAgent({
+    paper: { id: "2607.11111" },
+    contextPacket: contextPacketFor(),
+    callModel: async () => {
+      calls += 1;
+      return calls < 3 ? "{\"evidenceCard\":" : validResponseFor();
+    },
+    onCall: async (record) => callRecords.push(record)
+  });
+
+  assert.equal(result.validation.valid, true);
+  assert.equal(result.responseRepairAttempted, true);
+  assert.equal(result.responseRepairCount, 2);
+  assert.deepEqual(callRecords.map((record) => record.attemptType), [
+    "initial",
+    "response_repair_1",
+    "response_repair_2"
+  ]);
+});
+
+test("schema-incomplete Evidence content repair becomes a processing failure instead of content exclusion", async () => {
   const initial = validResponseFor();
   initial.evidenceCard.results.summary = "Unsafe actions are reduced by 42%.";
   const malformedRepair = validResponseFor();
@@ -417,14 +492,13 @@ test("a schema-incomplete Evidence content repair fails closed instead of reachi
     }),
     (error) => (
       error instanceof EvidenceAgentError
-      && error.code === "READING_LIST_EVIDENCE_UNSUPPORTED"
-      && error.issues.some((entry) => (
-        entry.code === "invalid_json" && /requires claim and evidenceRefs/.test(entry.detail)
-      ))
+      && error.code === "READING_LIST_EVIDENCE_RESPONSE_INVALID"
+      && error.processingFailed === true
+      && error.excludePaper === false
     )
   );
 
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
 });
 
 test("Review-requested Evidence repair preserves fields outside the challenged scope", async () => {
@@ -547,7 +621,7 @@ test("numeric sanitization keeps supported paper content and removes only senten
   assert.equal(result.valueSignals.signals.some((signal) => /42/.test(signal.claim)), false);
 });
 
-test("一次修正后仍不合格会抛出可排除单篇的 Evidence 错误", async () => {
+test("三次内容修正后仍不合格会抛出可排除单篇的 Evidence 错误", async () => {
   const invalid = validResponseFor();
   invalid.evidenceCard.results.sources[0].anchor = "S999";
   let calls = 0;
@@ -570,7 +644,7 @@ test("一次修正后仍不合格会抛出可排除单篇的 Evidence 错误", a
     )
   );
 
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
 });
 
 test("网络错误自动重试一次，不消耗结构化修正机会", async () => {
@@ -624,6 +698,28 @@ test("two incomplete model responses are recorded without excluding the paper", 
   assert.equal(events.some((event) => event.type === "network_retry"), true);
   assert.equal(events.find((event) => event.type === "network_retry")?.error?.stopReason, "max_tokens");
   assert.equal(events.some((event) => event.type === "repair_requested"), false);
+  assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
+  assert.equal(events.some((event) => event.type === "evidence_processing_failed"), true);
+});
+
+test("Evidence 格式恢复耗尽后批处理继续其它论文，不产生 evidence_excluded", async () => {
+  const events = [];
+  const result = await extractEvidenceBatch([
+    { paper: { id: "2607.11111" }, contextPacket: contextPacketFor("2607.11111") },
+    { paper: { id: "2607.11112" }, contextPacket: contextPacketFor("2607.11112") }
+  ], {
+    paperConcurrency: 1,
+    callModel: async (_prompt, options) => (
+      options.paperId === "2607.11111" ? "{\"evidenceCard\":" : validResponseFor("2607.11112")
+    ),
+    onEvent: async (event) => events.push(event)
+  });
+
+  assert.equal(result.succeeded.length, 1);
+  assert.equal(result.succeeded[0].evidenceCard.paperId, "2607.11112");
+  assert.equal(result.excluded.length, 0);
+  assert.equal(result.processingFailed.length, 1);
+  assert.equal(result.processingFailed[0].error.code, "READING_LIST_EVIDENCE_RESPONSE_INVALID");
   assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
   assert.equal(events.some((event) => event.type === "evidence_processing_failed"), true);
 });

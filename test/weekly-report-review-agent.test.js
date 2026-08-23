@@ -376,6 +376,42 @@ test("Review batch records a repeated transport failure and continues with other
   assert.equal(events.some((event) => event.type === "review_excluded"), false);
 });
 
+test("Review 请求的 Evidence 格式恢复耗尽后记为处理失败并继续其它论文", async () => {
+  const events = [];
+  const result = await reviewEvidenceBatch([
+    reviewItemFor("2607.21001", { overstated: true }),
+    reviewItemFor("2607.21002")
+  ], {
+    paperConcurrency: 1,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      if (payload.paper.paperId === "2607.21001") {
+        if (payload.task.startsWith("weekly_report_extract_evidence")) {
+          return "{\"evidenceCard\":";
+        }
+        return reviewResponseFor("2607.21001", {
+          status: "repair_required",
+          issues: [{
+            field: "method",
+            code: "claim_overstates_excerpt",
+            message: "The method summary is broader than its source excerpt."
+          }]
+        });
+      }
+      return reviewResponseFor("2607.21002");
+    },
+    onEvent: async (event) => events.push(event)
+  });
+
+  assert.deepEqual(result.succeeded.map((item) => item.paper.id), ["2607.21002"]);
+  assert.equal(result.excluded.length, 0);
+  assert.equal(result.processingFailed.length, 1);
+  assert.equal(result.processingFailed[0].paper.id, "2607.21001");
+  assert.equal(result.processingFailed[0].error.code, "READING_LIST_REVIEW_EVIDENCE_REPAIR_FAILED");
+  assert.equal(events.some((event) => event.type === "review_processing_failed"), true);
+  assert.equal(events.some((event) => event.type === "review_excluded"), false);
+});
+
 test("Review batch propagates a non-paper system failure instead of excluding the paper", async () => {
   await assert.rejects(
     () => reviewEvidenceBatch([reviewItemFor("2607.21003")], {
