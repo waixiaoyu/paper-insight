@@ -2839,14 +2839,15 @@ function renderWeeklyReportManualReview(job) {
   elements.weeklyReportManualReviewDetails.hidden = description.details.length === 0;
   elements.weeklyReportManualReviewIssues.textContent = "";
   const issues = Array.isArray(review.issues) ? review.issues : [];
-  if (review.stage !== "editorial_plan") {
+  const issuesAreExplained = description.details.length > 0;
+  if (review.stage !== "editorial_plan" && !issuesAreExplained) {
     (issues.length ? issues : ["没有提供结构化问题详情，请在下方 Trace 中查看阶段记录。"]).forEach((issue) => {
       const item = document.createElement("li");
       item.textContent = weeklyReportManualReviewIssueText(issue);
       elements.weeklyReportManualReviewIssues.append(item);
     });
   }
-  elements.weeklyReportManualReviewIssues.hidden = review.stage === "editorial_plan";
+  elements.weeklyReportManualReviewIssues.hidden = review.stage === "editorial_plan" || issuesAreExplained;
 
   const relatedPaperIds = [...new Set([
     ...(Array.isArray(review.relatedPaperIds) ? review.relatedPaperIds : []),
