@@ -700,6 +700,8 @@ test("two incomplete model responses are recorded without excluding the paper", 
   assert.equal(events.some((event) => event.type === "repair_requested"), false);
   assert.equal(events.some((event) => event.type === "evidence_excluded"), false);
   assert.equal(events.some((event) => event.type === "evidence_processing_failed"), true);
+  assert.equal(events.some((event) => event.type === "evidence_processing_started" && event.paperId === "2607.11111"), true);
+  assert.equal(events.filter((event) => event.type === "model_call_started").length, 2);
 });
 
 test("Evidence 格式恢复耗尽后批处理继续其它论文，不产生 evidence_excluded", async () => {

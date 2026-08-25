@@ -50,6 +50,12 @@ test("Job 运行期间只有 running，完成后只有 publish 或 reject", () =
 
   assert.equal(job.state, "running");
   assert.equal(job.agentStage, "create_job");
+  assert.deepEqual(job.progress, {
+    stageStartedAt: "2026-08-01T10:00:00.000Z",
+    lastEventAt: "2026-08-01T10:00:00.000Z",
+    lastEventType: "job_started",
+    paperId: ""
+  });
   assert.doesNotThrow(() => assertWeeklyReportJob(job));
 
   for (const state of ["draft", "review", "publishable", "queued", "cancelled"]) {
@@ -69,6 +75,23 @@ test("Job 运行期间只有 running，完成后只有 publish 或 reject", () =
   assert.equal(rejected.state, "reject");
   assert.equal(rejected.result.reason, "admin_cancelled");
   assert.equal(rejected.completedAt, "2026-08-01T10:01:00.000Z");
+});
+
+test("Job Schema 拒绝缺少时间或使用非法时间的进展记录", () => {
+  const job = createWeeklyReportJob({
+    jobId: "weekly-report-job-progress",
+    traceId: "weekly-report-trace-progress",
+    reportKey: "2026-W31"
+  });
+
+  assert.throws(
+    () => assertWeeklyReportJob({ ...job, progress: { ...job.progress, lastEventAt: "" } }),
+    /progress.lastEventAt/
+  );
+  assert.throws(
+    () => assertWeeklyReportJob({ ...job, progress: { ...job.progress, stageStartedAt: "not-a-date" } }),
+    /valid date/
+  );
 });
 
 test("Job Schema 拒绝完成态缺少结果以及非法计数", () => {

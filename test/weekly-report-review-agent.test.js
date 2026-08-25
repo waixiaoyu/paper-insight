@@ -374,6 +374,7 @@ test("Review batch records a repeated transport failure and continues with other
   assert.equal(result.processingFailed[0].paper.id, "2607.21001");
   assert.equal(events.some((event) => event.type === "review_processing_failed"), true);
   assert.equal(events.some((event) => event.type === "review_excluded"), false);
+  assert.equal(events.some((event) => event.type === "review_processing_started" && event.paperId === "2607.21001"), true);
 });
 
 test("Review 请求的 Evidence 格式恢复耗尽后记为处理失败并继续其它论文", async () => {

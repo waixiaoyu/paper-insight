@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Paper Insight</title>
-    <link rel="stylesheet" href="/styles.css?v=weekly-manual-review-v2026-08-13">
+    <link rel="stylesheet" href="/styles.css?v=weekly-operations-v2026-08-25">
   </head>
   <body>
     <dialog id="apiDialog" class="api-dialog">
@@ -220,9 +220,9 @@
               <em>按全文复评分筛选周报内容</em>
             </label>
             <label class="reading-list-number">
-              <span>保底入选篇数</span>
+              <span>达标篇数目标</span>
               <input id="readingListMinSelected" type="number" min="1" max="20" value="3" step="1">
-              <em>达标不足时按复评分补足</em>
+              <em>达标不足时继续评审增补候选；不会用低于阈值的论文补足</em>
             </label>
             <label class="reading-list-number">
               <span>最多入选篇数</span>
@@ -245,7 +245,7 @@
               <li data-reading-step="evidence"><span>2</span><div><strong>证据提取</strong><em>逐篇提取事实、摘录和阅读价值信号。</em></div></li>
               <li data-reading-step="review"><span>3</span><div><strong>独立复评</strong><em>核对证据是否足以支持评分与推荐理由。</em></div></li>
               <li data-reading-step="calibrate"><span>4</span><div><strong>横向校准</strong><em>在同批论文之间复核相对评价是否一致。</em></div></li>
-              <li data-reading-step="select"><span>5</span><div><strong>确定性选稿</strong><em>按阈值、排序和保底规则确定最终篇目。</em></div></li>
+              <li data-reading-step="select"><span>5</span><div><strong>确定性选稿</strong><em>只收录达到入选阈值的论文，并按最终分数排序。</em></div></li>
               <li data-reading-step="write"><span>6</span><div><strong>策划与写作</strong><em>生成编辑计划、逐篇正文以及周报首尾内容。</em></div></li>
               <li data-reading-step="qa"><span>7</span><div><strong>发布前 QA</strong><em>检查事实、数字和表达；最多自动修正三次，仍不通过时等待管理员处理。</em></div></li>
               <li data-reading-step="save"><span>8</span><div><strong>发布结果</strong><em>写入发布稿，或保留拒绝原因和完整 Trace。</em></div></li>
@@ -286,10 +286,19 @@
             <p id="weeklyReportTraceSummary">等待读取当前任务。</p>
           </div>
           <div class="reading-list-source-actions">
+            <button id="weeklyReportTraceReconnect" class="ghost-button" type="button">刷新状态</button>
             <button id="weeklyReportTraceCancel" class="ghost-button warning-action" type="button" hidden>取消任务</button>
             <button id="weeklyReportTraceClose" class="ghost-button" type="button">关闭</button>
           </div>
         </header>
+        <section id="weeklyReportJobHealth" class="weekly-report-job-health" data-state="running_recent" aria-live="polite">
+          <span class="weekly-report-job-health-indicator" aria-hidden="true"></span>
+          <div class="weekly-report-job-health-copy">
+            <strong id="weeklyReportJobHealthTitle">正在读取任务状态</strong>
+            <p id="weeklyReportJobHealthDetail">将显示服务端最近进展和耗时。</p>
+            <p id="weeklyReportJobHealthMeta" class="weekly-report-job-health-meta"></p>
+          </div>
+        </section>
         <section id="weeklyReportManualReview" class="weekly-report-manual-review" aria-live="assertive" hidden>
           <div class="weekly-report-manual-review-copy">
             <p class="eyebrow">等待管理员决策</p>
@@ -530,6 +539,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=weekly-manual-review-v2026-08-18" type="module"></script>
+    <script src="/app.js?v=weekly-operations-v2026-08-25" type="module"></script>
   </body>
 </html>

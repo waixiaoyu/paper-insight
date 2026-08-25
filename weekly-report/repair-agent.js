@@ -120,6 +120,14 @@ const runTargetedRepairCall = async ({
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({
+      type: "model_call_started",
+      stage: paperId ? "paper_semantic_qa" : "report_semantic_qa",
+      scope: paperId ? "paper" : "job",
+      role,
+      paperId,
+      attemptType
+    });
     const startedAt = Date.now();
     let rawOutput;
     try {

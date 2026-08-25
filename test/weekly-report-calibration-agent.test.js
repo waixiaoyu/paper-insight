@@ -219,6 +219,7 @@ test("A contradictory consistent Calibration result still triggers one targeted 
 
   assert.equal(result.succeeded.length, 2);
   assert.equal(result.succeeded[0].reviewResult.scores.evidence, 55);
+  assert.equal(events.filter((event) => event.type === "model_call_started").length, 3);
   assert.equal(events.some((event) => (
     event.type === "calibration_status_normalized"
     && event.paperId === "2607.30701"

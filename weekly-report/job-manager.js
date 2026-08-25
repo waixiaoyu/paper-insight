@@ -71,6 +71,20 @@ const errorRecord = (error) => redactTraceValue({
   rejectJob: Boolean(error?.rejectJob)
 });
 
+const withObservableProgress = (job) => {
+  if (!job || job.progress) return job;
+  const fallbackTime = job.updatedAt || job.createdAt || new Date().toISOString();
+  return {
+    ...job,
+    progress: {
+      stageStartedAt: fallbackTime,
+      lastEventAt: fallbackTime,
+      lastEventType: "legacy_job_loaded",
+      paperId: ""
+    }
+  };
+};
+
 export class WeeklyReportJobManager {
   constructor({
     jobsDir,
@@ -96,6 +110,7 @@ export class WeeklyReportJobManager {
     this.completions = new Map();
     this.finalizations = new Map();
     this.manualReviews = new Map();
+    this.traceUpdates = new Map();
   }
 
   get activePath() {
@@ -108,7 +123,7 @@ export class WeeklyReportJobManager {
 
   async initialize() {
     await mkdir(this.jobsDir, { recursive: true });
-    const persistedActive = await readJsonIfPresent(this.activePath);
+    const persistedActive = withObservableProgress(await readJsonIfPresent(this.activePath));
 
     if (!persistedActive) {
       this.activeJob = null;
@@ -360,6 +375,8 @@ export class WeeklyReportJobManager {
     }
 
     const safePatch = redactTraceValue(patch);
+    const updatedAt = new Date().toISOString();
+    const stageChanged = this.activeJob.agentStage !== String(stage);
     const next = {
       ...this.activeJob,
       ...safePatch,
@@ -368,7 +385,14 @@ export class WeeklyReportJobManager {
       reportKey: this.activeJob.reportKey,
       state: "running",
       agentStage: String(stage),
-      updatedAt: new Date().toISOString(),
+      updatedAt,
+      progress: {
+        ...this.activeJob.progress,
+        stageStartedAt: stageChanged ? updatedAt : this.activeJob.progress.stageStartedAt,
+        lastEventAt: updatedAt,
+        lastEventType: "stage_updated",
+        paperId: stageChanged ? "" : this.activeJob.progress.paperId
+      },
       counts: safePatch.counts
         ? { ...this.activeJob.counts, ...safePatch.counts }
         : this.activeJob.counts,
@@ -387,12 +411,42 @@ export class WeeklyReportJobManager {
     return publicJob(next);
   }
 
-  async recordTrace(jobId, event) {
+  recordTrace(jobId, event) {
+    if (this.finalizations.has(jobId)) {
+      return Promise.resolve(null);
+    }
+    const previous = this.traceUpdates.get(jobId) || Promise.resolve();
+    const operation = previous
+      .catch(() => undefined)
+      .then(() => this.recordTraceOnce(jobId, event));
+    this.traceUpdates.set(jobId, operation);
+    return operation;
+  }
+
+  async recordTraceOnce(jobId, event) {
     const job = this.jobs.get(jobId) || await this.getJob(jobId);
     if (!job) {
       return null;
     }
-    return this.traceStore.appendTimeline(job.traceId, event);
+    const entry = await this.traceStore.appendTimeline(job.traceId, event);
+    if (this.isActiveRunning(jobId)) {
+      const eventPaperId = String(event?.paperId || "").trim();
+      const next = {
+        ...this.activeJob,
+        updatedAt: entry.timestamp,
+        progress: {
+          ...this.activeJob.progress,
+          lastEventAt: entry.timestamp,
+          lastEventType: String(event?.type || "trace_event"),
+          paperId: eventPaperId || this.activeJob.progress.paperId
+        }
+      };
+      assertWeeklyReportJob(next);
+      this.activeJob = next;
+      this.jobs.set(jobId, next);
+      await this.persistJob(next, { active: true });
+    }
+    return entry;
   }
 
   async writeTrace(jobId, name, value) {
@@ -436,7 +490,16 @@ export class WeeklyReportJobManager {
       ...this.activeJob,
       agentStage: manualReview.stage,
       manualReview,
-      updatedAt: requestedAt
+      updatedAt: requestedAt,
+      progress: {
+        ...this.activeJob.progress,
+        stageStartedAt: this.activeJob.agentStage === manualReview.stage
+          ? this.activeJob.progress.stageStartedAt
+          : requestedAt,
+        lastEventAt: requestedAt,
+        lastEventType: "manual_review_requested",
+        paperId: manualReview.paperId || this.activeJob.progress.paperId
+      }
     };
     let resolveDecision;
     let rejectDecision;
@@ -532,7 +595,13 @@ export class WeeklyReportJobManager {
     const next = {
       ...this.activeJob,
       manualReview: null,
-      updatedAt: decidedAt
+      updatedAt: decidedAt,
+      progress: {
+        ...this.activeJob.progress,
+        lastEventAt: decidedAt,
+        lastEventType: "manual_review_decided",
+        paperId: paperId || this.activeJob.progress.paperId
+      }
     };
     assertWeeklyReportJob(next);
     await this.traceStore.appendTimeline(next.traceId, {
@@ -561,10 +630,16 @@ export class WeeklyReportJobManager {
       return this.getJob(jobId);
     }
 
+    const cancelledAt = new Date().toISOString();
     const cancelling = {
       ...this.activeJob,
       cancelRequested: true,
-      updatedAt: new Date().toISOString()
+      updatedAt: cancelledAt,
+      progress: {
+        ...this.activeJob.progress,
+        lastEventAt: cancelledAt,
+        lastEventType: "job_cancel_requested"
+      }
     };
     this.activeJob = cancelling;
     this.jobs.set(jobId, cancelling);
@@ -594,7 +669,7 @@ export class WeeklyReportJobManager {
       return existingFinalization;
     }
 
-    const operation = this.finishOnce(jobId, options);
+    const operation = Promise.resolve().then(() => this.finishOnce(jobId, options));
     this.finalizations.set(jobId, operation);
     try {
       return await operation;
@@ -614,6 +689,10 @@ export class WeeklyReportJobManager {
     publishInput,
     publishSignal
   } = {}) {
+    const pendingTraceUpdate = this.traceUpdates.get(jobId);
+    if (pendingTraceUpdate) {
+      await pendingTraceUpdate.catch(() => undefined);
+    }
     if (!this.isActiveRunning(jobId)) {
       return this.getJob(jobId);
     }
@@ -642,11 +721,22 @@ export class WeeklyReportJobManager {
       }
     }
 
-    const job = finalizeWeeklyReportJob(this.activeJob, {
+    const completedAt = new Date().toISOString();
+    const completingJob = {
+      ...this.activeJob,
+      updatedAt: completedAt,
+      progress: {
+        ...this.activeJob.progress,
+        lastEventAt: completedAt,
+        lastEventType: "job_completed"
+      }
+    };
+    const job = finalizeWeeklyReportJob(completingJob, {
       state: finalState,
       reason: finalReason,
       result: finalResult,
-      error: finalError ? redactTraceValue(finalError) : null
+      error: finalError ? redactTraceValue(finalError) : null,
+      now: completedAt
     });
 
     if (markdown) {
@@ -670,6 +760,7 @@ export class WeeklyReportJobManager {
     this.activeJob = null;
     this.abortControllers.delete(jobId);
     this.manualReviews.delete(jobId);
+    this.traceUpdates.delete(jobId);
     const completion = this.completions.get(jobId);
     completion?.resolve(publicJob(job));
     this.completions.delete(jobId);
@@ -698,7 +789,7 @@ export class WeeklyReportJobManager {
       return publicJob(memoryJob);
     }
 
-    const persisted = await readJsonIfPresent(this.jobPath(jobId));
+    const persisted = withObservableProgress(await readJsonIfPresent(this.jobPath(jobId)));
     if (!persisted) {
       return null;
     }

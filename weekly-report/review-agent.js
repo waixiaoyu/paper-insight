@@ -406,6 +406,14 @@ export const runReviewAgent = async ({
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({
+      type: "model_call_started",
+      stage: "review",
+      scope: "paper",
+      role: "paper_review",
+      paperId,
+      attemptType
+    });
     const startedAt = Date.now();
     let rawOutput;
 
@@ -656,6 +664,11 @@ export const reviewEvidenceBatch = async (items, {
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({
+      type: "review_processing_started",
+      stage: "review",
+      paperId: String(item?.contextPacket?.paperId || item?.paper?.id || "")
+    });
     try {
       const result = await runReviewAgent({
         item,

@@ -754,6 +754,7 @@ export const runPaperSectionWriter = async ({
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({ type: "model_call_started", stage: "write_paper_sections", scope: "paper", role: "paper_section_writer", paperId, attemptType });
     const startedAt = Date.now();
     let rawOutput;
     try {
@@ -949,6 +950,11 @@ export const writePaperSectionsBatch = async (items, {
       throw abortError();
     }
     const paperId = paperIdForItem(item);
+    await onEvent?.({
+      type: "paper_section_processing_started",
+      stage: "write_paper_sections",
+      paperId
+    });
     try {
       const result = await runPaperSectionWriter({
         item,

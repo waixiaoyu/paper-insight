@@ -93,7 +93,7 @@ Evidence Agent 的失败必须先按性质分类，不能把模型响应格式�
 2. 原文不可用、Evidence/Review 的内容质量修正失败或校准无法收敛时，排除该论文。模型调用失败和 Evidence 响应格式恢复失败属于处理失败，不属于内容排除。
 3. 如果合格候选不足目标数量，从 reserveCandidates 依次增补。
 4. 增补论文必须重新抓取原文并走完整 Agent Loop。
-5. 原推荐列表耗尽后仍不足时，任务不得静默发布低于 `minSelectedCount` 的稿件；管理员必须在 Trace 面板选择继续扩大候选范围、发布现有合格论文或退出任务。只有管理员明确选择发布现有合格论文时，才允许少于目标数量发布。
+5. 原推荐列表耗尽后仍不足 `minSelectedCount` 时，按实际达标数量继续发布，不因只有 1–2 篇而整体拒绝，也不要求管理员确认篇数；没有任何论文达到入选阈值时才进入拒绝终局。
 6. 最终没有任何合格论文时，任务 reject。
 7. 用户已隐藏论文永远不进入首批候选或增补池。
 8. 所有候选必须属于同一自然周。
@@ -139,6 +139,7 @@ Calibration 不得修改四维分；它只能发现评分误判并触发 Review 
 
 - 有效候选不超过 30 篇时，全部进入同一批校准。
 - 超过 30 篇时，只按周报 Review 产生的 rawScore 选择最高潜力的 30 篇进入校准和最终选文。
+- 校准池已满但达标数量仍不足时，继续按顺序处理 reserve；新复评论文与当前池按 rawScore 重新排序，只保留最高潜力的 30 篇重新校准，不得因为池已满而停止增补。
 - 其余论文标记为 deferred_by_calibration_limit，保留在 Trace，不进入发布稿。
 - 任何最终发布论文都必须有 calibrationResult。
 
@@ -152,7 +153,7 @@ Calibration 不得修改四维分；它只能发现评分误判并触发 Review 
 - 前端允许配置 3–20。
 - 服务端保证 minSelectedCount 不大于 maxSelectedCount；冲突时以下调 minSelectedCount 为准。
 - 达到阈值的论文超过上限时，按最终评分、校准结论和确定性排序只取最高优先级论文。
-- minSelectedCount 继续表示期望的保底数量；候选池耗尽时允许少于该数量发布。
+- minSelectedCount 表示触发候选增补的达标篇数目标；候选池耗尽时允许少于该数量发布。
 
 readingTier 保留四类，不修改既有含义：
 
@@ -161,7 +162,7 @@ readingTier 保留四类，不修改既有含义：
 - skim
 - background_only
 
-fallback 论文不能进入 must_read，只能使用较低阅读层级，并在发布稿中明确短板和较低阅读优先级。
+低于入选阈值的论文不得进入发布稿。`background_only` 保留既有含义，但同样必须达到入选阈值。
 
 ### 2.8 写作拆分
 
@@ -296,7 +297,7 @@ LLM 负责：
 - 并发、超时、退避和重试。
 - artifact schema、字段清洗和来源匹配。
 - 四维总分计算。
-- selection、min/max 和 fallback。
+- selection、min/max、阈值达标计数和候选增补。
 - readingTier 兜底。
 - Markdown 拼装和确定性 QA。
 - publish/reject。
@@ -1001,12 +1002,12 @@ Selection 由服务端确定性执行。
 - 使用 Review 修正后的最终分数。
 - 所有发布论文必须已校准。
 - 达阈值论文优先。
-- 不足 minSelectedCount 时按最终排序 fallback。
-- fallback 不能是 must_read。
+- 达标论文不足 minSelectedCount 时继续从 reservePapers 增补并完整执行原文、Evidence、Review 和 Calibration。
+- 低于阈值的论文不得自动入选，不得以 `background_only` 或其他阅读层级绕过入选线。
 - 最多 maxSelectedCount，默认 10。
 - 同分使用确定性次序。
 - selectionReason 只进入 Trace，不进入发布稿。
-- candidate pool 耗尽时允许少于 minSelectedCount。
+- candidate pool 耗尽时允许少于 minSelectedCount；有至少一篇达标论文就按实际数量发布，零篇达标才拒绝。
 
 ### 9.8 editorial_plan
 
@@ -1108,7 +1109,7 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - 评分、维度、readingTier 和 selection 是否一致。
 - 机构是否来自 Evidence。
 - 精确数字是否能回到 evidenceRefs。
-- fallback 是否被写成强推荐。
+- 是否有低于入选阈值的论文进入发布稿。
 - 是否泄漏 Agent、artifact、prompt、阈值、旧分数或内部 JSON。
 
 输出与路由：
@@ -1289,7 +1290,7 @@ Evidence、Review 或 Calibration 的内容校验或结构化修正后仍失败�
 - 为什么值得读。
 - 优先阅读的章节、表格或机制。
 - 有证据时才写 ADN/网络自治启发。
-- background_only 或 fallback 必须明确阅读边界。
+- background_only 必须明确阅读边界，但不因此降低入选阈值。
 
 发表单位在逐篇正文中使用中文并绑定原文依据；完整论文清单不增加单位列。
 
@@ -1350,19 +1351,25 @@ Trace ID：...
 
 - jobId、traceId、reportKey。
 - 当前 stage。
-- publish/reject。
-- 总耗时。
+- 明确区分：运行中（最近有服务端事件）、等待模型响应、等待管理员处理、连接中断、可能停滞、publish 和 reject。
+- 当前论文 ID（适用时）、最近事件类型和最近事件时间。
+- 当前阶段耗时、距最近进展时长和任务总耗时。
 - 候选、增补、排除、校准和入选数量。
 - 当前告警。
+- 刷新状态/重新连接只查询原 jobId，不创建新任务；临时网络错误不终止浏览器监控。
+- 超过 5 分钟没有新的服务端事件只标为“可能停滞”，不得据此自动 reject 或取消任务。
 - 取消任务按钮。
 
 ### 13.2 Timeline
 
-- 每个 Agent stage。
+- 每个 Agent stage 分为“执行过程”和“阶段产物”两个区域。
 - 开始、结束和耗时。
 - 当前并发。
 - 等待和剩余数量。
 - retry、repair、exclude、refill 事件。
+- 执行过程只显示带时间的 Trace 事件；阶段产物使用独立卡片，不参与阶段进行中状态判断。
+- Evidence/Review 产物摘要必须分开显示模型处理或响应格式失败与论文内容校验未通过。
+- Selection 产物逐篇显示最终分数、入选线和准确原因：达线入选、达线但受篇数上限限制、未达线、未完成横向校准。
 
 ### 13.3 Papers
 
@@ -1474,6 +1481,7 @@ GET /api/reading-list/jobs/:jobId/result
 
 publish 返回最终 Markdown。
 reject 返回拒绝原因，并允许管理员查看被拒绝稿件。
+前端读取终态结果时，临时网络错误和 5xx 必须继续按原 jobId 重试并显示连接中断；不得把已 publish 的任务误显示为 reject，也不得创建替代任务。
 
 ### 15.6 取消任务
 
@@ -1663,7 +1671,7 @@ runStep 统一负责：
 
 提供当前任务完整 Trace，详见第 13 节。
 
-当自动处理不能得到可发布结果时，对话框显示失败阶段、关联论文、结构化错误和两项操作：“重新执行任务”“退出任务”。单篇模型调用失败只在对应阶段 Trace 和管理员告警中展示，不显示为论文内容不合格。
+当自动处理不能得到可发布结果时，对话框显示失败阶段、关联论文、结构化错误，以及当前问题实际允许的管理员操作；操作可包括重新执行任务、继续局部修正、跳过关联论文、忽略非阻断告警或退出任务。单篇模型调用失败只在对应阶段 Trace 和管理员告警中展示，不显示为论文内容不合格。
 
 对于自动处理失败，管理员面板必须分开显示修正目标、该阶段必须满足的产物或校验要求、实际失败详情和每个可选操作的效果。优先显示 Trace 中的结构化 `detail`；没有 detail 时明确提示“未记录具体失败原因”，不得用通用错误码代替说明。
 
@@ -1671,11 +1679,14 @@ runStep 统一负责：
 
 普通周报对话框不展示完整 artifacts；完整过程在独立管理员运维对话框中查看。
 
+运维对话框顶部固定展示任务健康状态。所有模型调用，包括网络重试、格式修正、内容修正、Calibration、Editorial、Head/Tail 和语义 QA，都必须在请求发出前写入 `model_call_started`，响应完成或失败后写入对应终止事件；Job 同步持久化 `stageStartedAt`、`lastEventAt`、`lastEventType` 和最近论文 ID，页面恢复后以服务端数据继续计算状态。同一 Job 的并发 Trace 事件必须按调用顺序串行持久化，不能使最近进度回退；publish/reject 终态必须先阻止新的进度写入并等待在途 Trace 写入完成，终态落盘后不得被旧 running 状态覆盖。阶段展开内容把事件时间轴与产物卡片严格分开；只有产物没有事件时不得显示为“进行中”或“等待执行”。
+
 ### 20.3 页面恢复
 
 应用启动时：
 
 - 查询 active Job。
+- 如果首次查询因网络或隧道中断失败，保留浏览器已记住的 jobId/reportKey，先显示“连接中断”，并持续查询同一任务；不得清除指针或创建替代任务。只有服务端对该 jobId 明确返回 404 时才清理失效指针。
 - 恢复当前进度。
 - 对完成但尚未回挂的 publish 结果，按 reportKey 更新对应本地报告。
 - reject 只显示原因，不替换原周报。
@@ -1701,7 +1712,7 @@ runStep 统一负责：
 - primary/reserve 去重。
 - 增补顺序。
 - maxSelectedCount。
-- fallback 不能成为 must_read。
+- 低于入选阈值的论文不能进入任何发布层级。
 - 原推荐旧分数不进入 prompt。
 - contextPacket 质量门。
 - 章节覆盖判断。
@@ -1719,6 +1730,10 @@ runStep 统一负责：
 - 管理员可无限继续局部修正；每轮 Trace 记录补丁路径和前后差异。
 - Trace 脱敏、保留 20 次和 30 天。
 - 全局单任务和取消。
+- Evidence 模型处理失败与论文内容排除分类统计。
+- Selection 逐篇入选线说明。
+- Job 最近事件持久化和运行/等待模型/等待管理员/断线/可能停滞状态判断。
+- 只有阶段产物、没有进行中事件时判定为已完成。
 
 ### 21.2 Prompt 测试
 
@@ -1778,7 +1793,7 @@ Mock arXiv 和 Mock LLM 走完：
 - 跨论文内容不能串写。
 - Evidence 摘录伪造被发现。
 - 隐藏论文不增补。
-- background_only 和 fallback 语气正确。
+- background_only 语气正确，且其复评分达到入选阈值。
 - 超过 maxSelectedCount 截断。
 - QA 不可用导致 reject。
 - 被拒绝稿件不覆盖旧周报。
@@ -1831,7 +1846,7 @@ Mock arXiv 和 Mock LLM 走完：
 - 定向 Review 一次。
 - unresolved 排除增补。
 - maxSelectedCount。
-- 保留 background_only 和 fallback 规则。
+- 保留 background_only 规则；Selection 只接收达到入选阈值的论文。
 
 ### 阶段 5：Editorial Plan 和分段写作
 
@@ -1895,7 +1910,7 @@ Mock arXiv 和 Mock LLM 走完：
 - Trace 包含完整 prompt、原始响应、artifact、耗时和修正。
 - 最终 Markdown 不包含内部信息。
 - 好论文能说明为什么值得打开原文。
-- 普通或 fallback 论文能说明具体短板和阅读边界。
+- 普通或 background_only 论文能说明具体短板和阅读边界。
 
 ## 24. 第一阶段明确不做
 
@@ -1965,9 +1980,9 @@ Mock arXiv 和 Mock LLM 走完：
 - publish 才覆盖 `report.readingList`；reject、取消和异常不覆盖上一份已发布周报。
 - 前端只提交同周可见推荐论文：候选下限以上进入 primary，其余可见推荐进入 reserve，隐藏论文不提交。
 - 新版界面不再提供摘要降级或关闭全文门的开关；原文质量门由服务端强制执行。
-- `minSelectedCount` 和 `maxSelectedCount` 均可配置，最终不足时按实际可用数量发布，不因篇数不足整体拒绝。
+- `minSelectedCount` 和 `maxSelectedCount` 均可配置；`minSelectedCount` 只驱动达标候选增补，候选耗尽后按实际达标数量发布，不因只有 1–2 篇而整体拒绝，也不使用低于阈值的论文补足。
 - 周报窗口展示当前 Agent stage；独立管理员 Trace 对话框延迟加载 Timeline、模型调用记录、阶段 artifacts、耗时、修正和决策。
 - Job/Trace 持久化、认证字段脱敏、最近 20 次与 30 天保留、管理员取消和服务重启标记 interrupted 已实现。
-- 当前自动化回归覆盖 213 个用例并全部通过。
+- 当前自动化回归覆盖 392 个用例并全部通过。
 
 真实周报灰度已经启动，运行结论和全部问题防护网记录在 `WEEKLY_REPORT_GRAY_ISSUE_REGISTRY.md`。当前尚未达到最终人工验收标准：下一步继续使用同一批真实论文复跑，只有获得 publish 稿且逐篇人工核验事实、数字、实验 cohort、模型版本、分层、阅读建议和 Trace 可解释性均通过后，才完成旧稿对照验收。

@@ -154,6 +154,7 @@ test("paper QA repair prompt contains one current draft, normalized issue detail
 
 test("paper QA repair is validated, preserves server metadata, and records one content repair", async () => {
   const item = itemFor("2608.30002");
+  const events = [];
   const result = await repairPaperSectionFromQa({
     item,
     paperDraft: draftFor(item.paper.id, "Overstated current draft."),
@@ -165,6 +166,7 @@ test("paper QA repair is validated, preserves server metadata, and records one c
       evidenceRefs: ["method:0"]
     }],
     networkRetryDelayMs: 0,
+    onEvent: async (event) => events.push(event),
     callModel: async () => draftFor(item.paper.id)
   });
 
@@ -172,6 +174,7 @@ test("paper QA repair is validated, preserves server metadata, and records one c
   assert.equal(result.paperDraft.publicationMeta.finalScore, 79);
   assert.equal(result.responseRepairAttempted, false);
   assert.equal(result.calls.length, 1);
+  assert.equal(events.some((event) => event.type === "model_call_started" && event.paperId === item.paper.id), true);
 });
 
 test("an invalid repaired paper gets one response-schema correction without broadening content issues", async () => {

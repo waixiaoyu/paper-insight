@@ -1021,6 +1021,7 @@ test("Paper Section batch uses finite concurrency and preserves Selection rank o
   ];
   let active = 0;
   let maximumActive = 0;
+  const events = [];
   const result = await writePaperSectionsBatch(items, {
     paperConcurrency: 2,
     networkRetryDelayMs: 0,
@@ -1031,7 +1032,8 @@ test("Paper Section batch uses finite concurrency and preserves Selection rank o
       await new Promise((resolve) => setTimeout(resolve, paperId.endsWith("11") ? 20 : 5));
       active -= 1;
       return validDraft(paperId);
-    }
+    },
+    onEvent: async (event) => events.push(event)
   });
 
   assert.equal(maximumActive, 2);
@@ -1042,4 +1044,6 @@ test("Paper Section batch uses finite concurrency and preserves Selection rank o
     "2607.60014"
   ]);
   assert.deepEqual(result.failed, []);
+  assert.deepEqual(events.filter((event) => event.type === "paper_section_processing_started")
+    .map((event) => event.paperId), ["2607.60011", "2607.60012", "2607.60013", "2607.60014"]);
 });

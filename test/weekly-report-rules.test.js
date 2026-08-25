@@ -46,7 +46,7 @@ test("自然周过滤排除跨周和无日期论文", () => {
   assert.deepEqual(filterReadingListPapersByWeek(papers, range).map((paper) => paper.id), ["in"]);
 });
 
-test("选文按复评分排序、去重，并只将不足部分标记为保底", () => {
+test("选文按复评分排序、去重，并且只保留达到阈值的论文", () => {
   const papers = [
     {
       id: "https://arxiv.org/abs/2607.10001",
@@ -73,14 +73,12 @@ test("选文按复评分排序、去重，并只将不足部分标记为保底",
   const result = selectReadingListPapers(papers, { threshold: 70, minSelectedCount: 3 });
 
   assert.equal(result.thresholdCount, 1);
-  assert.equal(result.fallbackCount, 2);
+  assert.equal(result.fallbackCount, 0);
   assert.equal(result.minSelectedCount, 3);
   assert.deepEqual(
     result.selected.map((paper) => [paper.id, paper.readingListReview.selectionReason]),
     [
-      ["https://arxiv.org/abs/2607.10001", "threshold"],
-      ["https://arxiv.org/abs/2607.10002", "fallback"],
-      ["https://arxiv.org/abs/2607.10003", "fallback"]
+      ["https://arxiv.org/abs/2607.10001", "threshold"]
     ]
   );
 });
@@ -99,7 +97,7 @@ test("达到阈值的论文全部保留，不受保底数量限制", () => {
   assert.deepEqual(result.selected.map((paper) => paper.readingListReview.score), [92, 84, 76]);
 });
 
-test("保底数量不会超过去重后的可用论文数", () => {
+test("目标数量不会使低于阈值的可用论文自动入选", () => {
   const papers = [
     { id: "paper-a", readingListReview: { score: 66 } },
     { id: "paper-b", readingListReview: { score: 64 } }
@@ -108,8 +106,8 @@ test("保底数量不会超过去重后的可用论文数", () => {
   const result = selectReadingListPapers(papers, { threshold: 70, minSelectedCount: 20 });
 
   assert.equal(result.minSelectedCount, 2);
-  assert.equal(result.selected.length, 2);
-  assert.equal(result.fallbackCount, 2);
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.fallbackCount, 0);
 });
 
 test("没有论文时返回空选择而不是虚假的保底数量", () => {
@@ -204,7 +202,7 @@ test("最终选文受 maxSelectedCount 限制且同分使用稳定 paperId 次�
   assert.deepEqual(result.selected.map((paper) => paper.id), ["paper-a", "paper-b", "paper-c"]);
 });
 
-test("fallback 不得成为 must_read，但 background_only 保持不变", () => {
+test("低于阈值的 must_read 和 background_only 都不会自动入选", () => {
   const result = selectReadingListPapers([
     {
       id: "fallback-must-read",
@@ -220,10 +218,28 @@ test("fallback 不得成为 must_read，但 background_only 保持不变", () =>
     maxSelectedCount: 10
   });
 
-  assert.deepEqual(
-    result.selected.map((paper) => paper.readingListReview.readingTier),
-    ["worth_reading", "background_only"]
-  );
+  assert.deepEqual(result.selected, []);
+  assert.equal(result.fallbackCount, 0);
+});
+
+test("legacy Selection does not fill the minimum with below-threshold papers", () => {
+  const result = selectReadingListPapers([
+    {
+      id: "paper-65",
+      readingListReview: { score: 65, readingTier: "worth_reading" }
+    },
+    {
+      id: "paper-60",
+      readingListReview: { score: 60, readingTier: "background_only" }
+    }
+  ], {
+    threshold: 70,
+    minSelectedCount: 2,
+    maxSelectedCount: 10
+  });
+
+  assert.deepEqual(result.selected, []);
+  assert.equal(result.fallbackCount, 0);
 });
 
 const calibratedItem = (paperId, rawScore, readingTier, extras = {}) => ({
@@ -272,7 +288,43 @@ test("new Selection uses only calibrated Review score and ignores old recommenda
   assert.equal(result.selected[0].selection.selectionReason, "threshold");
 });
 
-test("new Selection fills below-threshold papers without promoting fallback to must_read", () => {
+test("new Selection does not use 68, 67, and 65 point papers to satisfy a three-paper target", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("paper-68", 68, "worth_reading"),
+    calibratedItem("paper-67", 67, "worth_reading"),
+    calibratedItem("paper-65", 65, "worth_reading")
+  ], {
+    threshold: 70,
+    minSelectedCount: 3,
+    maxSelectedCount: 10
+  });
+
+  assert.deepEqual(result.selected, []);
+  assert.equal(result.fallbackCount, 0);
+  assert.deepEqual(
+    result.notSelected.map((item) => item.selection.selectionReason),
+    ["below_threshold", "below_threshold", "below_threshold"]
+  );
+});
+
+test("new Selection publishes two threshold-qualified papers without filling the third slot", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("paper-82", 82, "must_read"),
+    calibratedItem("paper-76", 76, "worth_reading"),
+    calibratedItem("paper-68", 68, "worth_reading")
+  ], {
+    threshold: 70,
+    minSelectedCount: 3,
+    maxSelectedCount: 10
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["paper-82", "paper-76"]);
+  assert.equal(result.fallbackCount, 0);
+  assert.equal(result.notSelected[0].paper.id, "paper-68");
+  assert.equal(result.notSelected[0].selection.selectionReason, "below_threshold");
+});
+
+test("new Selection leaves every below-threshold paper out of the selected cohort", () => {
   const result = selectCalibratedPapers([
     calibratedItem("threshold", 82, "must_read"),
     calibratedItem("fallback-must", 69, "must_read"),
@@ -284,18 +336,13 @@ test("new Selection fills below-threshold papers without promoting fallback to m
     maxSelectedCount: 10
   });
 
-  assert.deepEqual(result.selected.map((item) => item.paper.id), [
-    "threshold",
-    "fallback-must",
-    "fallback-background"
-  ]);
-  assert.deepEqual(result.selected.map((item) => item.selection.readingTier), [
-    "must_read",
-    "worth_reading",
-    "background_only"
-  ]);
-  assert.equal(result.fallbackCount, 2);
-  assert.equal(result.notSelected[0].selection.selectionReason, "below_threshold");
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["threshold"]);
+  assert.deepEqual(result.selected.map((item) => item.selection.readingTier), ["must_read"]);
+  assert.equal(result.fallbackCount, 0);
+  assert.deepEqual(
+    result.notSelected.map((item) => item.selection.selectionReason),
+    ["below_threshold", "below_threshold", "below_threshold"]
+  );
 });
 
 test("new Selection enforces maxSelectedCount with deterministic calibrated ordering", () => {
@@ -334,7 +381,7 @@ test("new Selection excludes papers without a converged calibrationResult", () =
 
 test("new Selection publishes the available calibrated count when it is below the requested minimum", () => {
   const result = selectCalibratedPapers([
-    calibratedItem("only-paper", 60, "background_only")
+    calibratedItem("only-paper", 75, "worth_reading")
   ], {
     threshold: 70,
     minSelectedCount: 3,
@@ -342,7 +389,7 @@ test("new Selection publishes the available calibrated count when it is below th
   });
 
   assert.equal(result.selected.length, 1);
-  assert.equal(result.selected[0].selection.selectionReason, "fallback");
+  assert.equal(result.selected[0].selection.selectionReason, "threshold");
   assert.equal(result.requestedMinSelectedCount, 3);
   assert.equal(result.minSelectedCount, 1);
 });

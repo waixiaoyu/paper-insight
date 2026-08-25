@@ -489,6 +489,14 @@ export const runEvidenceAgent = async ({
       throw abortError();
     }
 
+    await onEvent?.({
+      type: "model_call_started",
+      stage: "extract_evidence",
+      scope: "paper",
+      role: "evidence_extraction",
+      paperId: expectedPaperId,
+      attemptType
+    });
     const startedAt = Date.now();
     let rawOutput;
 
@@ -871,6 +879,12 @@ export const extractEvidenceBatch = async (items, {
     if (signal?.aborted) {
       throw abortError();
     }
+
+    await onEvent?.({
+      type: "evidence_processing_started",
+      stage: "extract_evidence",
+      paperId: String(item?.contextPacket?.paperId || item?.paper?.id || "")
+    });
 
     try {
       const result = await runEvidenceAgent({

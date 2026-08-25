@@ -304,6 +304,30 @@ test("exact numbers in Editorial claims must exist in their referenced evidence"
   assert.equal(validation.issues.some((issue) => issue.code === "numeric_claim_not_in_evidence"), true);
 });
 
+test("Editorial numeric validation treats a 7-day time window as context rather than an experimental number", () => {
+  const plan = validPlan();
+  plan.singlePaperObservations[0].claim = "该论文采用 7-day 窗口组织连续评估。";
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.issues.some((issue) => (
+    issue.code === "numeric_claim_not_in_evidence"
+    && issue.path === "singlePaperObservations[0].claim"
+  )), false);
+});
+
+test("Editorial numeric validation still requires evidence for an experimental count of 7 trials", () => {
+  const plan = validPlan();
+  plan.singlePaperObservations[0].claim = "该论文报告了 7 次独立试验。";
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.issues.some((issue) => (
+    issue.code === "numeric_claim_not_in_evidence"
+    && issue.path === "singlePaperObservations[0].claim"
+  )), true);
+});
+
 test("Editorial numeric validation does not treat the 1 in F1 as an exact-number claim", () => {
   const plan = validPlan();
   plan.trends[0].claim = "多篇论文共同报告 F1 指标。";

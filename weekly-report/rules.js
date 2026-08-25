@@ -195,27 +195,6 @@ export const selectReadingListPapers = (papers, {
     });
   });
 
-  for (let index = 0; index < unique.length && selected.length < minimum && selected.length < maximum; index += 1) {
-    const paper = unique[index];
-    const key = normalizePaperKey(paper) || `fallback-${index}`;
-
-    if (selectedIds.has(key)) {
-      continue;
-    }
-
-    selectedIds.add(key);
-    selected.push({
-      ...paper,
-      readingListReview: {
-        ...paper.readingListReview,
-        selectionReason: "fallback",
-        readingTier: paper.readingListReview?.readingTier === "must_read"
-          ? "worth_reading"
-          : paper.readingListReview?.readingTier
-      }
-    });
-  }
-
   return {
     selected,
     thresholdCount: thresholdSelected.length,
@@ -339,16 +318,6 @@ export const selectCalibratedPapers = (items, {
   };
 
   thresholdCandidates.slice(0, maximum).forEach((item) => addSelected(item, "threshold"));
-  for (const item of eligible) {
-    if (selected.length >= minimum || selected.length >= maximum) {
-      break;
-    }
-    if (selectedKeys.has(calibratedPaperKey(item))) {
-      continue;
-    }
-    addSelected(item, "fallback");
-  }
-
   const notSelected = eligible
     .filter((item) => !selectedKeys.has(calibratedPaperKey(item)))
     .map((item) => ({

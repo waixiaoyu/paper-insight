@@ -1,6 +1,14 @@
 ﻿import { describeWeeklyReportManualReview } from "./manual-review-details.js";
 
 import { manualReviewDecisionStatusText, submitWeeklyReportManualReviewDecision } from "./manual-review-actions.js";
+import {
+  weeklyReportArtifactSummary,
+  weeklyReportDisconnectedJob,
+  weeklyReportHealthState,
+  weeklyReportPhaseStatus,
+  weeklyReportRequestRetryable,
+  weeklyReportSelectionRows
+} from "./weekly-report-operations.js";
 
 const legacyIndustrialDefaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
 ("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
@@ -336,6 +344,11 @@ const elements = {
   weeklyReportTraceSummary: $("#weeklyReportTraceSummary"),
   weeklyReportTraceList: $("#weeklyReportTraceList"),
   weeklyReportTraceRawList: $("#weeklyReportTraceRawList"),
+  weeklyReportJobHealth: $("#weeklyReportJobHealth"),
+  weeklyReportJobHealthTitle: $("#weeklyReportJobHealthTitle"),
+  weeklyReportJobHealthDetail: $("#weeklyReportJobHealthDetail"),
+  weeklyReportJobHealthMeta: $("#weeklyReportJobHealthMeta"),
+  weeklyReportTraceReconnect: $("#weeklyReportTraceReconnect"),
   weeklyReportTraceClose: $("#weeklyReportTraceClose"),
   weeklyReportTraceCancel: $("#weeklyReportTraceCancel"),
   weeklyReportManualReview: $("#weeklyReportManualReview"),
@@ -475,6 +488,7 @@ const state = {
   readingListStartedAt: 0,
   readingListJobId: "",
   readingListJobMonitor: null,
+  readingListLatestJob: null,
   readingListTrace: null,
   readingListLiveStatus: null,
   readingListSourceExpanded: false,
@@ -1778,7 +1792,7 @@ function readingListGenerateProgressDetail(data) {
   const fallbackSelected = Number(summary.fallbackSelectedCount || 0);
   const updatedAgo = readingListStatusUpdatedAgo(data);
   const selectedText = selected
-    ? `当前已入选 ${selected} 篇，其中 ${thresholdSelected} 篇达线${fallbackSelected ? `、${fallbackSelected} 篇保底补入` : ""}。`
+    ? `当前已入选 ${selected} 篇，其中 ${thresholdSelected} 篇达到入选线${fallbackSelected ? `；另有 ${fallbackSelected} 篇来自旧版低分补入规则` : ""}。`
     : "";
   const waitText = updatedAgo >= 12
     ? `服务端最近一次有效更新在 ${updatedAgo} 秒前；当前是报告正文的长模型调用，完成前无法获得逐段写作进度。`
@@ -2644,7 +2658,7 @@ const weeklyReportTracePhases = Object.freeze([
   { key: "evidence", title: "证据提取", description: "逐篇提取可追溯的事实、摘录和阅读价值信号。" },
   { key: "review", title: "独立复评", description: "核对证据是否足以支持评分和推荐理由。" },
   { key: "calibrate", title: "横向校准", description: "在同批论文之间复核相对评价是否一致。" },
-  { key: "select", title: "确定性选稿", description: "按阈值、排序和保底规则确定最终篇目。" },
+  { key: "select", title: "确定性选稿", description: "只收录达到入选阈值的论文，并按最终分数排序。" },
   { key: "write", title: "策划与写作", description: "生成编辑计划、逐篇正文以及周报首尾内容。" },
   { key: "qa", title: "发布前 QA", description: "检查事实、数字和表达；最多自动修正三次，仍不通过时等待管理员处理。" },
   { key: "save", title: "发布结果", description: "写入发布稿，或保留拒绝原因和完整 Trace。" }
@@ -2698,6 +2712,10 @@ function weeklyReportTraceEventText(event = {}) {
     case "stage_cancelled": text = `已取消：${stage}`; break;
     case "model_call_completed": text = `${stage}的模型调用完成${event.attemptType ? `（${event.attemptType}）` : ""}${duration ? `，耗时 ${duration}` : ""}`; break;
     case "model_call_failed": text = `${stage}的模型调用失败`; break;
+    case "evidence_processing_started": text = `开始提取论文 ${event.paperId || "-"} 的证据，正在等待模型响应`; break;
+    case "review_processing_started": text = `开始复评论文 ${event.paperId || "-"}，正在等待模型响应`; break;
+    case "paper_section_processing_started": text = `开始撰写论文 ${event.paperId || "-"} 的正文，正在等待模型响应`; break;
+    case "model_call_started": text = `${event.paperId ? `论文 ${event.paperId}：` : ""}已发起模型调用，正在等待响应（${event.attemptType || "当前尝试"}）`; break;
     case "repair_requested": text = `发现 ${issueCount || "若干"} 项问题，发起一次定向修正`; break;
     case "manual_review_requested": text = event.kind === "execution_failure"
       ? "自动处理未完成，等待管理员决定是否重新执行任务"
@@ -2711,28 +2729,88 @@ function weeklyReportTraceEventText(event = {}) {
   return suffix ? `${text}；${suffix}` : text;
 }
 
-function weeklyReportTracePhaseStatus(events) {
-  if (!events.length) return "等待执行";
-  const lastManualReviewEvent = [...events].reverse()
-    .find((event) => event.type === "manual_review_requested" || event.type === "manual_review_decided");
-  if (lastManualReviewEvent?.type === "manual_review_requested") return "等待决策";
-  if (events.some((event) => /failed|cancelled|interrupted/.test(event.type || "") || event.outcome === "reject")) return "需关注";
-  if (events.some((event) => event.type === "stage_started") && !events.some((event) => event.type === "stage_completed")) return "进行中";
-  return "已完成";
+function weeklyReportTracePhaseStatus(events, artifacts = []) {
+  const labels = {
+    pending: "等待执行",
+    waiting_admin: "等待决策",
+    attention: "需关注",
+    running: "进行中",
+    completed: "已完成"
+  };
+  return labels[weeklyReportPhaseStatus(events, artifacts)] || "等待执行";
+}
+
+function appendWeeklyReportTraceSectionTitle(label, target) {
+  const title = document.createElement("h4");
+  title.className = "weekly-report-trace-section-title";
+  title.textContent = label;
+  target.append(title);
+}
+
+function appendWeeklyReportTraceArtifact(name, artifact, target) {
+  const item = document.createElement("li");
+  item.className = "weekly-report-trace-artifact";
+  const heading = document.createElement("div");
+  heading.className = "weekly-report-trace-artifact-heading";
+  const title = document.createElement("strong");
+  title.textContent = name;
+  const size = document.createElement("span");
+  const sizeBytes = Number(artifact?.sizeBytes || 0);
+  size.textContent = sizeBytes ? `${Math.max(1, Math.round(sizeBytes / 1024))} KB` : "已保存";
+  heading.append(title, size);
+  item.append(heading);
+
+  const summary = weeklyReportArtifactSummary(name, artifact);
+  if (summary) {
+    const summaryTitle = document.createElement("p");
+    summaryTitle.className = "weekly-report-trace-artifact-summary-title";
+    summaryTitle.textContent = summary.title;
+    const metrics = document.createElement("ul");
+    metrics.className = "weekly-report-trace-artifact-metrics";
+    summary.metrics.forEach((metric) => {
+      const row = document.createElement("li");
+      row.dataset.outcome = metric.key;
+      row.textContent = `${metric.label} ${metric.count} 篇`;
+      metrics.append(row);
+    });
+    item.append(summaryTitle, metrics);
+  }
+
+  if (name === "selection-artifacts") {
+    const rows = weeklyReportSelectionRows(artifact);
+    if (rows.length) {
+      const selectionList = document.createElement("ul");
+      selectionList.className = "weekly-report-trace-selection-list";
+      rows.forEach((entry) => {
+        const row = document.createElement("li");
+        row.className = entry.selected ? "selected" : "not-selected";
+        const paper = document.createElement("strong");
+        paper.textContent = entry.title || entry.paperId;
+        const reason = document.createElement("span");
+        reason.textContent = `${entry.score} 分 · ${entry.admissionLabel}`;
+        row.append(paper, reason);
+        selectionList.append(row);
+      });
+      item.append(selectionList);
+    }
+  }
+
+  appendWeeklyReportTraceDetail("查看产物结构化详情", artifact?.preview || artifact, item);
+  target.append(item);
 }
 
 function appendWeeklyReportTracePhase(phase, events, artifacts, index) {
   const row = document.createElement("li");
   const details = document.createElement("details");
   details.className = "weekly-report-trace-phase";
-  details.open = events.length > 0 && weeklyReportTracePhaseStatus(events) === "进行中";
+  details.open = events.length > 0 && weeklyReportTracePhaseStatus(events, artifacts) === "进行中";
   const summary = document.createElement("summary");
   const number = document.createElement("span");
   number.className = "weekly-report-trace-phase-number";
   number.textContent = String(index + 1);
   const status = document.createElement("span");
   status.className = "source-badge";
-  status.textContent = weeklyReportTracePhaseStatus(events);
+  status.textContent = weeklyReportTracePhaseStatus(events, artifacts);
   const title = document.createElement("strong");
   title.textContent = phase.title;
   const meta = document.createElement("span");
@@ -2752,33 +2830,33 @@ function appendWeeklyReportTracePhase(phase, events, artifacts, index) {
     empty.textContent = "当前任务尚未执行到这一步。";
     body.append(empty);
   } else {
-    const eventList = document.createElement("ol");
-    eventList.className = "weekly-report-trace-event-list";
-    events.forEach((event) => {
-      const item = document.createElement("li");
-      item.className = "weekly-report-trace-event";
-      const time = document.createElement("time");
-      time.textContent = weeklyReportTraceTime(event.timestamp);
-      const text = document.createElement("div");
-      text.className = "weekly-report-trace-event-main";
-      text.textContent = weeklyReportTraceEventText(event);
-      appendWeeklyReportTraceDetail("查看本条记录详情", event, text);
-      item.append(time, text);
-      eventList.append(item);
-    });
-    artifacts.forEach(([name, artifact]) => {
-      const item = document.createElement("li");
-      item.className = "weekly-report-trace-event";
-      const time = document.createElement("time");
-      time.textContent = "产物";
-      const text = document.createElement("div");
-      text.className = "weekly-report-trace-event-main";
-      text.textContent = `已保存阶段产物：${name}`;
-      appendWeeklyReportTraceDetail("查看产物内容", artifact, text);
-      item.append(time, text);
-      eventList.append(item);
-    });
-    body.append(eventList);
+    if (events.length) {
+      appendWeeklyReportTraceSectionTitle("执行过程", body);
+      const eventList = document.createElement("ol");
+      eventList.className = "weekly-report-trace-event-list";
+      events.forEach((event) => {
+        const item = document.createElement("li");
+        item.className = "weekly-report-trace-event";
+        const time = document.createElement("time");
+        time.textContent = weeklyReportTraceTime(event.timestamp);
+        const text = document.createElement("div");
+        text.className = "weekly-report-trace-event-main";
+        text.textContent = weeklyReportTraceEventText(event);
+        appendWeeklyReportTraceDetail("查看本条记录详情", event, text);
+        item.append(time, text);
+        eventList.append(item);
+      });
+      body.append(eventList);
+    }
+    if (artifacts.length) {
+      appendWeeklyReportTraceSectionTitle("阶段产物", body);
+      const artifactList = document.createElement("ul");
+      artifactList.className = "weekly-report-trace-artifact-list";
+      artifacts.forEach(([name, artifact]) => {
+        appendWeeklyReportTraceArtifact(name, artifact, artifactList);
+      });
+      body.append(artifactList);
+    }
   }
   details.append(summary, body);
   row.append(details);
@@ -3053,7 +3131,7 @@ function updateReadingListReviewPreview(report = state.currentReadingListReport 
     const scopeText = excludedCrossWeekCount
       ? `原列表 ${total} 篇中有 ${weeklyCount} 篇属于 ${reportWeekLabel(report)}，已排除 ${excludedCrossWeekCount} 篇跨周论文`
       : `原列表 ${total} 篇均属于 ${reportWeekLabel(report)}`;
-    elements.readingListReviewPreview.textContent = `${scopeText}；按候选下限 ${floor} 分取 ${candidateCount} 篇进入主池，其余可见推荐作为增补池。优先收录复评分达到 ${threshold} 分的论文，若不足 ${minSelected} 篇则尽量补足到 ${effectiveMin} 篇，最终不超过 ${maxSelected} 篇。`;
+    elements.readingListReviewPreview.textContent = `${scopeText}；按候选下限 ${floor} 分取 ${candidateCount} 篇进入主池，其余可见推荐作为增补池。若达到 ${threshold} 分的论文不足 ${minSelected} 篇，将继续评审增补候选；候选耗尽后按实际达标数量发布，最终不超过 ${maxSelected} 篇。`;
   }
 }
 
@@ -3096,7 +3174,7 @@ function readingListGeneratedStatus(readingList, paperCount) {
   }
 
   const reviewedText = readingList.reviewedPaperCount
-    ? `${excludedText}，复评 ${readingList.reviewedPaperCount} 篇、入选 ${count} 篇${readingList.fallbackSelectedCount ? `，其中 ${readingList.fallbackSelectedCount} 篇保底补入` : ""}`
+    ? `${excludedText}，复评 ${readingList.reviewedPaperCount} 篇、入选 ${count} 篇${readingList.fallbackSelectedCount ? `；旧版本曾低分补入 ${readingList.fallbackSelectedCount} 篇` : ""}`
     : `${excludedText}，入选 ${count} 篇`;
   const semanticText = readingList.semanticReview?.status === "completed"
     ? readingList.semanticReview.requiresManualReview
@@ -3244,7 +3322,33 @@ function weeklyReportJobElapsed(job) {
   return Number.isFinite(startedAt) ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : 0;
 }
 
-function renderWeeklyReportJobProgress(job) {
+function renderWeeklyReportJobHealth(job, { connectionInterrupted = false } = {}) {
+  if (!elements.weeklyReportJobHealth) return null;
+  const health = weeklyReportHealthState(job, { connectionInterrupted });
+  const [, stageLabel] = weeklyReportJobStageView[job?.agentStage] || ["collect", job?.agentStage || "处理中"];
+  const lastPaper = String(job?.progress?.paperId || "").trim();
+  const eventType = String(job?.progress?.lastEventType || "").trim();
+  elements.weeklyReportJobHealth.dataset.state = health.key;
+  elements.weeklyReportJobHealthTitle.textContent = health.label;
+  elements.weeklyReportJobHealthDetail.textContent = health.detail;
+  elements.weeklyReportJobHealthMeta.textContent = [
+    `当前阶段：${stageLabel}`,
+    lastPaper ? `最近处理论文：${lastPaper}` : "",
+    eventType ? `最近记录：${eventType}` : "",
+    job?.progress?.lastEventAt ? `最近事件时间：${new Date(job.progress.lastEventAt).toLocaleString("zh-CN", { hour12: false })}` : "",
+    `阶段耗时：${weeklyReportTraceDuration(health.stageElapsedMs)}`,
+    `距最近进展：${weeklyReportTraceDuration(health.lastEventAgeMs)}`,
+    `总耗时：${weeklyReportTraceDuration(health.totalElapsedMs)}`
+  ].filter(Boolean).join(" · ");
+  if (elements.weeklyReportTraceReconnect) {
+    elements.weeklyReportTraceReconnect.hidden = ["publish", "reject"].includes(health.key);
+    elements.weeklyReportTraceReconnect.textContent = connectionInterrupted ? "重新连接" : "刷新状态";
+  }
+  return health;
+}
+
+function renderWeeklyReportJobProgress(job, { connectionInterrupted = false } = {}) {
+  state.readingListLatestJob = job;
   const counts = job?.counts || {};
   const [step, label] = weeklyReportJobStageView[job?.agentStage] || ["collect", job?.agentStage || "处理中"];
   const processed = counts.reviewed || counts.fullTextEligible || 0;
@@ -3264,14 +3368,22 @@ function renderWeeklyReportJobProgress(job) {
     void loadWeeklyReportTrace(job.jobId);
   }
   const waitingForAdmin = Boolean(job?.manualReview);
+  const health = renderWeeklyReportJobHealth(job, { connectionInterrupted });
+  const healthOverridesStage = ["connection_interrupted", "possibly_stalled", "waiting_model"].includes(health?.key);
+  const runningTitle = healthOverridesStage
+    ? health.label
+    : waitingForAdmin ? "等待管理员处理" : label;
+  const runningDetail = healthOverridesStage
+    ? health.detail
+    : waitingForAdmin
+      ? `自动修正后仍有问题，任务保持运行，等待管理员选择后续处理方式。${warning}`
+      : `Agent Loop 正在后台执行。已处理 ${processed}/${total || "?"} 篇${selectedText}${excludedText}${warning}`;
 
   setReadingListProgress(
     job?.state === "reject" ? "failed" : job?.state === "publish" ? "ready" : "loading",
-    job?.state === "publish" ? "质量门通过，允许发布" : job?.state === "reject" ? "质量门拒绝发布" : waitingForAdmin ? "等待管理员处理" : label,
+    job?.state === "publish" ? "质量门通过，允许发布" : job?.state === "reject" ? "质量门拒绝发布" : runningTitle,
     job?.state === "running"
-      ? waitingForAdmin
-        ? `自动修正后仍有问题，任务保持运行，等待管理员选择后续处理方式。${warning}`
-        : `Agent Loop 正在后台执行。已处理 ${processed}/${total || "?"} 篇${selectedText}${excludedText}${warning}`
+      ? runningDetail
       : job?.state === "publish"
         ? "最终稿已通过全部确定性与语义质量门。"
         : `任务已拒绝发布：${job?.error?.detail || job?.error?.message || job?.result?.reason || "未通过质量门"}`,
@@ -3284,10 +3396,19 @@ function renderWeeklyReportJobProgress(job) {
 
 async function readWeeklyReportJobResponse(path, options) {
   const response = await fetch(path, options);
-  const data = await response.json();
+  const body = await response.text();
+  let data;
+  try {
+    data = body ? JSON.parse(body) : {};
+  } catch {
+    data = {};
+  }
 
   if (!response.ok) {
-    throw new Error(data.detail || data.message || "周报后台任务请求失败。");
+    const error = new Error(data.detail || data.message || `周报后台任务请求失败（HTTP ${response.status}）。`);
+    error.status = response.status;
+    error.code = data.code || "";
+    throw error;
   }
 
   return data;
@@ -3326,12 +3447,18 @@ async function waitForWeeklyReportJob(job) {
 
   const promise = (async () => {
     let current = job;
-    renderWeeklyReportJobProgress(current);
+    renderWeeklyReportJobProgress(current, { connectionInterrupted: Boolean(current.connectionInterrupted) });
 
     while (current.state === "running") {
       await waitForReadingListStep(900);
-      current = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(current.jobId)}`);
-      renderWeeklyReportJobProgress(current);
+      try {
+        current = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(current.jobId)}`);
+        renderWeeklyReportJobProgress(current);
+      } catch (error) {
+        const retryableConnectionError = !Number.isFinite(Number(error?.status)) || Number(error.status) >= 500;
+        if (!retryableConnectionError) throw error;
+        renderWeeklyReportJobProgress(current, { connectionInterrupted: true });
+      }
     }
 
     return current;
@@ -3393,7 +3520,16 @@ function savePublishedWeeklyReport(report, job, payload, settings = {}) {
 
 async function finishWeeklyReportJob(job, report, settings = {}) {
   const finalJob = await waitForWeeklyReportJob(job);
-  const payload = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(finalJob.jobId)}/result`);
+  let payload;
+  while (!payload) {
+    try {
+      payload = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(finalJob.jobId)}/result`);
+    } catch (error) {
+      if (!weeklyReportRequestRetryable(error)) throw error;
+      renderWeeklyReportJobProgress(finalJob, { connectionInterrupted: true });
+      await waitForReadingListStep(900);
+    }
+  }
 
   if (payload.state !== "publish") {
     const error = new Error(payload.error?.detail || payload.error?.message || payload.reason || "最终质量门拒绝发布。");
@@ -3471,8 +3607,8 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
   elements.readingListTitle.textContent = meta.title;
   elements.readingListOutput.value = "";
   elements.readingListOutput.style.height = "";
-  elements.readingListStatus.textContent = `准备复评 ${papers.length} 篇候选论文，周报入选线 ${reviewScoreThreshold} 分，保底 ${minSelectedCount} 篇。`;
-  setReadingListProgress("loading", "整理周报候选", `已从原列表按候选下限 ${candidateFloor} 分取出 ${papers.length} 篇论文，若达标不足 ${minSelectedCount} 篇会按复评分补足。${contextModeText}`, {
+  elements.readingListStatus.textContent = `准备复评 ${papers.length} 篇主候选，周报入选线 ${reviewScoreThreshold} 分，达标篇数目标 ${minSelectedCount} 篇。`;
+  setReadingListProgress("loading", "整理周报候选", `已从原列表按候选下限 ${candidateFloor} 分取出 ${papers.length} 篇主候选；达标不足时将评审增补候选，不会让低于入选线的论文进入周报。${contextModeText}`, {
     step: "collect",
     meta: `0 秒 · ${papers.length} 篇 · ${provider}`
   });
@@ -3568,7 +3704,7 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
     const charCount = updatedReport.readingList.markdown.length;
     const originalTextCount = updatedReport.readingList.originalTextCount || 0;
     const fallbackText = updatedReport.readingList.fallbackSelectedCount
-      ? `，其中 ${updatedReport.readingList.fallbackSelectedCount} 篇为保底补入`
+      ? `；旧版本曾低分补入 ${updatedReport.readingList.fallbackSelectedCount} 篇`
       : "";
     const reviewSkippedText = updatedReport.readingList.reviewSkippedCount
       ? `，${updatedReport.readingList.reviewSkippedCount} 篇复评未返回结果已跳过`
@@ -3737,15 +3873,29 @@ async function generateReadingListForReport(report = state.currentReport, { forc
 
 async function restoreActiveWeeklyReportJob() {
   try {
-    let job = await readWeeklyReportJobResponse("/api/reading-list/jobs/active");
     const remembered = rememberedWeeklyReportJob();
+    let job = null;
+    let connectionInterrupted = false;
+
+    try {
+      job = await readWeeklyReportJobResponse("/api/reading-list/jobs/active");
+    } catch (error) {
+      if (!remembered?.jobId) throw error;
+      job = weeklyReportDisconnectedJob(remembered);
+      connectionInterrupted = true;
+    }
 
     if (!job?.jobId && remembered?.jobId) {
       try {
         job = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(remembered.jobId)}`);
-      } catch {
-        forgetWeeklyReportJob(remembered.jobId);
-        job = null;
+      } catch (error) {
+        if (error?.status === 404) {
+          forgetWeeklyReportJob(remembered.jobId);
+          job = null;
+        } else {
+          job = weeklyReportDisconnectedJob(remembered);
+          connectionInterrupted = true;
+        }
       }
     }
 
@@ -3758,11 +3908,20 @@ async function restoreActiveWeeklyReportJob() {
     const report = state.reports.find((item) => item.key === reportKey);
     if (!report) {
       state.readingListJobId = job.jobId;
-      renderWeeklyReportJobProgress(job);
+      renderWeeklyReportJobProgress(job, { connectionInterrupted });
       if (typeof elements.weeklyReportTraceDialog?.showModal === "function" && !elements.weeklyReportTraceDialog.open) {
         elements.weeklyReportTraceDialog.showModal();
       }
       void loadWeeklyReportTrace(job.jobId);
+      if (job.state === "running") {
+        void waitForWeeklyReportJob(job).then((current) => {
+          renderWeeklyReportJobProgress(current);
+          void loadWeeklyReportTrace(current.jobId);
+        }).catch((error) => {
+          renderWeeklyReportJobProgress(job, { connectionInterrupted: true });
+          console.warn("Could not monitor the restored weekly report Job.", error);
+        });
+      }
       showStatus(`检测到周报任务 ${job.jobId}，但本地对应推荐列表已被删除；未回挂到其他列表。`, "warning");
       return;
     }
@@ -3772,7 +3931,7 @@ async function restoreActiveWeeklyReportJob() {
     openReadingListDialog(report);
     setReadingListBusy(true);
     elements.readingListOutput.value = report.readingList?.markdown || "";
-    renderWeeklyReportJobProgress(job);
+    renderWeeklyReportJobProgress(job, { connectionInterrupted });
 
     let terminalHandled = false;
     try {
@@ -5215,6 +5374,24 @@ elements.weeklyReportTraceClose?.addEventListener("click", () => {
     elements.weeklyReportTraceDialog.close();
   }
 });
+
+if (elements.weeklyReportTraceReconnect) {
+  elements.weeklyReportTraceReconnect.addEventListener("click", async () => {
+    if (!state.readingListJobId) return;
+    elements.weeklyReportTraceReconnect.disabled = true;
+    try {
+      const job = await readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}`);
+      renderWeeklyReportJobProgress(job);
+      await loadWeeklyReportTrace(job.jobId);
+      showStatus("已刷新当前周报任务状态。", "success");
+    } catch (error) {
+      renderWeeklyReportJobProgress(state.readingListLatestJob || { state: "running" }, { connectionInterrupted: true });
+      showStatus(`仍无法连接服务端：${error.message}。系统会继续查询当前任务，不会创建新任务。`, "warning");
+    } finally {
+      elements.weeklyReportTraceReconnect.disabled = false;
+    }
+  });
+}
 
 elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-manual-review-action]");

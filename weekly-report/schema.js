@@ -224,6 +224,12 @@ export const createWeeklyReportJob = ({
     updatedAt: createdAt,
     completedAt: "",
     cancelRequested: false,
+    progress: {
+      stageStartedAt: createdAt,
+      lastEventAt: createdAt,
+      lastEventType: "job_started",
+      paperId: ""
+    },
     options: normalizeWeeklyReportJobOptions(options),
     counts: Object.fromEntries(COUNT_KEYS.map((key) => [key, 0])),
     warnings: [],
@@ -256,6 +262,20 @@ export const assertWeeklyReportJob = (job) => {
 
   isoTime(job.createdAt);
   isoTime(job.updatedAt);
+
+  const progress = requireObject(job.progress, "Weekly report Job progress");
+  for (const key of ["stageStartedAt", "lastEventAt"]) {
+    if (!normalizedText(progress[key], 80)) {
+      throw new TypeError(`Weekly report Job progress.${key} is required.`);
+    }
+    isoTime(progress[key]);
+  }
+  if (!normalizedText(progress.lastEventType, 160)) {
+    throw new TypeError("Weekly report Job progress.lastEventType is required.");
+  }
+  if (progress.paperId !== undefined && typeof progress.paperId !== "string") {
+    throw new TypeError("Weekly report Job progress.paperId must be a string.");
+  }
 
   if (job.state === "running") {
     if (job.completedAt || job.result !== null) {

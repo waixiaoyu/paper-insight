@@ -150,10 +150,12 @@ test("Paper Semantic QA prompt contains one draft and bound Evidence excerpts on
 
 test("Paper Semantic QA accepts a fully grounded paper without consuming repair_once", async () => {
   const item = itemFor("2608.10002");
+  const events = [];
   const result = await reviewPaperSemantics({
     item,
     paperDraft: draftFor(item.paper.id),
     networkRetryDelayMs: 0,
+    onEvent: async (event) => events.push(event),
     callModel: async () => passResponse(item.paper.id)
   });
 
@@ -161,6 +163,7 @@ test("Paper Semantic QA accepts a fully grounded paper without consuming repair_
   assert.equal(result.qaResult.repairTarget, null);
   assert.equal(result.responseRepairAttempted, false);
   assert.equal(result.calls.length, 1);
+  assert.equal(events.some((event) => event.type === "model_call_started" && event.paperId === item.paper.id), true);
 });
 
 test("Paper Semantic QA deterministically blocks an English body when zh-CN is required", async () => {

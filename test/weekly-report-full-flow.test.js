@@ -10,7 +10,8 @@ const papers = JSON.parse(await readFile(fixtureUrl("papers.json"), "utf8"));
 const validMarkdown = await readFile(fixtureUrl("valid-summary-report.md"), "utf8");
 const reviewedMarkdown = validMarkdown
   .replace("阅读价值评分：86", "阅读价值评分：77")
-  .replace("阅读价值评分：68", "阅读价值评分：56");
+  .replace("阅读价值评分：68", "阅读价值评分：70")
+  .replace("符合维度：研究问题价值 72、系统价值 70", "符合维度：研究问题价值 75、方法新意 75、系统价值 75、证据强度 75");
 
 const passingSemanticReview = JSON.stringify({
   verdict: "pass",
@@ -47,10 +48,10 @@ const reviewByPaperId = {
   },
   "https://arxiv.org/abs/2607.22222": {
     scores: {
-      scenarioProblemValue: 72,
-      methodNovelty: 62,
-      practicalValue: 70,
-      evidence: 61
+      scenarioProblemValue: 75,
+      methodNovelty: 75,
+      practicalValue: 75,
+      evidence: 75
     },
     interestFit: "target_network_autonomy",
     interestReason: "论文直接研究网络数字孪生与闭环控制评估。",
@@ -215,13 +216,13 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
     assert.equal(payload.originalTextCount, 2);
     assert.equal(payload.originalTextUnavailableCount, 0);
     assert.equal(payload.reviewedPaperCount, 2);
-    assert.equal(payload.thresholdSelectedCount, 1);
-    assert.equal(payload.fallbackSelectedCount, 1);
+    assert.equal(payload.thresholdSelectedCount, 2);
+    assert.equal(payload.fallbackSelectedCount, 0);
     assert.equal(payload.publishValidation.valid, true);
     assert.equal(payload.semanticReview.verdict, "pass");
     assert.equal(payload.requiresManualReview, false);
     assert.match(payload.markdown, /阅读价值评分：77/);
-    assert.match(payload.markdown, /阅读价值评分：56/);
+    assert.match(payload.markdown, /阅读价值评分：70/);
     assert.equal(arxivRequests.length, 2);
     assert.deepEqual(llmRequests.map((item) => item.task), [
       "review",
@@ -243,7 +244,7 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
     assert.equal(generationRequest.payload.report.reviewBeforeGenerate, true);
     assert.deepEqual(
       generationRequest.payload.papers.map((paper) => paper.readingListReview.score),
-      [77, 56]
+      [77, 70]
     );
 
     const semanticRequest = llmRequests.find((item) => item.task === "semantic-review");

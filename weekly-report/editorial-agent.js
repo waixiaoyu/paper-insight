@@ -469,11 +469,17 @@ const ENGLISH_NUMBER_WORDS = Object.freeze({
   seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12"
 });
 
+const isTimeWindowToken = (text, index, token) => {
+  const suffix = text.slice(index + token.length, index + token.length + 48);
+  return /^\s*(?:[-‐‑–—]\s*)?(?:day|week|month|year)s?\b\s*(?:window|interval|horizon|period|窗口|区间|周期)/iu.test(suffix);
+};
+
 const numericTokens = (value) => {
   const text = normalizeText(value, 12000);
-  const explicit = text.match(/(?<![A-Za-z0-9_])\d+(?:[.,]\d+)*(?:\s*%)?/g)
-    ?.map((token) => token.replace(/\s+/g, "").replace(/,/g, ""))
-    .filter((token) => !/^\d{4}\.\d{4,5}$/u.test(token)) || [];
+  const explicit = [...text.matchAll(/(?<![A-Za-z0-9_])\d+(?:[.,]\d+)*(?:\s*%)?/g)]
+    .filter((match) => !isTimeWindowToken(text, match.index || 0, match[0]))
+    .map((match) => match[0].replace(/\s+/g, "").replace(/,/g, ""))
+    .filter((token) => !/^\d{4}\.\d{4,5}$/u.test(token));
   const numberWords = [...text.matchAll(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/giu)]
     .map((match) => ENGLISH_NUMBER_WORDS[match[1].toLowerCase()]);
   return [...explicit, ...numberWords];
@@ -1027,6 +1033,7 @@ export const runEditorialPlanAgent = async ({
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({ type: "model_call_started", stage: "editorial_plan", scope: "job", role: "editorial_planning", paperId: "", attemptType });
     const startedAt = Date.now();
     let rawOutput;
     try {
@@ -1137,6 +1144,7 @@ export const runEditorialPlanAgent = async ({
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({ type: "model_call_started", stage: "editorial_plan", scope: "job", role: "editorial_planning", paperId: "", attemptType });
     const startedAt = Date.now();
     let rawOutput;
     try {
@@ -1903,6 +1911,7 @@ export const runHeadTailWriter = async ({
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({ type: "model_call_started", stage: "write_head_tail", scope: "job", role: "editorial_head_tail_writer", paperId: "", attemptType });
     const startedAt = Date.now();
     let rawOutput;
     try {

@@ -996,6 +996,74 @@ test("calibrate stage persists compact cross-paper calls and calibrated artifact
   assert.doesNotMatch(calibrationCalls[0].prompt, /LONG_ORIGINAL_TEXT|BOUND_EXCERPT/);
 });
 
+test("calibrate stage refills reserves until the threshold-qualified target is met", async () => {
+  const execution = fakeExecutionContext();
+  const contextAttempts = [];
+  const buildContext = async (paper) => {
+    contextAttempts.push(paper.id);
+    return evidencePacketFor(paper.id);
+  };
+  const primaryIds = new Set(["2607.17021", "2607.17022"]);
+  const input = {
+    ...inputRange,
+    reviewScoreThreshold: 70,
+    minSelectedCount: 2,
+    paperConcurrency: 2,
+    primaryPapers: [
+      { id: "2607.17021", published: inWeek },
+      { id: "2607.17022", published: inWeek }
+    ],
+    reservePapers: [
+      { id: "2607.17023", published: inWeek },
+      { id: "2607.17024", published: inWeek }
+    ]
+  };
+  const callModel = async (prompt) => {
+    const payload = JSON.parse(prompt);
+    if (payload.task.startsWith("weekly_report_extract_evidence")) {
+      return evidenceResponseFor(payload.paper.paperId);
+    }
+    if (payload.task.startsWith("weekly_report_review")) {
+      const response = reviewResponseFor(payload.paper.paperId);
+      const score = primaryIds.has(payload.paper.paperId) ? 60 : 80;
+      response.scores = {
+        scenarioProblemValue: score,
+        methodNovelty: score,
+        practicalValue: score,
+        evidence: score
+      };
+      return response;
+    }
+    return calibrationResponseFor(payload.papers.map((paper) => paper.paperId));
+  };
+
+  const prepared = await prepareWeeklyReportJob(input, execution.context, { buildContext });
+  const evidenced = await extractWeeklyReportEvidence(prepared, execution.context, {
+    buildContext,
+    callModel,
+    networkRetryDelayMs: 0
+  });
+  const reviewed = await reviewWeeklyReportPapers(evidenced, execution.context, {
+    buildContext,
+    callModel,
+    networkRetryDelayMs: 0
+  });
+  const calibrated = await calibrateWeeklyReportPapers(reviewed, execution.context, {
+    buildContext,
+    callModel,
+    networkRetryDelayMs: 0
+  });
+
+  assert.deepEqual(contextAttempts, ["2607.17021", "2607.17022", "2607.17023", "2607.17024"]);
+  assert.equal(calibrated.calibrationResult.thresholdQualifiedCount, 2);
+  assert.equal(calibrated.calibrationResult.reserveAttempted, 2);
+  assert.equal(execution.events.some((event) => (
+    event.type === "refill_requested"
+    && event.stage === "calibrate"
+    && event.reason === "threshold_qualified_below_target"
+  )), true);
+});
+
 test("calibrate excludes a paper skipped by the administrator before rebuilding the cohort", async () => {
   const execution = fakeExecutionContext();
   const buildContext = async (paper) => evidencePacketFor(paper.id);
@@ -1193,7 +1261,76 @@ test("Calibration deterministically defers papers beyond the 30-paper ceiling", 
   assert.equal(calibrated.counts.calibrated, 30);
 });
 
-test("select stage applies threshold, fallback tiers, max count, and persists Trace", async () => {
+test("Calibration replaces the lowest paper when a full cohort is below target and a reserve scores higher", async () => {
+  const execution = fakeExecutionContext();
+  const reviewItems = Array.from({ length: 30 }, (_, index) => {
+    const id = `2607.${String(41000 + index).padStart(5, "0")}`;
+    const artifacts = evidenceResponseFor(id);
+    const reviewResult = reviewResponseFor(id);
+    reviewResult.rawScore = 60;
+    return {
+      paper: { id },
+      contextPacket: evidencePacketFor(id),
+      ...artifacts,
+      reviewResult
+    };
+  });
+  const reserveId = "2607.41999";
+  const reviewed = {
+    nextStage: "calibrate",
+    reviewScoreThreshold: 70,
+    options: {
+      paperConcurrency: 1,
+      calibrationMaxPapers: 30,
+      minSelectedCount: 1
+    },
+    candidatePool: { reserveCandidates: [{ id: reserveId, published: inWeek }] },
+    evidenceResult: { reserveAttempted: 0 },
+    reviewResult: { reserveAttempted: 0, targetReviewedCount: 1 },
+    reviewItems,
+    counts: {
+      primary: 30,
+      reserve: 1,
+      fullTextEligible: 30,
+      reviewed: 30,
+      calibrated: 0,
+      selected: 0,
+      excluded: 0
+    },
+    warnings: []
+  };
+  const calibrated = await calibrateWeeklyReportPapers(reviewed, execution.context, {
+    buildContext: async (paper) => evidencePacketFor(paper.id),
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      if (payload.task.startsWith("weekly_report_extract_evidence")) {
+        return evidenceResponseFor(payload.paper.paperId);
+      }
+      if (payload.task.startsWith("weekly_report_review")) {
+        const response = reviewResponseFor(payload.paper.paperId);
+        response.scores = {
+          scenarioProblemValue: 85,
+          methodNovelty: 85,
+          practicalValue: 85,
+          evidence: 85
+        };
+        return response;
+      }
+      return calibrationResponseFor(payload.papers.map((paper) => paper.paperId));
+    }
+  });
+
+  assert.equal(calibrated.calibrationResult.reserveAttempted, 1);
+  assert.equal(calibrated.calibrationResult.thresholdQualifiedCount, 1);
+  assert.equal(calibrated.calibratedItems.some((item) => item.paper.id === reserveId), true);
+  assert.equal(calibrated.calibratedItems.length, 30);
+  assert.equal(calibrated.deferred.length, 1);
+  assert.equal(calibrated.deferred[0].deferredReason, "deferred_by_calibration_limit");
+  assert.equal(execution.events.some((event) => event.type === "calibration_pool_rebalanced"), true);
+});
+
+test("select stage publishes only threshold-qualified papers and persists Trace", async () => {
   const execution = fakeExecutionContext();
   const calibratedItems = [
     calibratedItemFor("2607.19001", 82, "must_read", { oldScore: 1 }),
@@ -1225,21 +1362,13 @@ test("select stage applies threshold, fallback tiers, max count, and persists Tr
   const selected = await selectWeeklyReportPapers(calibrated, execution.context);
 
   assert.equal(selected.nextStage, "editorial_plan");
-  assert.deepEqual(selected.selectedItems.map((item) => item.paper.id), [
-    "2607.19001",
-    "2607.19002",
-    "2607.19003"
-  ]);
-  assert.deepEqual(selected.selectedItems.map((item) => item.selection.readingTier), [
-    "must_read",
-    "worth_reading",
-    "background_only"
-  ]);
+  assert.deepEqual(selected.selectedItems.map((item) => item.paper.id), ["2607.19001"]);
+  assert.deepEqual(selected.selectedItems.map((item) => item.selection.readingTier), ["must_read"]);
   assert.equal(selected.selectionResult.thresholdSelectedCount, 1);
-  assert.equal(selected.selectionResult.fallbackCount, 2);
-  assert.equal(selected.counts.selected, 3);
+  assert.equal(selected.selectionResult.fallbackCount, 0);
+  assert.equal(selected.counts.selected, 1);
   assert.equal(execution.updates.at(-1).stage, "select");
-  assert.equal(execution.sections.get("selection-artifacts").selected.length, 3);
+  assert.equal(execution.sections.get("selection-artifacts").selected.length, 1);
   assert.equal(execution.events.some((event) => (
     event.type === "stage_completed"
     && event.stage === "select"
@@ -1318,7 +1447,7 @@ test("editorial_plan validates the selected cohort and persists the complete mod
   const calibratedItems = [
     calibratedItemFor("2607.19301", 88, "must_read"),
     calibratedItemFor("2607.19302", 78, "worth_reading"),
-    calibratedItemFor("2607.19303", 68, "background_only")
+    calibratedItemFor("2607.19303", 71, "background_only")
   ];
   const selected = await selectWeeklyReportPapers({
     nextStage: "select",
@@ -1473,7 +1602,7 @@ test("write_paper_sections generates one isolated paperDraft per selected paper 
   const calibratedItems = [
     calibratedItemFor("2607.19501", 88, "must_read"),
     calibratedItemFor("2607.19502", 78, "worth_reading"),
-    calibratedItemFor("2607.19503", 68, "background_only")
+    calibratedItemFor("2607.19503", 71, "background_only")
   ];
   const selected = await selectWeeklyReportPapers({
     nextStage: "select",
@@ -1573,7 +1702,7 @@ test("write_head_tail completes the existing Editorial Agent and persists its mo
   const calibratedItems = [
     calibratedItemFor("2607.19701", 88, "must_read"),
     calibratedItemFor("2607.19702", 78, "worth_reading"),
-    calibratedItemFor("2607.19703", 68, "background_only")
+    calibratedItemFor("2607.19703", 71, "background_only")
   ];
   calibratedItems.forEach((entry, index) => {
     entry.paper.title = `Trusted assembled paper ${index + 1}`;

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -72,6 +72,120 @@ test("创建 Job 立即返回，后台继续执行且第二次创建复用活动
   const completed = await manager.waitForCompletion(first.jobId);
   assert.equal(completed.state, "publish");
   assert.equal((await manager.getActive()), null);
+});
+
+test("阶段和 Trace 事件会更新活动任务的可观察进展并写入 active.json", async () => {
+  const recorded = deferred();
+  const release = deferred();
+  const { jobsDir, manager } = await createHarness({
+    execute: async (_input, context) => {
+      await context.updateStage("extract_evidence");
+      await context.recordTrace({
+        type: "evidence_processing_completed",
+        stage: "extract_evidence",
+        paperId: "2608.10001",
+        outcome: "continue"
+      });
+      recorded.resolve();
+      await release.promise;
+      return { state: "publish", markdown: "# 周报" };
+    }
+  });
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W34-progress" });
+  await recorded.promise;
+  const active = await manager.getActive();
+  const persisted = JSON.parse(await readFile(join(jobsDir, "active.json"), "utf8"));
+
+  assert.equal(active.progress.lastEventType, "evidence_processing_completed");
+  assert.equal(active.progress.paperId, "2608.10001");
+  assert.equal(active.progress.stageStartedAt, persisted.progress.stageStartedAt);
+  assert.equal(active.progress.lastEventAt, persisted.progress.lastEventAt);
+  assert.ok(Date.parse(active.progress.lastEventAt) >= Date.parse(created.createdAt));
+
+  release.resolve();
+  const completed = await manager.waitForCompletion(created.jobId);
+  assert.equal(completed.progress.lastEventType, "job_completed");
+  assert.equal(completed.progress.paperId, "2608.10001");
+});
+
+test("并发 Trace 事件按调用顺序串行持久化且活动进度不会回退", async () => {
+  const release = deferred();
+  const { manager, traceStore } = await createHarness({
+    execute: async (_input, context) => {
+      await Promise.all([
+        context.recordTrace({ type: "first_parallel_event", stage: "extract_evidence", paperId: "first" }),
+        context.recordTrace({ type: "second_parallel_event", stage: "extract_evidence", paperId: "second" })
+      ]);
+      await release.promise;
+      return { state: "publish", markdown: "# 周报" };
+    }
+  });
+  const originalAppendTimeline = traceStore.appendTimeline.bind(traceStore);
+  traceStore.appendTimeline = async (traceId, event) => {
+    if (event.type === "first_parallel_event") {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    return originalAppendTimeline(traceId, event);
+  };
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W34-parallel-trace" });
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const active = await manager.getActive();
+    if (active?.progress?.lastEventType === "second_parallel_event") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const active = await manager.getActive();
+  const trace = await traceStore.readTrace(created.traceId);
+  const eventTypes = trace.timeline
+    .filter((event) => event.type.endsWith("parallel_event"))
+    .map((event) => event.type);
+
+  assert.deepEqual(eventTypes, ["first_parallel_event", "second_parallel_event"]);
+  assert.equal(active.progress.lastEventType, "second_parallel_event");
+  assert.equal(active.progress.paperId, "second");
+
+  release.resolve();
+  await manager.waitForCompletion(created.jobId);
+});
+
+test("取消终态等待在途 Trace 落盘，持久化状态不会从 reject 回退为 running", async () => {
+  const tracePersistStarted = deferred();
+  const allowTracePersist = deferred();
+  const tracePersisted = deferred();
+  const { jobsDir, manager } = await createHarness({
+    execute: async (_input, context) => {
+      await context.recordTrace({ type: "slow_event", stage: "extract_evidence", paperId: "2608.10009" });
+      if (!context.signal.aborted) {
+        await new Promise((resolve) => context.signal.addEventListener("abort", resolve, { once: true }));
+      }
+      return { state: "reject", reason: "admin_cancelled" };
+    }
+  });
+  const originalPersistJob = manager.persistJob.bind(manager);
+  manager.persistJob = async (job, options) => {
+    if (job.state === "running"
+      && job.cancelRequested !== true
+      && job.progress?.lastEventType === "slow_event") {
+      tracePersistStarted.resolve();
+      await allowTracePersist.promise;
+      const result = await originalPersistJob(job, options);
+      tracePersisted.resolve();
+      return result;
+    }
+    return originalPersistJob(job, options);
+  };
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W34-cancel-trace-race" });
+  await tracePersistStarted.promise;
+  const cancellation = manager.cancel(created.jobId);
+  setTimeout(() => allowTracePersist.resolve(), 30);
+  const [completed] = await Promise.all([cancellation, tracePersisted.promise]);
+  const persisted = JSON.parse(await readFile(join(jobsDir, `job-${created.jobId}.json`), "utf8"));
+
+  assert.equal(completed.state, "reject");
+  assert.equal(persisted.state, "reject");
+  await assert.rejects(() => readFile(join(jobsDir, "active.json"), "utf8"), { code: "ENOENT" });
 });
 
 test("管理员取消会中止后台信号、落为 reject 并且绝不调用发布写入", async () => {
@@ -272,6 +386,8 @@ test("服务启动发现遗留 running Job 时标记 agent_interrupted 并释放
 
   const persistedActive = JSON.parse(await readFile(join(jobsDir, "active.json"), "utf8"));
   assert.equal(persistedActive.state, "running");
+  delete persistedActive.progress;
+  await writeFile(join(jobsDir, "active.json"), `${JSON.stringify(persistedActive, null, 2)}\n`, "utf8");
 
   const restartedManager = new WeeklyReportJobManager({
     jobsDir,
@@ -283,6 +399,7 @@ test("服务启动发现遗留 running Job 时标记 agent_interrupted 并释放
   const interrupted = await restartedManager.getJob(running.jobId);
   assert.equal(interrupted.state, "reject");
   assert.equal(interrupted.result.reason, "agent_interrupted");
+  assert.equal(interrupted.progress.lastEventType, "legacy_job_loaded");
   assert.equal((await restartedManager.getActive()), null);
 
   const next = await restartedManager.createOrReuse({ reportKey: "2026-W32" });

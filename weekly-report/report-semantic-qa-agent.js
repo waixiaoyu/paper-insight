@@ -348,6 +348,7 @@ export const reviewReportSemantics = async ({
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({ type: "model_call_started", stage: "report_semantic_qa", scope: "job", role: "report_semantic_qa", paperId: "", attemptType });
     const startedAt = Date.now();
     let rawOutput;
     try {

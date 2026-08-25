@@ -109,18 +109,68 @@ test("Trace 同时执行最近 20 次与最长 30 天保留策略", async () => 
   assert.equal(remaining.some((item) => item.traceId === "trace-21"), true);
 });
 
-test("Trace summary returns an artifact manifest without loading large artifact payloads", async () => {
+test("Trace summary returns compact artifact previews without exposing large payloads", async () => {
   const rootDir = await makeTempDirectory();
   const store = new WeeklyReportTraceStore({ rootDir });
   await store.createTrace({ traceId: "trace-summary", jobId: "job-summary" });
   await store.appendTimeline("trace-summary", { stage: "review", type: "stage_started" });
   await store.writeJson("trace-summary", "evidence-artifacts", {
+    succeeded: [{ paper: { id: "2608.10001", title: "Passed paper" } }],
+    processingFailed: [{
+      paper: { id: "2608.10002", title: "Format failure" },
+      error: { code: "READING_LIST_EVIDENCE_RESPONSE_INVALID" }
+    }],
+    excluded: [{
+      paper: { id: "2608.10003", title: "Content failure" },
+      error: { code: "READING_LIST_EVIDENCE_UNSUPPORTED" }
+    }],
     payload: "x".repeat(1024 * 1024)
+  });
+  await store.writeJson("trace-summary", "selection-artifacts", {
+    threshold: 70,
+    selected: [{
+      paper: { id: "2608.10001", title: "Passed paper" },
+      reviewResult: { rawScore: 76 },
+      selection: { selected: true, finalScore: 76, selectionReason: "threshold" },
+      evidenceCard: { secret: "must-not-enter-summary" }
+    }],
+    notSelected: [{
+      paper: { id: "2608.10004", title: "Below threshold" },
+      reviewResult: { rawScore: 68 },
+      selection: { selected: false, finalScore: 68, selectionReason: "below_threshold" }
+    }],
+    ineligible: [{
+      paper: { id: "2608.10005", title: "Missing calibration" },
+      reviewResult: { rawScore: 81 },
+      selection: { selected: false, finalScore: 81, selectionReason: "calibration_required" },
+      evidenceCard: { secret: "must-not-enter-summary-either" }
+    }]
   });
 
   const summary = await store.readTraceSummary("trace-summary");
 
   assert.equal(summary.timeline.length, 1);
   assert.equal(summary.artifacts["evidence-artifacts"].sizeBytes > 1024 * 1024, true);
+  assert.deepEqual(summary.artifacts["evidence-artifacts"].preview.counts, {
+    succeeded: 1,
+    processingFailed: 1,
+    excluded: 1
+  });
+  assert.equal(summary.artifacts["selection-artifacts"].preview.threshold, 70);
+  assert.deepEqual(summary.artifacts["selection-artifacts"].preview.selected[0], {
+    paperId: "2608.10001",
+    title: "Passed paper",
+    finalScore: 76,
+    selected: true,
+    selectionReason: "threshold"
+  });
+  assert.deepEqual(summary.artifacts["selection-artifacts"].preview.ineligible[0], {
+    paperId: "2608.10005",
+    title: "Missing calibration",
+    finalScore: 81,
+    selected: false,
+    selectionReason: "calibration_required"
+  });
   assert.equal(JSON.stringify(summary).includes("x".repeat(100)), false);
+  assert.equal(JSON.stringify(summary).includes("must-not-enter-summary"), false);
 });

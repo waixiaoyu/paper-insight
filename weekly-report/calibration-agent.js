@@ -396,6 +396,14 @@ const createModelInvoker = ({ callModel, signal, onCall, onEvent, networkRetryDe
     if (signal?.aborted) {
       throw abortError();
     }
+    await onEvent?.({
+      type: "model_call_started",
+      stage: "calibrate",
+      scope: paperId ? "paper" : "job",
+      role,
+      paperId,
+      attemptType
+    });
     const startedAt = Date.now();
     let rawOutput;
     try {

@@ -115,6 +115,44 @@ const writeJsonAtomic = async (path, value) => {
   }
 };
 
+const artifactPaperId = (item = {}) => String(
+  item?.contextPacket?.paperId
+  || item?.reviewResult?.paperId
+  || item?.selection?.paperId
+  || item?.paper?.id
+  || ""
+);
+
+const artifactPaperTitle = (item = {}) => String(item?.paper?.title || item?.title || artifactPaperId(item));
+
+const traceArtifactPreview = (name, value = {}) => {
+  if (["evidence-artifacts", "review-artifacts"].includes(name)) {
+    return {
+      counts: {
+        succeeded: Array.isArray(value?.succeeded) ? value.succeeded.length : 0,
+        processingFailed: Array.isArray(value?.processingFailed) ? value.processingFailed.length : 0,
+        excluded: Array.isArray(value?.excluded) ? value.excluded.length : 0
+      }
+    };
+  }
+  if (name === "selection-artifacts") {
+    const compact = (item, selected) => ({
+      paperId: artifactPaperId(item),
+      title: artifactPaperTitle(item),
+      finalScore: Number(item?.selection?.finalScore ?? item?.reviewResult?.rawScore ?? 0),
+      selected,
+      selectionReason: String(item?.selection?.selectionReason || (selected ? "threshold" : "below_threshold"))
+    });
+    return {
+      threshold: Number(value?.threshold ?? 70),
+      selected: (Array.isArray(value?.selected) ? value.selected : []).map((item) => compact(item, true)),
+      notSelected: (Array.isArray(value?.notSelected) ? value.notSelected : []).map((item) => compact(item, false)),
+      ineligible: (Array.isArray(value?.ineligible) ? value.ineligible : []).map((item) => compact(item, false))
+    };
+  }
+  return null;
+};
+
 export class WeeklyReportTraceStore {
   constructor({
     rootDir,
@@ -249,8 +287,16 @@ export class WeeklyReportTraceStore {
       if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === "meta.json") {
         continue;
       }
-      const file = await stat(join(directory, entry.name));
-      artifacts[entry.name.slice(0, -5)] = { sizeBytes: file.size };
+      const path = join(directory, entry.name);
+      const file = await stat(path);
+      const name = entry.name.slice(0, -5);
+      const preview = ["evidence-artifacts", "review-artifacts", "selection-artifacts"].includes(name)
+        ? traceArtifactPreview(name, await readJsonIfPresent(path, {}))
+        : null;
+      artifacts[name] = {
+        sizeBytes: file.size,
+        ...(preview ? { preview } : {})
+      };
     }
     return { meta, timeline, artifacts, resultMarkdown: "" };
   }

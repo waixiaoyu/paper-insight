@@ -214,7 +214,7 @@ button {
 
 .weekly-report-trace-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   overflow-y: auto;
@@ -375,6 +375,14 @@ button {
   line-height: 1.5;
 }
 
+.weekly-report-trace-section-title {
+  margin: 14px 0 7px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
 .weekly-report-trace-event-list {
   display: grid;
   gap: 6px;
@@ -432,6 +440,92 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.weekly-report-trace-artifact-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weekly-report-trace-artifact {
+  padding: 10px;
+  background: #fff;
+  border: 1px solid rgba(23, 107, 135, 0.18);
+  border-left: 4px solid var(--accent);
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.weekly-report-trace-artifact-heading {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.weekly-report-trace-artifact-heading span,
+.weekly-report-trace-artifact-summary-title {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.weekly-report-trace-artifact-summary-title {
+  margin: 8px 0 4px;
+}
+
+.weekly-report-trace-artifact-metrics,
+.weekly-report-trace-selection-list {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.weekly-report-trace-artifact-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.weekly-report-trace-artifact-metrics li {
+  padding: 5px 7px;
+  background: rgba(244, 248, 250, 0.9);
+  border-radius: 5px;
+}
+
+.weekly-report-trace-artifact-metrics li[data-outcome="processing_failed"] {
+  color: #805b1d;
+  background: #fff8e8;
+}
+
+.weekly-report-trace-artifact-metrics li[data-outcome="content_excluded"] {
+  color: #8a3838;
+  background: #fff1f1;
+}
+
+.weekly-report-trace-selection-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 6px 8px;
+  background: rgba(244, 248, 250, 0.9);
+  border-radius: 5px;
+}
+
+.weekly-report-trace-selection-list li.selected {
+  background: #edf8f1;
+}
+
+.weekly-report-trace-selection-list li.not-selected {
+  color: var(--muted);
+}
+
+.weekly-report-trace-selection-list span {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .weekly-report-trace-empty {
   margin: 0;
   padding: 8px;
@@ -469,6 +563,53 @@ button {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.weekly-report-job-health {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px 20px;
+  background: #f4f8fa;
+  border-top: 1px solid rgba(23, 107, 135, 0.12);
+  border-bottom: 1px solid rgba(23, 107, 135, 0.12);
+}
+
+.weekly-report-job-health-indicator {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  background: #23855b;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(35, 133, 91, 0.13);
+}
+
+.weekly-report-job-health[data-state="waiting_admin"] .weekly-report-job-health-indicator,
+.weekly-report-job-health[data-state="possibly_stalled"] .weekly-report-job-health-indicator {
+  background: #b57416;
+  box-shadow: 0 0 0 3px rgba(181, 116, 22, 0.14);
+}
+
+.weekly-report-job-health[data-state="connection_interrupted"] .weekly-report-job-health-indicator,
+.weekly-report-job-health[data-state="reject"] .weekly-report-job-health-indicator {
+  background: #b64242;
+  box-shadow: 0 0 0 3px rgba(182, 66, 66, 0.13);
+}
+
+.weekly-report-job-health-copy strong {
+  display: block;
+  font-size: 14px;
+}
+
+.weekly-report-job-health-copy p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.weekly-report-job-health-meta {
+  color: var(--muted);
 }
 
 .reading-list-header,

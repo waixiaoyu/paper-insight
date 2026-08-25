@@ -921,6 +921,7 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
 
   const stageStartedAt = Date.now();
   const target = Math.max(1, Number(reviewed.reviewResult?.targetReviewedCount) || 1);
+  const threshold = normalizedReviewScoreThreshold(reviewed.reviewScoreThreshold);
   const concurrency = Math.min(Math.max(
     Math.trunc(Number(reviewed.options?.paperConcurrency) || 2),
     1
@@ -979,6 +980,8 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
     scope: "job",
     batchSize: calibrationPool.length,
     maximumBatchSize: calibrationMaximum,
+    threshold,
+    thresholdTarget: target,
     deferred: deferred.length,
     reserveRemaining: Math.max(0, reserveCandidates.length - reserveCursor)
   });
@@ -1026,12 +1029,18 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
     await context.recordTrace(normalized);
   };
 
-  const refillEarlierStages = async () => {
-    const needed = target - calibrationPool.length;
+  const refillEarlierStages = async (needed) => {
     if (needed <= 0 || reserveCursor >= reserveCandidates.length) {
       return;
     }
-    const batchSize = Math.min(concurrency, needed, reserveCandidates.length - reserveCursor);
+    const batchSize = Math.min(
+      concurrency,
+      needed,
+      reserveCandidates.length - reserveCursor
+    );
+    if (batchSize <= 0) {
+      return;
+    }
     const batch = reserveCandidates.slice(reserveCursor, reserveCursor + batchSize);
     const refillOffset = reserveCursor;
     reserveCursor += batch.length;
@@ -1039,8 +1048,9 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
       type: "refill_requested",
       stage: "calibrate",
       scope: "job",
-      reason: "calibration_below_target",
+      reason: "threshold_qualified_below_target",
       requested: batch.length,
+      threshold,
       reserveRemaining: Math.max(0, reserveCandidates.length - reserveCursor)
     });
 
@@ -1123,7 +1133,30 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
       reviewed: counts.reviewed + reviewResult.succeeded.length,
       excluded: counts.excluded + reviewExcluded.length
     };
-    calibrationPool.push(...reviewResult.succeeded);
+    const rebalanced = [...calibrationPool, ...reviewResult.succeeded]
+      .sort((left, right) => (
+        Number(right?.reviewResult?.rawScore || 0) - Number(left?.reviewResult?.rawScore || 0)
+        || paperIdForStage(left).localeCompare(paperIdForStage(right))
+      ));
+    calibrationPool = rebalanced.slice(0, calibrationMaximum);
+    const displaced = rebalanced.slice(calibrationMaximum).map((item) => ({
+      ...item,
+      deferredReason: "deferred_by_calibration_limit"
+    }));
+    if (displaced.length) {
+      deferred.push(...displaced);
+      counts = { ...counts, excluded: counts.excluded + displaced.length };
+      await context.recordTrace({
+        type: "calibration_pool_rebalanced",
+        stage: "calibrate",
+        scope: "job",
+        admittedPaperIds: reviewResult.succeeded
+          .filter((item) => calibrationPool.some((candidate) => paperIdForStage(candidate) === paperIdForStage(item)))
+          .map(paperIdForStage),
+        deferredPaperIds: displaced.map(paperIdForStage),
+        maximumBatchSize: calibrationMaximum
+      });
+    }
     await context.updateStage("calibrate", { counts });
   };
 
@@ -1190,10 +1223,14 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
         }
       }
 
-      if (calibrationPool.length >= target || reserveCursor >= reserveCandidates.length) {
+      const thresholdQualifiedCount = calibrationPool.filter((item) => (
+        Number(item?.reviewResult?.rawScore) >= threshold
+      )).length;
+      if (thresholdQualifiedCount >= target
+        || reserveCursor >= reserveCandidates.length) {
         break;
       }
-      await refillEarlierStages();
+      await refillEarlierStages(target - thresholdQualifiedCount);
     }
   } catch (error) {
     if (error?.name === "AbortError" || context.signal?.aborted) {
@@ -1209,12 +1246,15 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
   }
 
   counts = { ...counts, calibrated: calibrationPool.length };
+  const thresholdQualifiedCount = calibrationPool.filter((item) => (
+    Number(item?.reviewResult?.rawScore) >= threshold
+  )).length;
   const stageWarnings = [];
-  if (calibrationPool.length > 0 && calibrationPool.length < target) {
+  if (calibrationPool.length > 0 && thresholdQualifiedCount < target) {
     stageWarnings.push({
       code: "READING_LIST_CALIBRATION_BELOW_TARGET",
       stage: "calibrate",
-      message: `候选池耗尽后仅有 ${calibrationPool.length}/${target} 篇论文完成校准，将按实际合格数量继续。`,
+      message: `候选池处理结束后，${calibrationPool.length} 篇论文完成校准，其中 ${thresholdQualifiedCount}/${target} 篇达到 ${threshold} 分入选线；后续只使用实际达线论文。`,
       severity: "warning"
     });
   }
@@ -1233,10 +1273,13 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
   ]);
   const calibrationResult = {
     targetCalibratedCount: target,
+    threshold,
+    thresholdTarget: target,
+    thresholdQualifiedCount,
     maximumBatchSize: calibrationMaximum,
     reserveAttempted: reserveCursor,
     reserveRemaining: Math.max(0, reserveCandidates.length - reserveCursor),
-    underTarget: calibrationPool.length < target,
+    underTarget: thresholdQualifiedCount < target,
     succeeded: calibrationPool,
     excluded: allExcluded,
     deferred,
@@ -1367,6 +1410,8 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
     durationMs: elapsed(stageStartedAt),
     counts,
     threshold,
+    thresholdTarget: selection.requestedMinSelectedCount,
+    thresholdQualifiedCount: selection.thresholdSelectedCount,
     thresholdSelectedCount: selection.thresholdSelectedCount,
     fallbackCount: selection.fallbackCount,
     decision: selection.selected.length ? "continue" : "reject"
@@ -1374,13 +1419,13 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
 
   if (!selection.selected.length) {
     const error = new WeeklyReportOrchestratorError(
-      "没有任何已校准论文满足最终 Selection 安全条件，本次周报任务已拒绝。",
+      `候选池处理结束后，没有论文达到 ${threshold} 分入选线，本次周报无法生成。`,
       {
         code: "READING_LIST_NO_SELECTED_PAPERS",
         stage: "select",
         retryable: false,
         traceId: context.traceId,
-        detail: "Selection 只接受 Evidence 已通过且 calibrationResult 已收敛的论文。",
+        detail: `共有 ${calibrated.calibratedItems.length} 篇论文完成横向校准，但没有论文达到 ${threshold} 分。低于入选线的论文不会用于补足篇数。`,
         rejectJob: true
       }
     );
