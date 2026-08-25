@@ -2,6 +2,10 @@
 
 import { manualReviewDecisionStatusText, submitWeeklyReportManualReviewDecision } from "./manual-review-actions.js";
 import {
+  candidateExpansionNotice,
+  expandCandidateBatches
+} from "./candidate-expansion.js";
+import {
   weeklyReportArtifactSummary,
   weeklyReportDisconnectedJob,
   weeklyReportHealthState,
@@ -4226,9 +4230,42 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
   try {
     const result = await loadCandidateBatch(search, { start: 0, requestId });
     resetSourceStatusTimer();
-    search.nextStart = result.papers.length;
+    let latestResult = result;
+    const seenCandidateKeys = new Set();
+    const candidatePapers = [];
+    const appendUnique = (papers) => {
+      const added = uniqueCandidatePapers(papers, seenCandidateKeys);
+      candidatePapers.push(...added);
+      return added;
+    };
+    const expansion = await expandCandidateBatches({
+      target: candidateLimit,
+      initialDays: search.days,
+      initialPapers: result.papers,
+      appendUnique,
+      loadBatch: async (days) => {
+        setTaskStatus(`当前只获得 ${candidatePapers.length}/${candidateLimit} 篇，正在按相同关键词扩展到最近 ${days} 天。`);
+        const expandedSearch = {
+          ...search,
+          days: String(days),
+          forceRefresh: search.forceArxiv ? search.forceRefresh : false
+        };
+        latestResult = await loadCandidateBatch(expandedSearch, { start: 0, requestId });
+        return latestResult;
+      }
+    });
+    search.days = String(expansion.finalDays);
+    search.nextStart = candidatePapers.length;
     state.candidateSearch = search;
-    const { papers, cacheStatus, source, cacheAge, warning, returnHint } = result;
+    const { cacheStatus, source, cacheAge, warning, returnHint } = latestResult;
+    const papers = candidatePapers;
+    const expansionNotice = candidateExpansionNotice({
+      target: candidateLimit,
+      initialDays: expansion.initialDays,
+      initialCount: expansion.initialCount,
+      finalDays: expansion.finalDays,
+      finalCount: expansion.finalCount
+    });
 
     if (!papers.length) {
       setTaskLocked(false);
@@ -4241,14 +4278,14 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
     if (cacheStatus === "stale") {
       const minutes = Math.max(1, Math.round(cacheAge / 60));
       const text = warning ? decodeURIComponent(warning) : "arXiv 暂时不可用，已使用本地缓存。";
-      setTaskStatus(`${sourceLabel(source)}：${text}${returnHint} 缓存约 ${minutes} 分钟前更新，请确认候选论文。`, "warning", "refresh");
+      setTaskStatus(`${sourceLabel(source)}：${expansionNotice} ${text}${returnHint} 缓存约 ${minutes} 分钟前更新，请确认候选论文。`, "warning", "refresh");
     } else if (cacheStatus === "hit") {
-      const text = warning ? decodeURIComponent(warning) : `已从本地缓存读取 ${papers.length} 篇候选论文。需要新候选时可以重新获取。`;
-      setTaskStatus(`${sourceLabel(source)}：${text}`, "warning", "refresh");
+      const text = warning ? decodeURIComponent(warning) : "已从本地缓存读取候选论文。需要新候选时可以重新获取。";
+      setTaskStatus(`${sourceLabel(source)}：${expansionNotice} ${text}`, "warning", "refresh");
     } else {
-      const text = warning ? decodeURIComponent(warning) : `已获取 ${papers.length} 篇候选论文，请确认要进入 AI 分析的论文。`;
+      const text = warning ? decodeURIComponent(warning) : "请确认要进入 AI 分析的论文。";
       const action = "force-arxiv";
-      setTaskStatus(`${sourceLabel(source)}：${text}`, "warning", action);
+      setTaskStatus(`${sourceLabel(source)}：${expansionNotice} ${text}`, "warning", action);
     }
   } catch (error) {
     resetSourceStatusTimer();

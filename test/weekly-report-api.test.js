@@ -153,6 +153,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /data-manual-review-action="ignore_warning"/);
   assert.match(html, /确认范围，抓取原文，排除无法支撑写作的论文。/);
   assert.match(html, /id="readingListMaxSelected"/);
+  assert.match(html, /候选目标数/);
 
   const app = await fetch(`${baseUrl}/app.js`);
   assert.equal(app.status, 200);
@@ -165,6 +166,9 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(source, /connectionInterrupted: true/);
   assert.match(source, /weeklyReportDisconnectedJob/);
   assert.match(source, /weeklyReportRequestRetryable/);
+  assert.match(source, /from "\.\/candidate-expansion\.js"/);
+  assert.match(source, /expandCandidateBatches\(/);
+  assert.match(source, /candidateExpansionNotice\(/);
   assert.match(source, /while \(!payload\)/);
   assert.match(source, /error\?\.status === 404/);
   assert.match(source, /weeklyReportTraceReconnect\.addEventListener/);
