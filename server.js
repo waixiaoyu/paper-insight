@@ -2183,19 +2183,19 @@ const validateAnalysis = (paper, analysis) => {
 };
 
 const llmProviderDefaults = {
-  "glm-coding-openai": {
-    mode: "glm-coding-openai",
-    protocol: "openai",
+  "glm-coding-anthropic": {
+    mode: "glm-coding-anthropic",
+    protocol: "anthropic",
     model: "glm-5.3",
-    endpoint: "https://api.z.ai/api/paas/v4/chat/completions",
+    endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages",
     apiKey: () => process.env.GLM_CODING_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
     modelEnv: () => process.env.GLM_CODING_MODEL || process.env.ANTHROPIC_MODEL,
-    endpointEnv: () => process.env.GLM_CODING_OPENAI_API_URL || process.env.GLM_CODING_API_URL,
-    reasoningEffort: "low"
+    endpointEnv: () => process.env.GLM_CODING_ANTHROPIC_API_URL || process.env.ANTHROPIC_BASE_URL || process.env.GLM_CODING_API_URL,
+    disableThinking: false
   }
 };
 
-const normalizeLlmProvider = () => "glm-coding-openai";
+const normalizeLlmProvider = () => "glm-coding-anthropic";
 
 const inferLlmProvider = () => normalizeLlmProvider();
 
@@ -2231,17 +2231,8 @@ const getLlmConfig = (overrides = {}) => {
     provider,
     protocol: defaults.protocol,
     mode: defaults.mode,
-    reasoningEffort: defaults.reasoningEffort
+    disableThinking: defaults.disableThinking && !process.env.LLM_API_URL
   };
-};
-
-const applyLlmReasoning = (payload, config) => {
-  if (config.protocol === "openai" && config.reasoningEffort) {
-    payload.thinking = { type: "enabled" };
-    payload.reasoning_effort = config.reasoningEffort;
-  }
-
-  return payload;
 };
 
 const llmTextFromResponse = (data, protocol = "openai") => {
@@ -2325,8 +2316,6 @@ const callWeeklyReportAgentModel = async (prompt, {
       payload.messages = [userMessage];
       payload.thinking = { type: "disabled" };
     }
-    applyLlmReasoning(payload, config);
-
     let llmResponse;
     try {
       llmResponse = await fetch(endpoint, {
@@ -2496,8 +2485,6 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
       delete payload.response_format;
     }
 
-    applyLlmReasoning(payload, config);
-
     const llmResponse = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
@@ -2645,8 +2632,6 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
       delete payload.response_format;
     }
 
-    applyLlmReasoning(payload, config);
-
     const llmResponse = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
@@ -2716,8 +2701,6 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
       payload.system = systemMessage.content;
       payload.messages = [userMessage];
     }
-
-    applyLlmReasoning(payload, config);
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
@@ -2908,8 +2891,6 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
       payload.messages = [userMessage];
     }
 
-    applyLlmReasoning(payload, config);
-
     const llmResponse = await fetch(endpoint, {
       method: "POST",
       signal: controller.signal,
@@ -3063,8 +3044,6 @@ const callLlmWeeklyReportSemanticReview = async ({ report, papers, markdown, llm
       payload.system = systemMessage.content;
       payload.messages = [userMessage];
     }
-
-    applyLlmReasoning(payload, config);
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
