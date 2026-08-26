@@ -436,7 +436,7 @@ const highValueSignalForScore = (score, scores = {}, analysis = {}) => {
 
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
 const readingListTitlePrefix = "【精选论文】";
-const readingListFooterNote = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.2";
+const readingListFooterNote = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.3";
 const readingListTitleSuffixMaxChars = 32;
 const readingListSpecificTitleTopics = [
   { label: "护栏验证", patterns: [/guard\s*rail/i, /guardrail/i, /criticality/i, /护栏/i] },
@@ -2183,19 +2183,19 @@ const validateAnalysis = (paper, analysis) => {
 };
 
 const llmProviderDefaults = {
-  "glm-coding-anthropic": {
-    mode: "glm-coding-anthropic",
-    protocol: "anthropic",
-    model: "glm-5.2",
-    endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages",
+  "glm-coding-openai": {
+    mode: "glm-coding-openai",
+    protocol: "openai",
+    model: "glm-5.3",
+    endpoint: "https://api.z.ai/api/paas/v4/chat/completions",
     apiKey: () => process.env.GLM_CODING_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
     modelEnv: () => process.env.GLM_CODING_MODEL || process.env.ANTHROPIC_MODEL,
-    endpointEnv: () => process.env.GLM_CODING_ANTHROPIC_API_URL || process.env.ANTHROPIC_BASE_URL || process.env.GLM_CODING_API_URL,
-    disableThinking: false
+    endpointEnv: () => process.env.GLM_CODING_OPENAI_API_URL || process.env.GLM_CODING_API_URL,
+    reasoningEffort: "low"
   }
 };
 
-const normalizeLlmProvider = () => "glm-coding-anthropic";
+const normalizeLlmProvider = () => "glm-coding-openai";
 
 const inferLlmProvider = () => normalizeLlmProvider();
 
@@ -2231,8 +2231,17 @@ const getLlmConfig = (overrides = {}) => {
     provider,
     protocol: defaults.protocol,
     mode: defaults.mode,
-    disableThinking: defaults.disableThinking && !process.env.LLM_API_URL
+    reasoningEffort: defaults.reasoningEffort
   };
+};
+
+const applyLlmReasoning = (payload, config) => {
+  if (config.protocol === "openai" && config.reasoningEffort) {
+    payload.thinking = { type: "enabled" };
+    payload.reasoning_effort = config.reasoningEffort;
+  }
+
+  return payload;
 };
 
 const llmTextFromResponse = (data, protocol = "openai") => {
@@ -2278,7 +2287,7 @@ const callWeeklyReportAgentModel = async (prompt, {
     throw error;
   }
 
-  const { endpoint, model, disableThinking, protocol } = config;
+  const { endpoint, model, protocol } = config;
   const controller = new AbortController();
   let timedOut = false;
   const abortFromJob = () => controller.abort();
@@ -2316,9 +2325,7 @@ const callWeeklyReportAgentModel = async (prompt, {
       payload.messages = [userMessage];
       payload.thinking = { type: "disabled" };
     }
-    if (disableThinking && protocol === "openai") {
-      payload.thinking = { type: "disabled" };
-    }
+    applyLlmReasoning(payload, config);
 
     let llmResponse;
     try {
@@ -2388,12 +2395,12 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 BigModel GLM-5.2 API key。");
+    const error = new Error("未配置 GLM-5.3 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
 
-  const { endpoint, model, disableThinking, protocol } = config;
+  const { endpoint, model, protocol } = config;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
@@ -2489,9 +2496,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
       delete payload.response_format;
     }
 
-    if (disableThinking && protocol === "openai") {
-      payload.thinking = { type: "disabled" };
-    }
+    applyLlmReasoning(payload, config);
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
@@ -2527,12 +2532,12 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 BigModel GLM-5.2 API key。");
+    const error = new Error("未配置 GLM-5.3 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
 
-  const { endpoint, model, disableThinking, protocol } = config;
+  const { endpoint, model, protocol } = config;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
 
@@ -2640,9 +2645,7 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
       delete payload.response_format;
     }
 
-    if (disableThinking && protocol === "openai") {
-      payload.thinking = { type: "disabled" };
-    }
+    applyLlmReasoning(payload, config);
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
@@ -2678,12 +2681,12 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 BigModel GLM-5.2 API key。");
+    const error = new Error("未配置 GLM-5.3 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
 
-  const { endpoint, model, disableThinking, protocol } = config;
+  const { endpoint, model, protocol } = config;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45000);
 
@@ -2714,9 +2717,7 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
       payload.messages = [userMessage];
     }
 
-    if (disableThinking && protocol === "openai") {
-      payload.thinking = { type: "disabled" };
-    }
+    applyLlmReasoning(payload, config);
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
@@ -2741,12 +2742,12 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
   const config = getLlmConfig(llm);
 
   if (!config) {
-    const error = new Error("未配置 BigModel GLM-5.2 API key。");
+    const error = new Error("未配置 GLM-5.3 API key。");
     error.code = "LLM_NOT_CONFIGURED";
     throw error;
   }
 
-  const { endpoint, model, disableThinking, protocol } = config;
+  const { endpoint, model, protocol } = config;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), llmRequestTimeoutMs);
 
@@ -2907,9 +2908,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
       payload.messages = [userMessage];
     }
 
-    if (disableThinking && protocol === "openai") {
-      payload.thinking = { type: "disabled" };
-    }
+    applyLlmReasoning(payload, config);
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
@@ -2979,7 +2978,7 @@ const callLlmWeeklyReportSemanticReview = async ({ report, papers, markdown, llm
     throw error;
   }
 
-  const { endpoint, model, disableThinking, protocol } = config;
+  const { endpoint, model, protocol } = config;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), weeklyReportSemanticReviewTimeoutMs);
   const evidenceBudget = Math.max(
@@ -3065,9 +3064,7 @@ const callLlmWeeklyReportSemanticReview = async ({ report, papers, markdown, llm
       payload.messages = [userMessage];
     }
 
-    if (disableThinking && protocol === "openai") {
-      payload.thinking = { type: "disabled" };
-    }
+    applyLlmReasoning(payload, config);
 
     const llmResponse = await fetch(endpoint, {
       method: "POST",
@@ -3845,7 +3842,7 @@ const handleReadingListRequest = async (request, response) => {
     };
 
     if (!getLlmConfig(requestLlm)) {
-      const error = new Error("未配置 BigModel GLM-5.2 API key。");
+      const error = new Error("未配置 GLM-5.3 API key。");
       error.code = "LLM_NOT_CONFIGURED";
       throw error;
     }

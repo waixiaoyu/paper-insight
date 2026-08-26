@@ -1519,7 +1519,7 @@ READING_LIST_TRACE_DIR
 - maxSelectedCount 前端范围 3–20。
 - 不设置 Job 总超时。
 - 每次 fetch/LLM 调用仍有单次超时。
-- GLM-5.2 的受约束 JSON Agent 调用必须关闭 Thinking，避免推理 token 挤占结构化输出；该设置不影响 Trace 对输入、产物、校验和决策的记录。
+- GLM-5.3 的受约束 JSON Agent 调用必须启用 Thinking，并固定 `reasoning_effort: low`，以符合模型接口约束并控制推理开销；该设置不影响 Trace 对输入、产物、校验和决策的记录。
 - Coding Plan 兼容端点可能仍返回 Thinking 内容；新版周报 Agent 使用独立输出预算，默认 65,536 token、最大 128,000，不复用推荐列表的 12,000 token 默认值。
 - 模型返回空正文或因 `max_tokens`/`length` 停止而只返回不完整 JSON 时，按可重试调用失败处理，不得计入内容修正次数，也不得据此排除论文。
 - 新版 QA 强制，不提供 warn/off 发布配置。

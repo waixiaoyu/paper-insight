@@ -237,12 +237,12 @@ const storageKeys = {
 };
 
 const llmProviders = {
-  "glm-coding-anthropic": {
-    label: "GLM-5.2 (Anthropic)",
-    defaultModel: "glm-5.2",
-    keyPlaceholder: "请输入 BigModel API Key",
+  "glm-coding-openai": {
+    label: "GLM-5.3 (OpenAI 兼容接口)",
+    defaultModel: "glm-5.3",
+    keyPlaceholder: "请输入 Z.ai API Key",
     models: [
-      "glm-5.2"
+      "glm-5.3"
     ]
   }
 };
@@ -250,11 +250,11 @@ const llmProviders = {
 const normalizeProviderKey = (provider) => {
   const key = String(provider || "").trim();
 
-  if (key === "glm" || key === "glm-coding") {
-    return "glm-coding-anthropic";
+  if (key === "glm" || key === "glm-coding" || key === "glm-coding-anthropic") {
+    return "glm-coding-openai";
   }
 
-  return llmProviders[key] ? key : "glm-coding-anthropic";
+  return llmProviders[key] ? key : "glm-coding-openai";
 };
 const providerLabel = (provider = state.runtimeProvider) => llmProviders[normalizeProviderKey(provider)].label;
 const providerDefaultModel = (provider) => llmProviders[normalizeProviderKey(provider)].defaultModel;
@@ -456,7 +456,7 @@ migrateStoredReportsForScoringRules();
 
 const savedQuery = localStorage.getItem(storageKeys.query);
 const savedQueryMode = localStorage.getItem(storageKeys.queryMode);
-const savedProvider = normalizeProviderKey(sessionStorage.getItem(storageKeys.provider) || "glm-coding-anthropic");
+const savedProvider = normalizeProviderKey(sessionStorage.getItem(storageKeys.provider) || "glm-coding-openai");
 
 const state = {
   reports: loadReports(),
@@ -1355,11 +1355,11 @@ function filteredExplorePapers() {
 }
 
 function modeLabel(mode) {
-  if (mode === "glm-coding-anthropic") {
-    return "GLM-5.2 (Anthropic)";
+  if (mode === "glm-coding-openai") {
+    return "GLM-5.3 (OpenAI 兼容接口)";
   }
 
-  return "GLM-5.2 (Anthropic)";
+  return "GLM-5.3 (OpenAI 兼容接口)";
 }
 
 function weekStart(date = new Date()) {

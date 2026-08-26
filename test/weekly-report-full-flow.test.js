@@ -76,7 +76,7 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
   const previousEnvironment = Object.fromEntries([
     "ARXIV_AUTO_SYNC",
     "ARXIV_MIN_INTERVAL_MS",
-    "GLM_CODING_ANTHROPIC_API_URL",
+    "GLM_CODING_OPENAI_API_URL",
     "LLM_API_KEY",
     "PAPER_ORIGINAL_TEXT_CACHE_DIR",
     "PAPER_ORIGINAL_TEXT_FETCH_TIMEOUT_MS",
@@ -94,7 +94,8 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
       }
 
       const envelope = JSON.parse(body);
-      const userPayload = JSON.parse(envelope.messages[0].content);
+      const userMessage = envelope.messages.find((message) => message.role === "user");
+      const userPayload = JSON.parse(userMessage.content);
       const task = userPayload.task === "weekly_report_semantic_review"
         ? "semantic-review"
         : userPayload.reviewContext
@@ -117,7 +118,10 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
 
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
-        content: [{ type: "text", text }]
+        choices: [{
+          message: { content: text },
+          finish_reason: "stop"
+        }]
       }));
     });
 
@@ -132,7 +136,7 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
     const llmAddress = llmServer.address();
     process.env.ARXIV_AUTO_SYNC = "0";
     process.env.ARXIV_MIN_INTERVAL_MS = "0";
-    process.env.GLM_CODING_ANTHROPIC_API_URL = `http://127.0.0.1:${llmAddress.port}`;
+    process.env.GLM_CODING_OPENAI_API_URL = `http://127.0.0.1:${llmAddress.port}`;
     process.env.LLM_API_KEY = "test-api-key";
     process.env.PAPER_ORIGINAL_TEXT_CACHE_DIR = cacheDir;
     process.env.PAPER_ORIGINAL_TEXT_FETCH_TIMEOUT_MS = "5000";

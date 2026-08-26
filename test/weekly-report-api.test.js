@@ -25,6 +25,7 @@ const passingSemanticReviewText = JSON.stringify({
 });
 let mockSemanticReviewText = passingSemanticReviewText;
 const mockLlmTasks = [];
+const mockLlmRequests = [];
 const validMarkdown = await readFile(
   new URL("./fixtures/weekly-report/valid-summary-report.md", import.meta.url),
   "utf8"
@@ -34,7 +35,7 @@ const fixturePapers = JSON.parse(await readFile(
   "utf8"
 ));
 const previousLlmApiKey = process.env.LLM_API_KEY;
-const previousLlmApiUrl = process.env.GLM_CODING_ANTHROPIC_API_URL;
+const previousLlmApiUrl = process.env.GLM_CODING_OPENAI_API_URL;
 const previousSemanticReviewMode = process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_MODE;
 const mockLlmServer = createServer(async (request, response) => {
   let body = "";
@@ -46,12 +47,18 @@ const mockLlmServer = createServer(async (request, response) => {
   const isSemanticReview = body.includes("weekly_report_semantic_review");
   mockLlmCallCount += 1;
   mockLlmTasks.push(isSemanticReview ? "semantic-review" : "generation");
+  mockLlmRequests.push({
+    path: request.url,
+    payload: JSON.parse(body)
+  });
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify({
-    content: [
+    choices: [
       {
-        type: "text",
-        text: isSemanticReview ? mockSemanticReviewText : mockGenerationText
+        message: {
+          content: isSemanticReview ? mockSemanticReviewText : mockGenerationText
+        },
+        finish_reason: "stop"
       }
     ]
   }));
@@ -94,7 +101,7 @@ before(async () => {
     });
   });
   process.env.LLM_API_KEY = "test-api-key";
-  process.env.GLM_CODING_ANTHROPIC_API_URL = mockLlmUrl;
+  process.env.GLM_CODING_OPENAI_API_URL = mockLlmUrl;
   process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_MODE = "off";
 
   await new Promise((resolve, reject) => {
@@ -123,9 +130,9 @@ after(async () => {
   }
 
   if (previousLlmApiUrl === undefined) {
-    delete process.env.GLM_CODING_ANTHROPIC_API_URL;
+    delete process.env.GLM_CODING_OPENAI_API_URL;
   } else {
-    process.env.GLM_CODING_ANTHROPIC_API_URL = previousLlmApiUrl;
+    process.env.GLM_CODING_OPENAI_API_URL = previousLlmApiUrl;
   }
 
   if (previousSemanticReviewMode === undefined) {
@@ -146,6 +153,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /id="weeklyReportTraceReconnect"/);
   assert.match(html, /id="weeklyReportTraceRawList"/);
   assert.match(html, /id="weeklyReportManualReview"/);
+  assert.match(html, /GLM-5\.3 \(OpenAI 兼容接口\)/);
   assert.match(html, /data-manual-review-action="continue_repair"/);
   assert.match(html, /data-manual-review-action="retry_job"/);
   assert.match(html, /data-manual-review-action="exit_task"/);
@@ -293,6 +301,37 @@ test("周报 API 在模拟 LLM 返回合格正文时通过质量门并返回发�
   assert.equal(payload.publishValidation.metrics.matchedPaperCount, 2);
   assert.match(payload.markdown, /^---/);
   assert.match(payload.markdown, /## 完整论文清单/);
+});
+
+test("GLM-5.3 默认通过 OpenAI 兼容接口发送低强度推理请求", async () => {
+  mockGenerationText = validMarkdown;
+  const requestsBeforeCall = mockLlmRequests.length;
+  const response = await fetch(`${baseUrl}/api/reading-list`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      date: "2026-07-29",
+      month: "2026-07",
+      weekOfMonth: 5,
+      weekStart: "2026-07-26T16:00:00.000Z",
+      weekEnd: "2026-08-02T16:00:00.000Z",
+      useOriginalText: false,
+      reviewBeforeGenerate: false,
+      papers: fixturePapers
+    })
+  });
+  const payload = await response.json();
+
+  assert.equal(response.status, 200, payload.detail || payload.message);
+  const request = mockLlmRequests.at(requestsBeforeCall);
+  assert.equal(request.path, "/");
+  assert.equal(request.payload.model, "glm-5.3");
+  assert.deepEqual(request.payload.thinking, { type: "enabled" });
+  assert.equal(request.payload.reasoning_effort, "low");
+  assert.equal(request.payload.messages[0].role, "system");
+  assert.equal(request.payload.system, undefined);
 });
 
 test("warn 模式下 LLM 语义评审 pass，结果标记为可直接发布", async () => {

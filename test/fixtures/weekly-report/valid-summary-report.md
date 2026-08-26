@@ -109,4 +109,4 @@ paper_count: 2
 | Guardrail Verification for Autonomous Network Agents | 为自治网络智能体提供动作前护栏验证流程 | 本周必读 | https://arxiv.org/abs/2607.11111 |
 | Digital Twin Evaluation for Closed-Loop Network Control | 使用数字孪生评估闭环控制策略 | 快速扫读 | https://arxiv.org/abs/2607.22222 |
 
-本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.2
+本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.3

@@ -14,7 +14,7 @@ test("weekly-report output token configuration uses a finite bounded integer", (
   assert.equal(normalizeWeeklyReportAgentMaxOutputTokens("70000.9"), 70000);
 });
 
-test("weekly-report Anthropic requests disable GLM thinking for structured JSON output", async () => {
+test("weekly-report GLM-5.3 requests use low-effort reasoning with the OpenAI message shape", async () => {
   const nativeFetch = globalThis.fetch;
   let requestPayload = null;
 
@@ -22,9 +22,11 @@ test("weekly-report Anthropic requests disable GLM thinking for structured JSON 
     globalThis.fetch = async (_input, init = {}) => {
       requestPayload = JSON.parse(init.body);
       return new Response(JSON.stringify({
-        content: [{ type: "text", text: "{\"status\":\"ok\"}" }],
-        stop_reason: "end_turn",
-        usage: { input_tokens: 100, output_tokens: 20 }
+        choices: [{
+          message: { content: "{\"status\":\"ok\"}" },
+          finish_reason: "stop"
+        }],
+        usage: { prompt_tokens: 100, completion_tokens: 20 }
       }), {
         status: 200,
         headers: { "content-type": "application/json" }
@@ -35,36 +37,36 @@ test("weekly-report Anthropic requests disable GLM thinking for structured JSON 
       role: "evidence_agent",
       llm: {
         apiKey: "test-key",
-        endpoint: "https://example.test/api/anthropic/v1/messages",
-        model: "glm-5.2"
+        endpoint: "https://example.test/api/paas/v4/chat/completions",
+        model: "glm-5.3"
       }
     });
 
     assert.equal(output, "{\"status\":\"ok\"}");
-    assert.deepEqual(requestPayload.thinking, { type: "disabled" });
+    assert.deepEqual(requestPayload.thinking, { type: "enabled" });
+    assert.equal(requestPayload.reasoning_effort, "low");
+    assert.equal(requestPayload.messages[0].role, "system");
+    assert.equal(requestPayload.system, undefined);
     assert.equal(requestPayload.max_tokens, 65536);
   } finally {
     globalThis.fetch = nativeFetch;
   }
 });
 
-test("weekly-report model rejects empty or max-token Anthropic responses as retryable transport failures", async () => {
+test("weekly-report model rejects empty or max-token OpenAI responses as retryable transport failures", async () => {
   const nativeFetch = globalThis.fetch;
 
   try {
     for (const responsePayload of [
       {
-        content: [],
-        stop_reason: "end_turn",
-        usage: { input_tokens: 100, output_tokens: 0 }
+        choices: [{ message: { content: "" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 100, completion_tokens: 0 }
       },
       {
-        content: [{ type: "text", text: "{\"evidenceCard\":" }],
-        stop_reason: "max_tokens",
-        usage: { input_tokens: 100, output_tokens: 12000 }
+        choices: [{ message: { content: "{\"evidenceCard\":" }, finish_reason: "length" }],
+        usage: { prompt_tokens: 100, completion_tokens: 12000 }
       },
       {
-        content: [{ type: "text", text: "{\"evidenceCard\":" }],
         choices: [{
           finish_reason: "length",
           message: { content: "{\"evidenceCard\":" }
@@ -82,8 +84,8 @@ test("weekly-report model rejects empty or max-token Anthropic responses as retr
           role: "evidence_agent",
           llm: {
             apiKey: "test-key",
-            endpoint: "https://example.test/api/anthropic/v1/messages",
-            model: "glm-5.2"
+            endpoint: "https://example.test/api/paas/v4/chat/completions",
+            model: "glm-5.3"
           }
         }),
         (error) => (
@@ -110,8 +112,8 @@ test("weekly-report model classifies a fetch failure as a retryable call error",
         role: "evidence_agent",
         llm: {
           apiKey: "test-key",
-          endpoint: "https://example.test/api/anthropic/v1/messages",
-          model: "glm-5.2"
+          endpoint: "https://example.test/api/paas/v4/chat/completions",
+          model: "glm-5.3"
         }
       }),
       (error) => (
@@ -141,8 +143,8 @@ test("weekly-report model does not misclassify response parsing TypeErrors as ne
         role: "evidence_agent",
         llm: {
           apiKey: "test-key",
-          endpoint: "https://example.test/api/anthropic/v1/messages",
-          model: "glm-5.2"
+          endpoint: "https://example.test/api/paas/v4/chat/completions",
+          model: "glm-5.3"
         }
       }),
       (error) => (

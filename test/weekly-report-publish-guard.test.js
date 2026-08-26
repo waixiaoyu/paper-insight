@@ -7,7 +7,7 @@ import { assertWeeklyReportPublishable, validateWeeklyReportMarkdown } from "../
 const fixtureUrl = (name) => new URL(`./fixtures/weekly-report/${name}`, import.meta.url);
 const papers = JSON.parse(await readFile(fixtureUrl("papers.json"), "utf8"));
 const markdown = await readFile(fixtureUrl("valid-summary-report.md"), "utf8");
-const footerNote = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.2";
+const footerNote = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.3";
 const report = { date: "2026-07-29", month: "2026-07", weekOfMonth: 5 };
 
 const validate = (nextMarkdown, overrides = {}) => validateWeeklyReportMarkdown({

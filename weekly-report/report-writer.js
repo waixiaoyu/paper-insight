@@ -1001,7 +1001,7 @@ export const writePaperSectionsBatch = async (items, {
   };
 };
 
-export const READING_LIST_FOOTER_NOTE = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.2";
+export const READING_LIST_FOOTER_NOTE = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.3";
 
 const READING_TIER_PRESENTATION = {
   must_read: { section: "本周必读", label: "本周必读" },
