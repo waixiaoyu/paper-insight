@@ -5,6 +5,8 @@ import {
   candidateExpansionNotice,
   expandCandidateBatches
 } from "./candidate-expansion.js";
+import { formatDurationMs, formatElapsedSeconds } from "./duration-format.js";
+import { recommendationRetryAction } from "./recommendation-retry-policy.js";
 import {
   weeklyReportArtifactSummary,
   weeklyReportDisconnectedJob,
@@ -497,6 +499,7 @@ const state = {
   readingListLiveStatus: null,
   readingListSourceExpanded: false,
   progressState: null,
+  recommendationRetryOperation: null,
   taskLocked: false,
   taskCloseTimer: 0
 };
@@ -1385,20 +1388,7 @@ function paperPublicationTime(paper) {
 }
 
 function weeklyReportPapers(report = state.currentReport) {
-  const { start, end } = reportWeekRange(report);
-  const startTime = start.getTime();
-  const endTime = end.getTime();
-
-  return reportPapers(report).filter((paper) => {
-    const timestamp = paperPublicationTime(paper);
-    return timestamp !== null && timestamp >= startTime && timestamp < endTime;
-  });
-}
-
-function reportWeekLabel(report = state.currentReport) {
-  const { start, end } = reportWeekRange(report);
-  const inclusiveEnd = new Date(end.getTime() - 1);
-  return `${formatDate(start)}—${formatDate(inclusiveEnd)}`;
+  return reportPapers(report);
 }
 
 function isoDate(value = new Date()) {
@@ -1561,6 +1551,12 @@ function setTaskStatus(message, type = "loading", action = "") {
   elements.taskRefreshCandidates.hidden = !showRefreshCandidates;
   elements.taskForceArxiv.hidden = !showForceArxiv;
   elements.taskRetry.hidden = action !== "retry";
+}
+
+function rememberRecommendationRetry(stage, error, options = {}) {
+  const action = recommendationRetryAction({ stage, error });
+  state.recommendationRetryOperation = action ? { action, options } : null;
+  return action ? "retry" : "";
 }
 
 function showTaskPanel(panelName) {
@@ -1799,7 +1795,7 @@ function readingListGenerateProgressDetail(data) {
     ? `当前已入选 ${selected} 篇，其中 ${thresholdSelected} 篇达到入选线${fallbackSelected ? `；另有 ${fallbackSelected} 篇来自旧版低分补入规则` : ""}。`
     : "";
   const waitText = updatedAgo >= 12
-    ? `服务端最近一次有效更新在 ${updatedAgo} 秒前；当前是报告正文的长模型调用，完成前无法获得逐段写作进度。`
+    ? `服务端最近一次有效更新在 ${formatElapsedSeconds(updatedAgo)}前；当前是报告正文的长模型调用，完成前无法获得逐段写作进度。`
     : "正在生成导读、趋势判断、逐篇点评和完整清单。";
 
   return [data.message || "正在生成发布版周报正文。", selectedText, waitText].filter(Boolean).join(" ");
@@ -1814,14 +1810,14 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
 
   const elapsed = secondsSince(state.readingListStartedAt);
   const updatedAgo = readingListStatusUpdatedAgo(data);
-  const updateMeta = updatedAgo ? ` · 服务端更新 ${updatedAgo} 秒前` : "";
+  const updateMeta = updatedAgo ? ` · 服务端更新 ${formatElapsedSeconds(updatedAgo)}前` : "";
   const stage = data.stage || "";
   const activePaperCount = stage === "review"
     ? data.reviewSummary?.total || data.originalTextSummary?.available || paperCount || 0
     : stage === "generate"
       ? data.reviewSummary?.selectedCount || data.reviewSummary?.candidateCount || paperCount || 0
       : paperCount || data.originalTextSummary?.total || 0;
-  const meta = `已等待 ${elapsed} 秒 · ${activePaperCount} 篇 · ${provider || providerLabel()}${updateMeta}`;
+  const meta = `已等待 ${formatElapsedSeconds(elapsed)} · ${activePaperCount} 篇 · ${provider || providerLabel()}${updateMeta}`;
 
   if (stage === "original-text") {
     setReadingListProgress("loading", "抓取论文原文", data.message || "正在抓取论文原文。", {
@@ -1830,7 +1826,7 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
     });
     elements.readingListStatus.textContent = data.currentTitle
       ? `正在抓取：${data.currentTitle}`
-      : `${data.message || "正在抓取论文原文。"} 已等待 ${elapsed} 秒。`;
+      : `${data.message || "正在抓取论文原文。"} 已等待 ${formatElapsedSeconds(elapsed)}。`;
     return true;
   }
 
@@ -1840,7 +1836,7 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
       step: "generate",
       meta
     });
-    elements.readingListStatus.textContent = `${detail} 已等待 ${elapsed} 秒。`;
+    elements.readingListStatus.textContent = `${detail} 已等待 ${formatElapsedSeconds(elapsed)}。`;
     return true;
   }
 
@@ -1851,8 +1847,8 @@ function renderReadingListLiveStatus(data, { paperCount, provider } = {}) {
       meta
     });
     elements.readingListStatus.textContent = data.currentTitle
-      ? `正在复评：${data.currentTitle}。已等待 ${elapsed} 秒。`
-      : `${detail} 已等待 ${elapsed} 秒。`;
+      ? `正在复评：${data.currentTitle}。已等待 ${formatElapsedSeconds(elapsed)}。`
+      : `${detail} 已等待 ${formatElapsedSeconds(elapsed)}。`;
     return true;
   }
 
@@ -1993,9 +1989,9 @@ function refreshReadingListGenerationProgress(paperCount, provider, useOriginalT
       : "模型生成中";
   setReadingListProgress("loading", title, focus.detail, {
     step: focus.step || "generate",
-    meta: `已等待 ${elapsed} 秒 · ${paperCount} 篇 · ${provider}`
+    meta: `已等待 ${formatElapsedSeconds(elapsed)} · ${paperCount} 篇 · ${provider}`
   });
-  elements.readingListStatus.textContent = `${focus.status} 已等待 ${elapsed} 秒。`;
+  elements.readingListStatus.textContent = `${focus.status} 已等待 ${formatElapsedSeconds(elapsed)}。`;
 }
 
 function resetTaskModal() {
@@ -2111,16 +2107,6 @@ function syncHistoryTriggerLabel(trigger) {
   };
 
   return labels[trigger] || trigger || "未知来源";
-}
-
-function formatDurationMs(value) {
-  const ms = Math.max(0, Number(value) || 0);
-
-  if (ms < 1000) {
-    return `${ms} ms`;
-  }
-
-  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} 秒`;
 }
 
 function renderSyncHistory(records = []) {
@@ -2689,9 +2675,7 @@ function weeklyReportTraceTime(value) {
 function weeklyReportTraceDuration(value) {
   const milliseconds = Number(value);
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "";
-  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
-  if (milliseconds < 60000) return `${(milliseconds / 1000).toFixed(1)} 秒`;
-  return `${Math.floor(milliseconds / 60000)} 分 ${Math.round((milliseconds % 60000) / 1000)} 秒`;
+  return formatDurationMs(milliseconds);
 }
 
 function weeklyReportTraceStageLabel(stage) {
@@ -3113,10 +3097,8 @@ function updateReadingListReviewPreview(report = state.currentReadingListReport 
   const maxSelected = readingListMaxSelectedCount();
   const minSelected = Math.min(readingListMinSelectedCount(), maxSelected);
   const total = reportPapers(report).length;
-  const weeklyCount = weeklyReportPapers(report).length;
-  const excludedCrossWeekCount = Math.max(0, total - weeklyCount);
   const candidateCount = readingListCandidatePapers(report).length;
-  const visibleWeeklyCount = weeklyReportPapers(report).filter((paper) => isRecommendedPaper(paper, report)).length;
+  const visibleRecommendedCount = weeklyReportPapers(report).filter((paper) => isRecommendedPaper(paper, report)).length;
 
   if (elements.readingListCandidateFloorValue) {
     elements.readingListCandidateFloorValue.textContent = String(floor);
@@ -3131,10 +3113,8 @@ function updateReadingListReviewPreview(report = state.currentReadingListReport 
   }
 
   if (elements.readingListReviewPreview) {
-    const effectiveMin = visibleWeeklyCount ? Math.min(minSelected, visibleWeeklyCount) : 0;
-    const scopeText = excludedCrossWeekCount
-      ? `原列表 ${total} 篇中有 ${weeklyCount} 篇属于 ${reportWeekLabel(report)}，已排除 ${excludedCrossWeekCount} 篇跨周论文`
-      : `原列表 ${total} 篇均属于 ${reportWeekLabel(report)}`;
+    const effectiveMin = visibleRecommendedCount ? Math.min(minSelected, visibleRecommendedCount) : 0;
+    const scopeText = `当前推荐列表共 ${total} 篇，周报会使用其中所有未隐藏的推荐论文，不按发表时间排除`;
     elements.readingListReviewPreview.textContent = `${scopeText}；按候选下限 ${floor} 分取 ${candidateCount} 篇进入主池，其余可见推荐作为增补池。若达到 ${threshold} 分的论文不足 ${minSelected} 篇，将继续评审增补候选；候选耗尽后按实际达标数量发布，最终不超过 ${maxSelected} 篇。`;
   }
 }
@@ -3165,21 +3145,14 @@ function setReadingListUseOriginalText(useOriginalText = true) {
 
 function readingListGeneratedStatus(readingList, paperCount) {
   const count = readingList?.paperCount || paperCount;
-  const excludedText = readingList?.excludedCrossWeekCount
-    ? `，已排除 ${readingList.excludedCrossWeekCount} 篇跨周论文`
-    : "";
 
   if (!readingList) {
     return `准备从当前列表选择论文子集，全文复评后生成 Markdown。`;
   }
 
-  if (readingList.markdown && (!readingList.weekStart || !readingList.weekEnd)) {
-    return "这份周报生成于自然周过滤启用前，可能包含跨周论文，请点击“按自然周重新生成”。";
-  }
-
   const reviewedText = readingList.reviewedPaperCount
-    ? `${excludedText}，复评 ${readingList.reviewedPaperCount} 篇、入选 ${count} 篇${readingList.fallbackSelectedCount ? `；旧版本曾低分补入 ${readingList.fallbackSelectedCount} 篇` : ""}`
-    : `${excludedText}，入选 ${count} 篇`;
+    ? `，复评 ${readingList.reviewedPaperCount} 篇、入选 ${count} 篇${readingList.fallbackSelectedCount ? `；旧版本曾低分补入 ${readingList.fallbackSelectedCount} 篇` : ""}`
+    : `，入选 ${count} 篇`;
   const semanticText = readingList.semanticReview?.status === "completed"
     ? readingList.semanticReview.requiresManualReview
       ? "，LLM 语义评审建议人工复核"
@@ -3265,31 +3238,21 @@ function openReadingListDialog(report = state.currentReport) {
   const candidateCount = readingListCandidatePapers(report).length;
   const paperCount = report.readingList?.paperCount || candidateCount;
   const generatedStatus = readingListGeneratedStatus(report.readingList, paperCount);
-  const needsNaturalWeekRegeneration = Boolean(
-    report.readingList?.markdown
-    && (!report.readingList.weekStart || !report.readingList.weekEnd)
-  );
   elements.readingListStatus.textContent = report.readingList?.generatedAt
     ? generatedStatus
     : "先确认周报候选范围和入选阈值，再开始全文复评与生成。";
-  elements.readingListRegenerate.textContent = needsNaturalWeekRegeneration
-    ? "按自然周重新生成"
-    : report.readingList?.markdown
-      ? "重新生成"
-      : "开始生成周报";
+  elements.readingListRegenerate.textContent = report.readingList?.markdown
+    ? "重新生成"
+    : "开始生成周报";
   setReadingListProgress(
-    needsNaturalWeekRegeneration ? "idle" : report.readingList?.markdown ? "ready" : "idle",
-    needsNaturalWeekRegeneration ? "需要重新生成" : report.readingList?.markdown ? "已生成" : "等待生成",
-    needsNaturalWeekRegeneration
-      ? "旧版结果没有自然周范围记录；重新生成后会排除上一周及其他跨周论文。"
-      : report.readingList?.markdown
-        ? "可以复制 Markdown，或点击“重新生成”刷新内容。"
-        : "确认候选和阈值后，点击“开始生成周报”。",
+    report.readingList?.markdown ? "ready" : "idle",
+    report.readingList?.markdown ? "已生成" : "等待生成",
+    report.readingList?.markdown
+      ? "可以复制 Markdown，或点击“重新生成”刷新内容。"
+      : "确认候选和阈值后，点击“开始生成周报”。",
     {
-      step: needsNaturalWeekRegeneration ? "" : report.readingList?.markdown ? "save" : "",
-      meta: needsNaturalWeekRegeneration
-        ? "旧版周报 · 待更新"
-        : report.readingList?.markdown
+      step: report.readingList?.markdown ? "save" : "",
+      meta: report.readingList?.markdown
         ? `${report.readingList.paperCount || paperCount} 篇 · 已保存`
         : "未开始"
     }
@@ -3393,7 +3356,7 @@ function renderWeeklyReportJobProgress(job, { connectionInterrupted = false } = 
         : `任务已拒绝发布：${job?.error?.detail || job?.error?.message || job?.result?.reason || "未通过质量门"}`,
     {
       step: job?.state === "publish" ? "save" : step,
-      meta: `${weeklyReportJobElapsed(job)} 秒 · ${label} · ${waitingForAdmin ? "等待决策" : job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`
+      meta: `${formatElapsedSeconds(weeklyReportJobElapsed(job))} · ${label} · ${waitingForAdmin ? "等待决策" : job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`
     }
   );
 }
@@ -3548,7 +3511,7 @@ async function finishWeeklyReportJob(job, report, settings = {}) {
   elements.readingListStatus.textContent = `Agent Loop 已通过全部质量门，发布稿包含 ${updatedReport.readingList.paperCount} 篇论文，约 ${updatedReport.readingList.markdown.length} 字符。`;
   setReadingListProgress("ready", "质量门通过，允许发布", "最终稿已保存。管理员可查看本任务的 Agent Loop 过程，或复制 Markdown 发布。", {
     step: "save",
-    meta: `${weeklyReportJobElapsed(finalJob)} 秒 · ${updatedReport.readingList.paperCount} 篇 · 发布`
+    meta: `${formatElapsedSeconds(weeklyReportJobElapsed(finalJob))} · ${updatedReport.readingList.paperCount} 篇 · 发布`
   });
   adjustReadingListOutputHeight();
   elements.generateReadingList.textContent = "查看发布版周报";
@@ -3567,12 +3530,12 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
   const weeklyPapers = weeklyReportPapers(report);
   const papers = readingListCandidatePapers(report);
   const sourceCandidateCount = reportPapers(report).length;
-  const excludedCrossWeekCount = Math.max(0, sourceCandidateCount - weeklyPapers.length);
+  const excludedCrossWeekCount = 0;
 
   if (!papers.length) {
     const message = weeklyPapers.length
-      ? "本周论文均低于复评候选下限，请调低候选下限后再生成。"
-      : `当前列表没有发表于 ${reportWeekLabel(report)} 的论文，无法生成该周周报。`;
+      ? "当前推荐论文均低于复评候选下限，请调低候选下限后再生成。"
+      : "当前推荐列表没有论文，无法生成周报。";
     showStatus(message, "warning");
     return;
   }
@@ -3657,7 +3620,7 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
     resetReadingListTimer();
     setReadingListProgress("loading", "接收模型结果", "模型已经返回响应，正在解析生成的 Markdown 内容。", {
       step: "receive",
-      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${papers.length} 篇 · ${provider}`
+      meta: `${formatElapsedSeconds(secondsSince(state.readingListStartedAt))} · ${papers.length} 篇 · ${provider}`
     });
     const data = await response.json();
 
@@ -3667,7 +3630,7 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
 
     setReadingListProgress("loading", "保存生成结果", "正在保存到当前推荐列表，并准备 Markdown 预览。", {
       step: "save",
-      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${data.paperCount || papers.length} 篇 · 保存中`
+      meta: `${formatElapsedSeconds(secondsSince(state.readingListStartedAt))} · ${data.paperCount || papers.length} 篇 · 保存中`
     });
     await waitForReadingListStep(180);
 
@@ -3713,10 +3676,7 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
     const reviewSkippedText = updatedReport.readingList.reviewSkippedCount
       ? `，${updatedReport.readingList.reviewSkippedCount} 篇复评未返回结果已跳过`
       : "";
-    const crossWeekText = updatedReport.readingList.excludedCrossWeekCount
-      ? `，已排除 ${updatedReport.readingList.excludedCrossWeekCount} 篇跨周论文`
-      : "";
-    const reviewMeta = `${crossWeekText}，全文/摘要复评 ${updatedReport.readingList.reviewedPaperCount || papers.length} 篇、入选 ${updatedReport.readingList.paperCount} 篇${fallbackText}${reviewSkippedText}`;
+    const reviewMeta = `全文/摘要复评 ${updatedReport.readingList.reviewedPaperCount || papers.length} 篇、入选 ${updatedReport.readingList.paperCount} 篇${fallbackText}${reviewSkippedText}`;
     const originalTextSkippedCount = updatedReport.readingList.originalTextUnavailableCount || 0;
     const originalTextMeta = !updatedReport.readingList.useOriginalText
       ? "，未启用论文原文抓取"
@@ -3735,7 +3695,7 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
     elements.readingListStatus.textContent = `已生成 ${updatedReport.readingList.paperCount} 篇论文的发布版 Markdown${reviewMeta}${originalTextMeta}${semanticMeta}，约 ${charCount} 字符。`;
     setReadingListProgress("ready", updatedReport.readingList.requiresManualReview ? "生成完成 · 需人工复核" : "生成完成", `已保存到当前列表的周报结果${reviewMeta}${originalTextMeta}${semanticMeta}。可以复制 Markdown 到洞察网站，或点击“重新生成”。`, {
       step: "save",
-      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${updatedReport.readingList.paperCount} 篇 · ${updatedReport.readingList.requiresManualReview ? "待复核" : "完成"}`
+      meta: `${formatElapsedSeconds(secondsSince(state.readingListStartedAt))} · ${updatedReport.readingList.paperCount} 篇 · ${updatedReport.readingList.requiresManualReview ? "待复核" : "完成"}`
     });
     adjustReadingListOutputHeight();
     elements.generateReadingList.textContent = "查看发布版周报";
@@ -3754,7 +3714,7 @@ async function generateReadingListForReportLegacy(report = state.currentReport, 
     const preservedText = previousReadingList ? "上一份有效周报已保留。" : "";
     elements.readingListStatus.textContent = `生成失败：${error.message}${preservedText}`;
     setReadingListProgress("failed", "生成失败", error.message, {
-      meta: `${secondsSince(state.readingListStartedAt)} 秒 · ${papers.length} 篇 · 失败${previousReadingList ? " · 已保留旧版本" : ""}`
+      meta: `${formatElapsedSeconds(secondsSince(state.readingListStartedAt))} · ${papers.length} 篇 · 失败${previousReadingList ? " · 已保留旧版本" : ""}`
     });
     showStatus(`阅读清单生成失败：${error.message}${preservedText}`, "error");
   } finally {
@@ -3778,18 +3738,18 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     return;
   }
 
-  const weeklyPapers = weeklyReportPapers(report);
-  const visibleWeeklyPapers = weeklyPapers.filter((paper) => isRecommendedPaper(paper, report));
+  const reportCandidates = weeklyReportPapers(report);
+  const visibleRecommendedPapers = reportCandidates.filter((paper) => isRecommendedPaper(paper, report));
   const primaryPapers = readingListCandidatePapers(report);
   const primaryIds = new Set(primaryPapers.map((paper) => paper.id));
-  const reservePapers = visibleWeeklyPapers.filter((paper) => !primaryIds.has(paper.id));
+  const reservePapers = visibleRecommendedPapers.filter((paper) => !primaryIds.has(paper.id));
   const sourceCandidateCount = reportPapers(report).length;
-  const excludedCrossWeekCount = Math.max(0, sourceCandidateCount - weeklyPapers.length);
+  const excludedCrossWeekCount = 0;
 
-  if (!visibleWeeklyPapers.length) {
-    const message = weeklyPapers.length
-      ? "本周没有可见推荐论文；隐藏论文不会进入周报 Agent Loop。"
-      : `当前列表没有发表于 ${reportWeekLabel(report)} 的论文，无法生成该周周报。`;
+  if (!visibleRecommendedPapers.length) {
+    const message = reportCandidates.length
+      ? "当前列表没有可见推荐论文；隐藏论文不会进入周报 Agent Loop。"
+      : "当前推荐列表没有论文，无法生成周报。";
     showStatus(message, "warning");
     return;
   }
@@ -3812,7 +3772,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
   elements.readingListStatus.textContent = `准备启动后台 Agent Loop：主池 ${primaryPapers.length} 篇，增补池 ${reservePapers.length} 篇。`;
   setReadingListProgress("loading", "整理周报候选", `主池 ${primaryPapers.length} 篇；若全文门或复评后数量不足，将从 ${reservePapers.length} 篇可见推荐论文中增补。隐藏论文不会进入任务。`, {
     step: "collect",
-    meta: `0 秒 · ${visibleWeeklyPapers.length} 篇 · ${provider}`
+    meta: `0 秒 · ${visibleRecommendedPapers.length} 篇 · ${provider}`
   });
   setReadingListBusy(true);
   state.readingListStartedAt = performance.now();
@@ -3864,7 +3824,7 @@ async function generateReadingListForReport(report = state.currentReport, { forc
     const preservedText = previousReadingList ? "上一份已发布周报已保留。" : "";
     elements.readingListStatus.textContent = `拒绝发布：${error.message}${preservedText}`;
     setReadingListProgress("failed", "质量门拒绝发布", error.message, {
-      meta: `${secondsSince(state.readingListStartedAt)} 秒 · 拒绝${previousReadingList ? " · 已保留旧版本" : ""}`
+      meta: `${formatElapsedSeconds(secondsSince(state.readingListStartedAt))} · 拒绝${previousReadingList ? " · 已保留旧版本" : ""}`
     });
     showStatus(`周报未发布：${error.message}${preservedText}`, "error");
     if (error.weeklyReportTerminal && state.readingListJobId) {
@@ -3946,7 +3906,7 @@ async function restoreActiveWeeklyReportJob() {
       terminalHandled = Boolean(error.weeklyReportTerminal);
       elements.readingListStatus.textContent = `后台任务拒绝发布：${error.message}`;
       setReadingListProgress("failed", "质量门拒绝发布", error.message, {
-        meta: `${weeklyReportJobElapsed(job)} 秒 · 拒绝`
+        meta: `${formatElapsedSeconds(weeklyReportJobElapsed(job))} · 拒绝`
       });
       showStatus(`后台周报任务未发布：${error.message}`, "error");
     } finally {
@@ -4163,7 +4123,10 @@ async function loadCandidateBatch(search, { start = 0, requestId = "" } = {}) {
       const returnText = sourceReturnsSummary(payload.sourceReturns);
       const baseMessage = payload.detail || payload.message || "论文数据源请求失败。";
       const returnHint = returnText && !baseMessage.includes("Body=") ? ` 返回值：${returnText}` : "";
-      throw new Error(`${baseMessage}${returnHint}${retryHint}`);
+      const error = new Error(`${baseMessage}${returnHint}${retryHint}`);
+      error.code = payload.error || "CANDIDATE_SOURCE_FAILED";
+      error.status = response.status;
+      throw error;
     }
 
     const cacheStatus = response.headers.get("x-paper-insight-arxiv-cache") || "";
@@ -4204,6 +4167,7 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
   state.candidateSearch = null;
   state.lastAnalyzePapers = [];
   state.analysisSession = null;
+  state.recommendationRetryOperation = null;
   state.currentThreshold = Number(elements.thresholdInput.value || 70);
   state.currentMinRecommended = minRecommendedValue();
   resetTaskModal();
@@ -4293,7 +4257,11 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
     const message = error.name === "AbortError"
       ? "请求超过等待时间。可能是 arXiv API 或远端网络暂时无响应，请稍后再试。"
       : error.message;
-    setTaskStatus(`暂时无法获取候选论文：${message}`, "error", "force-arxiv");
+    setTaskStatus(
+      `暂时无法获取候选论文：${message}`,
+      "error",
+      rememberRecommendationRetry("candidate-fetch", error, { forceRefresh, forceArxiv })
+    );
   }
 }
 
@@ -4307,7 +4275,7 @@ function updateProgress(progress) {
   elements.progressCurrent.textContent = paper
     ? `${phase === "done" ? "已完成" : "正在分析"}第 ${Math.min(displayIndex, total)}/${total} 篇：${paper.title}`
     : "正在准备分析任务。";
-  elements.progressElapsed.textContent = `总耗时 ${secondsSince(startedAt)} 秒，本篇耗时 ${secondsSince(paperStartedAt || startedAt)} 秒。`;
+  elements.progressElapsed.textContent = `总耗时 ${formatElapsedSeconds(secondsSince(startedAt))}，本篇耗时 ${formatElapsedSeconds(secondsSince(paperStartedAt || startedAt))}。`;
 }
 
 function showProgressView(total, reusedCount = 0, analyzeCount = total) {
@@ -4329,7 +4297,7 @@ function showProgressView(total, reusedCount = 0, analyzeCount = total) {
     : `已确认 ${total} 篇候选论文${targetText}，正在逐篇分析...`);
 }
 
-function analysisErrorFromPayload(data) {
+function analysisErrorFromPayload(data, status = 0) {
   const missing = Array.isArray(data.missingPapers) && data.missingPapers.length
     ? ` 缺失分析：${data.missingPapers.slice(0, 3).map((paper) => paper.title).join("；")}${data.missingPapers.length > 3 ? "；..." : ""}`
     : "";
@@ -4337,6 +4305,8 @@ function analysisErrorFromPayload(data) {
     ? ` 字段不完整：${data.invalidAnalyses.slice(0, 3).map((paper) => `${paper.title}(${paper.missing.join(", ")})`).join("；")}${data.invalidAnalyses.length > 3 ? "；..." : ""}`
     : "";
   const error = new Error(`${data.detail || data.message || "论文分析失败。"}${missing}${invalid}`);
+  error.code = data.error || "LLM_ANALYSIS_FAILED";
+  error.status = Number(status || 0);
   error.retryable = Boolean(data.retryable);
   return error;
 }
@@ -4360,7 +4330,7 @@ async function analyzeOnePaper(paper) {
   const data = await response.json();
 
   if (!response.ok) {
-    throw analysisErrorFromPayload(data);
+    throw analysisErrorFromPayload(data, response.status);
   }
 
   const analyzedPaper = data.analyzedPapers?.[0] || data.recommendations?.[0] || data.hiddenPapers?.[0];
@@ -5273,7 +5243,11 @@ async function confirmCandidates() {
   } catch (error) {
     resetProgressTimer();
     setTaskLocked(false);
-    setTaskStatus(`AI 分析失败：${error.message}`, "error", error.retryable ? "retry" : "");
+    setTaskStatus(
+      `AI 分析失败：${error.message}`,
+      "error",
+      rememberRecommendationRetry("analysis", error)
+    );
   }
 }
 
@@ -5586,40 +5560,49 @@ elements.taskDialog.addEventListener("cancel", (event) => {
   }
 });
 
-elements.taskRetry.addEventListener("click", async () => {
-  const retrySession = state.analysisSession;
+async function retryRecommendationOperation() {
+  const retryOperation = state.recommendationRetryOperation;
 
-  if (!retrySession && !state.lastAnalyzePapers.length) {
-    setTaskStatus("没有可重试的候选论文，请重新生成推荐列表。", "warning");
+  if (retryOperation?.action === "fetch-candidates") {
+    await fetchCandidates(retryOperation.options);
     return;
   }
 
+  const retrySession = state.analysisSession;
+  if (!retrySession && !state.lastAnalyzePapers.length) {
+    throw new Error("没有可重试的候选论文，请重新生成推荐列表。");
+  }
+
+  await analyzeConfirmedPapers(retrySession ? retrySession.papers : state.lastAnalyzePapers, retrySession);
+}
+
+elements.taskRetry.addEventListener("click", async () => {
   elements.taskRetry.hidden = true;
 
   try {
-    await analyzeConfirmedPapers(retrySession ? retrySession.papers : state.lastAnalyzePapers, retrySession);
+    await retryRecommendationOperation();
   } catch (error) {
     resetProgressTimer();
     setTaskLocked(false);
-    setTaskStatus(`重试失败：${error.message}`, "error", error.retryable ? "retry" : "");
+    setTaskStatus(
+      `重试失败：${error.message}`,
+      "error",
+      rememberRecommendationRetry("analysis", error)
+    );
   }
 });
 
 elements.retryButton.addEventListener("click", async () => {
-  const retrySession = state.analysisSession;
-
-  if (!retrySession && !state.lastAnalyzePapers.length) {
-    showStatus("没有可重试的候选论文，请重新生成推荐任务。", "warning");
-    return;
-  }
-
   elements.retryButton.hidden = true;
-
   try {
-    await analyzeConfirmedPapers(retrySession ? retrySession.papers : state.lastAnalyzePapers, retrySession);
+    await retryRecommendationOperation();
   } catch (error) {
     resetProgressTimer();
-    showStatus(`重试失败：${error.message}`, "error", error.retryable ? "retry" : "");
+    showStatus(
+      `重试失败：${error.message}`,
+      "error",
+      rememberRecommendationRetry("analysis", error)
+    );
   }
 });
 

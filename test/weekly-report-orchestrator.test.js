@@ -407,7 +407,7 @@ afterEach(async () => {
   )));
 });
 
-test("Orchestrator 按 prepare_candidate_pool → prepare_context 顺序执行并落 Trace", async () => {
+test("Orchestrator 按推荐列表范围处理跨周候选并落 Trace", async () => {
   const execution = fakeExecutionContext();
   const attempts = [];
   const input = {
@@ -436,7 +436,7 @@ test("Orchestrator 按 prepare_candidate_pool → prepare_context 顺序执行�
   });
 
   assert.deepEqual(input, originalInput);
-  assert.deepEqual(attempts, ["p-good", "p-bad", "r-good"]);
+  assert.deepEqual(attempts, ["p-good", "p-bad", "p-old", "r-good"]);
   assert.deepEqual(
     [...new Set(execution.updates.map((update) => update.stage))],
     ["prepare_candidate_pool", "prepare_context"]
@@ -444,7 +444,7 @@ test("Orchestrator 按 prepare_candidate_pool → prepare_context 顺序执行�
   assert.equal(prepared.nextStage, "extract_evidence");
   assert.deepEqual(prepared.eligiblePapers.map((paper) => paper.id), ["p-good", "r-good"]);
   assert.deepEqual(prepared.counts, {
-    primary: 2,
+    primary: 3,
     reserve: 2,
     fullTextEligible: 2,
     reviewed: 0,
@@ -454,7 +454,7 @@ test("Orchestrator 按 prepare_candidate_pool → prepare_context 顺序执行�
   });
   assert.deepEqual(execution.sections.get("candidate-pool").sourceSnapshot, input.sourceSnapshot);
   assert.equal(execution.sections.get("context-packets").eligible.length, 2);
-  assert.equal(execution.sections.get("context-packets").excluded.length, 1);
+  assert.equal(execution.sections.get("context-packets").excluded.length, 2);
   assert.equal(execution.events.some((event) => event.type === "stage_completed" && event.stage === "prepare_context"), true);
 });
 

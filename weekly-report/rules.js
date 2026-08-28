@@ -78,13 +78,8 @@ export const filterReadingListPapersByWeek = (papers, range) => (
 
 export const prepareReadingListCandidatePool = ({
   primaryPapers = [],
-  reservePapers = [],
-  range
+  reservePapers = []
 } = {}) => {
-  if (!range || !Number.isFinite(range.startTime) || !Number.isFinite(range.endTime)) {
-    throw new TypeError("A valid natural-week range is required for the weekly report candidate pool.");
-  }
-
   const seen = new Set();
   const excluded = {
     hidden: 0,
@@ -104,11 +99,6 @@ export const prepareReadingListCandidatePool = ({
 
       if (paperIsHidden(paper)) {
         excluded.hidden += 1;
-        continue;
-      }
-
-      if (!paperIsInReadingListWeek(paper, range)) {
-        excluded.crossWeek += 1;
         continue;
       }
 

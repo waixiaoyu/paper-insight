@@ -85,7 +85,7 @@ Evidence Agent 的失败必须先按性质分类，不能把模型响应格式�
 周报任务需要同时获得：
 
 - primaryCandidates：前端按候选下限选出的首批论文。
-- reserveCandidates：同一自然周、未隐藏、尚未进入首批候选的其余原推荐列表论文。
+- reserveCandidates：当前推荐列表中未隐藏、达到推荐线且尚未进入首批候选的其余论文。
 
 处理规则：
 
@@ -96,7 +96,7 @@ Evidence Agent 的失败必须先按性质分类，不能把模型响应格式�
 5. 原推荐列表耗尽后仍不足 `minSelectedCount` 时，按实际达标数量继续发布，不因只有 1–2 篇而整体拒绝，也不要求管理员确认篇数；没有任何论文达到入选阈值时才进入拒绝终局。
 6. 最终没有任何合格论文时，任务 reject。
 7. 用户已隐藏论文永远不进入首批候选或增补池。
-8. 所有候选必须属于同一自然周。
+8. 候选范围以当前推荐列表中的可见推荐论文为准，不按论文发表时间排除；周报的日期只用于标题和归档。
 
 原推荐分数和排序只允许用于首批候选选择、增补尝试顺序和管理员对照，不得进入任何周报 LLM prompt，不得直接影响周报四维分、最终分、校准、排序或正文。
 
@@ -292,7 +292,7 @@ LLM 负责：
 
 服务端负责：
 
-- 候选池、隐藏过滤、自然周过滤和增补。
+- 候选池、隐藏过滤、去重和增补。
 - 原文抓取、缓存和质量门。
 - 并发、超时、退避和重试。
 - artifact schema、字段清洗和来源匹配。
@@ -429,7 +429,7 @@ state 在运行期间可使用 running；完成后只能是 publish 或 reject�
 
 ### 6.1 请求输入
 
-前端不能只提交按候选下限筛出的论文，还要提交可用于增补的同周候选池。
+前端不能只提交按候选下限筛出的论文，还要提交当前推荐列表中可用于增补的候选池。
 
 建议请求结构：
 
@@ -453,7 +453,7 @@ sourceSnapshot 只供 Trace 对照，不进入模型输入。
 
 reservePapers：
 
-- 只包含同一自然周论文。
+- 包含当前推荐列表中未隐藏、达到推荐线且未进入主池的论文。
 - 排除 hidden。
 - 排除已在 primaryPapers 中的论文。
 - 按原推荐列表当前顺序提供。
@@ -937,7 +937,7 @@ Trace 是运维数据，不是用户周报数据。
 
 - 原推荐列表快照。
 - 候选下限。
-- 自然周范围。
+- 周报日期范围（用于标题和归档，不限制候选）。
 - hidden 状态。
 - min/max 选文数量。
 
@@ -947,7 +947,7 @@ Trace 是运维数据，不是用户周报数据。
 - reserveCandidates。
 - sourceSnapshot。
 
-服务端保证 hidden 和跨周论文不进入候选池。
+服务端保证 hidden、重复和无效论文不进入候选池；候选不因发表时间被排除。
 
 ### 9.2 prepare_context
 
@@ -1617,7 +1617,7 @@ weekly-report/
 - trace-store.js：脱敏 Trace、保留和清理。
 - schema.js：所有 artifact 归一化和验证。
 - prompts.js：纯 prompt 构造。
-- rules.js：自然周、候选池、selection、min/max。
+- rules.js：候选池、去重、selection、min/max。
 - publish-guard.js：确定性整稿质量门。
 - semantic-review.js：逐篇与报告级语义检查规范化。
 
@@ -1663,7 +1663,7 @@ runStep 统一负责：
 - 固定提示“仅有效原文论文进入周报，不足时自动从原推荐列表增补”。
 - 保留候选下限、入选阈值和 minSelectedCount。
 - 新增 maxSelectedCount。
-- 展示同周候选、隐藏排除、原文成功、原文不足、增补和最终入选数量。
+- 展示推荐列表候选、隐藏排除、原文成功、原文不足、增补和最终入选数量。
 - 创建异步 Job 后立即切换到后台进度。
 - 页面关闭不取消任务。
 
@@ -1708,7 +1708,7 @@ runStep 统一负责：
 
 覆盖：
 
-- hidden 和跨周候选过滤。
+- hidden、重复和无效候选过滤，以及跨周候选保留。
 - primary/reserve 去重。
 - 增补顺序。
 - maxSelectedCount。
@@ -1826,7 +1826,7 @@ Mock arXiv 和 Mock LLM 走完：
 ### 阶段 2：候选池、原文质量门和增补
 
 - 前端提交 primary/reserve/sourceSnapshot。
-- hidden 和自然周过滤。
+- hidden 过滤和候选池去重。
 - 原文章节解析、高预算输入和质量门。
 - 自动增补。
 - 移除新版原文开关。
@@ -1887,7 +1887,7 @@ Mock arXiv 和 Mock LLM 走完：
 第一阶段完成后必须满足：
 
 - 原推荐列表完全不被回写。
-- hidden 和跨周论文不会进入候选或增补。
+- hidden、重复和无效论文不会进入候选或增补；跨周论文保留在当前推荐列表范围内。
 - 摘要论文不会进入发布链路。
 - 每篇发布论文通过原文质量门。
 - 每篇发布论文有 contextPacket、evidenceCard、valueSignals、reviewResult 和 calibrationResult。
@@ -1950,7 +1950,7 @@ Mock arXiv 和 Mock LLM 走完：
 权威链路为：
 
 ~~~text
-同周未隐藏候选
+当前推荐列表中的未隐藏候选
 → 有效原文与质量门
 → 带来源定位的 Evidence
 → Evidence 语义复核与四维 Review
@@ -1979,7 +1979,7 @@ Mock arXiv 和 Mock LLM 走完：
 - 全局只允许一个 running Job；创建、复用、查询、结果、Trace 和取消 API 已接通。
 - 浏览器关闭不影响后台执行。前端在本地只保存当前 `jobId/reportKey` 指针，重新打开后会先查询 active Job；若任务已经完成，再按该指针读取终态并按 `reportKey` 回挂。
 - publish 才覆盖 `report.readingList`；reject、取消和异常不覆盖上一份已发布周报。
-- 前端只提交同周可见推荐论文：候选下限以上进入 primary，其余可见推荐进入 reserve，隐藏论文不提交。
+- 前端提交当前推荐列表中的可见推荐论文：候选下限以上进入 primary，其余可见推荐进入 reserve，隐藏论文不提交；不按发表时间过滤。
 - 新版界面不再提供摘要降级或关闭全文门的开关；原文质量门由服务端强制执行。
 - `minSelectedCount` 和 `maxSelectedCount` 均可配置；`minSelectedCount` 只驱动达标候选增补，候选耗尽后按实际达标数量发布，不因只有 1–2 篇而整体拒绝，也不使用低于阈值的论文补足。
 - 周报窗口展示当前 Agent stage；独立管理员 Trace 对话框延迟加载 Timeline、模型调用记录、阶段 artifacts、耗时、修正和决策。

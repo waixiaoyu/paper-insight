@@ -154,7 +154,7 @@ test("published 无效但 updated 有效时仍可按自然周判断", () => {
   assert.deepEqual(filterReadingListPapersByWeek(papers, range).map((paper) => paper.id), ["updated-in-week"]);
 });
 
-test("候选池排除 hidden、跨周和重复论文，并保持增补原始顺序", () => {
+test("候选池保留当前推荐列表中的跨周论文，只排除 hidden 和重复论文", () => {
   const range = readingListWeekRange({
     weekStart: "2026-07-27T00:00:00.000Z",
     weekEnd: "2026-08-03T00:00:00.000Z"
@@ -174,11 +174,11 @@ test("候选池排除 hidden、跨周和重复论文，并保持增补原始顺�
 
   const result = prepareReadingListCandidatePool({ primaryPapers, reservePapers, range });
 
-  assert.deepEqual(result.primaryCandidates.map((paper) => paper.id), ["2607.00001v2"]);
-  assert.deepEqual(result.reserveCandidates.map((paper) => paper.id), ["reserve-first", "reserve-second"]);
+  assert.deepEqual(result.primaryCandidates.map((paper) => paper.id), ["2607.00001v2", "old-primary"]);
+  assert.deepEqual(result.reserveCandidates.map((paper) => paper.id), ["reserve-first", "reserve-second", "reserve-old"]);
   assert.deepEqual(result.excluded, {
     hidden: 2,
-    crossWeek: 2,
+    crossWeek: 0,
     duplicate: 1,
     invalid: 0
   });

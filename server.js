@@ -4,7 +4,6 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import {
-  filterReadingListPapersByWeek,
   readingListWeekRange,
   selectReadingListPapers
 } from "./weekly-report/rules.js";
@@ -2485,22 +2484,50 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
       delete payload.response_format;
     }
 
-    const llmResponse = await fetch(endpoint, {
-      method: "POST",
-      signal: controller.signal,
-      headers: llmHeaders(config),
-      body: JSON.stringify(payload)
-    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const llmResponse = await fetch(endpoint, {
+        method: "POST",
+        signal: controller.signal,
+        headers: llmHeaders(config),
+        body: JSON.stringify(payload)
+      });
 
-    if (!llmResponse.ok) {
-      const errorText = await llmResponse.text();
-      throw new Error(`LLM request failed with ${llmResponse.status}: ${truncate(redactSensitive(errorText), 300)}`);
+      if (!llmResponse.ok) {
+        const errorText = await llmResponse.text();
+        throw new Error(`LLM request failed with ${llmResponse.status}: ${truncate(redactSensitive(errorText), 300)}`);
+      }
+
+      const data = await llmResponse.json();
+      const content = llmTextFromResponse(data, protocol);
+      const stopReason = String(data?.stop_reason || data?.choices?.[0]?.finish_reason || "").toLowerCase();
+
+      try {
+        if (!content || ["max_tokens", "length"].includes(stopReason)) {
+          throw new SyntaxError("LLM response ended before a complete JSON object was returned.");
+        }
+
+        const parsed = extractJson(content);
+        return Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) {
+          throw error;
+        }
+
+        if (attempt === 0) {
+          continue;
+        }
+
+        const incomplete = new Error(
+          ["max_tokens", "length"].includes(stopReason)
+            ? "模型输出达到长度上限，自动重试一次后仍未返回完整分析。"
+            : "模型返回的分析内容不完整，自动重试一次后仍无法解析。"
+        );
+        incomplete.code = "LLM_ANALYSIS_RESPONSE_INCOMPLETE";
+        incomplete.retryable = true;
+        incomplete.stopReason = stopReason || "invalid_json";
+        throw incomplete;
+      }
     }
-
-    const data = await llmResponse.json();
-    const content = llmTextFromResponse(data, protocol);
-    const parsed = extractJson(content);
-    return Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
   } catch (error) {
     if (error?.name === "AbortError") {
       const timeoutSeconds = Math.round(llmRequestTimeoutMs / 1000);
@@ -2784,7 +2811,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
             instruction: [
               `请生成以「${titleBase}」开头的标题。`,
               "标题格式固定为：【精选论文】{yy}年{month}月第{weekOfMonth}周阅读清单：{一句话观点}。",
-              `本周论文范围固定为 [${report.weekStart}, ${report.weekEnd})；输入论文已经过服务端日期校验，不要把范围外论文或其他周报告内容写入正文。`,
+              "输入论文来自当前推荐列表的已选候选；只可依据输入论文和其原文证据写作，不要引入列表外论文或未提供的事实。",
               `标题冒号后必须直接写一句本周核心趋势或观点，控制在 18-32 个中文字符以内；必须绑定本周入选论文的具体主题，优先使用这些主题提示：${titleTopicHints.join("、") || "从入选论文标题和证据中提取具体主题"}。`,
               "标题不要只写“智能体赋能网络自治”“新范式”“值得关注”“重要趋势”“加速落地”“多点开花”这类每天都能套用的泛化表述。标题必须让读者看出本周具体在讨论什么问题或技术信号。",
               "输出必须包含 YAML front matter 和正文标题；YAML title 和正文一级标题必须完全一致，且都使用完整标题。",
@@ -3772,25 +3799,8 @@ const handleReadingListRequest = async (request, response) => {
     }
 
     const weekRange = readingListWeekRange(payload);
-    const papers = filterReadingListPapersByWeek(submittedPapers, weekRange);
-    const serverExcludedCrossWeekCount = submittedPapers.length - papers.length;
-    const clientExcludedCrossWeekCount = Math.min(
-      Math.max(Number(payload.excludedCrossWeekCount) || 0, 0),
-      10000
-    );
-    const excludedCrossWeekCount = clientExcludedCrossWeekCount + serverExcludedCrossWeekCount;
-
-    if (!papers.length) {
-      sendJson(response, 400, {
-        error: "NO_READING_LIST_CANDIDATES_IN_WEEK",
-        message: "No papers belong to the selected report week.",
-        detail: `候选论文均不在周报自然周范围 ${weekRange.start} 至 ${weekRange.end} 内，已阻止跨周内容进入周报。`,
-        weekStart: weekRange.start,
-        weekEnd: weekRange.end,
-        excludedCrossWeekCount
-      });
-      return;
-    }
+    const papers = submittedPapers;
+    const excludedCrossWeekCount = 0;
 
     const report = {
       title: "",
@@ -3830,8 +3840,8 @@ const handleReadingListRequest = async (request, response) => {
       requestId,
       "reading-list",
       report.useOriginalText
-        ? `自然周校验完成${excludedCrossWeekCount ? `，已排除 ${excludedCrossWeekCount} 篇跨周论文` : ""}；准备抓取论文原文，随后进行周报复评。`
-        : `自然周校验完成${excludedCrossWeekCount ? `，已排除 ${excludedCrossWeekCount} 篇跨周论文` : ""}；已关闭原文抓取，正在准备基于摘要进行周报复评。`,
+        ? "已确认当前推荐列表候选范围；准备抓取论文原文，随后进行周报复评。"
+        : "已确认当前推荐列表候选范围；已关闭原文抓取，正在准备基于摘要进行周报复评。",
       "running",
       {
         stage: report.useOriginalText ? "original-text" : "review",
@@ -4456,6 +4466,7 @@ if (isMainModule) {
 }
 
 export {
+  callLlmAnalyzer,
   callWeeklyReportAgentModel,
   normalizeWeeklyReportAgentMaxOutputTokens,
   server

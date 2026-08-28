@@ -199,10 +199,15 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(stylesheet, /\.weekly-report-trace-artifact\s*\{/);
   assert.match(source, /本步骤做什么：/);
   assert.match(source, /确认取消当前周报任务？/);
+  assert.match(
+    source,
+    /function weeklyReportPapers\(report = state\.currentReport\)\s*\{\s*return reportPapers\(report\);\s*\}/s
+  );
 });
 
-test("周报 API 在调用 LLM 前拒绝全部跨周候选", async () => {
+test("周报 API 接受当前推荐列表中的跨周候选", async () => {
   const callsBeforeRequest = mockLlmCallCount;
+  mockGenerationText = validMarkdown;
   const response = await fetch(`${baseUrl}/api/reading-list`, {
     method: "POST",
     headers: {
@@ -215,22 +220,20 @@ test("周报 API 在调用 LLM 前拒绝全部跨周候选", async () => {
       weekStart: "2026-07-26T16:00:00.000Z",
       weekEnd: "2026-08-02T16:00:00.000Z",
       useOriginalText: false,
-      papers: [
-        {
-          id: "https://arxiv.org/abs/2607.90001",
-          title: "Previous Week Paper",
-          published: "2026-07-26T15:59:59.999Z",
-          summary: "This paper belongs to the previous week."
-        }
-      ]
+      reviewBeforeGenerate: false,
+      papers: fixturePapers.map((paper) => ({
+        ...paper,
+        published: "2026-07-20T00:00:00.000Z"
+      }))
     })
   });
   const payload = await response.json();
 
-  assert.equal(response.status, 400);
-  assert.equal(payload.error, "NO_READING_LIST_CANDIDATES_IN_WEEK");
-  assert.equal(payload.excludedCrossWeekCount, 1);
-  assert.equal(mockLlmCallCount, callsBeforeRequest);
+  assert.equal(response.status, 200, payload.detail || payload.message);
+  assert.equal(payload.paperCount, 2);
+  assert.equal(payload.candidateCount, 2);
+  assert.equal(payload.excludedCrossWeekCount, 0);
+  assert.equal(mockLlmCallCount, callsBeforeRequest + 1);
 });
 
 test("周报 API 不接受 GET", async () => {
