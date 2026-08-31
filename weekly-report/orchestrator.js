@@ -1623,6 +1623,20 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     Math.trunc(Number(planned.options?.paperConcurrency) || 2),
     1
   ), 5);
+  const retryPaperId = String(planned.paperSectionRetry?.paperId || "").trim();
+  const retryAttempt = retryPaperId
+    ? Math.max(1, Math.trunc(Number(planned.paperSectionRetry?.attempt) || 1))
+    : 0;
+  const traceSuffix = retryPaperId ? `-admin-${String(retryAttempt).padStart(4, "0")}` : "";
+  const selectedItems = Array.isArray(planned.selectedItems) ? planned.selectedItems : [];
+  const preservedDrafts = Array.isArray(planned.paperDrafts) ? planned.paperDrafts : [];
+  const preservedDraftIds = new Set(preservedDrafts.map((draft) => String(draft?.paperId || "")).filter(Boolean));
+  const targetItems = retryPaperId
+    ? selectedItems.filter((item) => paperIdForStage(item) === retryPaperId)
+    : selectedItems.filter((item) => !preservedDraftIds.has(paperIdForStage(item)));
+  if (retryPaperId && targetItems.length !== 1) {
+    throw new TypeError("Paper Section administrator repair target must match one selected paper.");
+  }
   let callSequence = 0;
   await context.updateStage("write_paper_sections", {
     counts: planned.counts,
@@ -1633,15 +1647,17 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     stage: "write_paper_sections",
     scope: "job",
     concurrency,
-    queued: planned.selectedItems.length,
-    selectedPaperIds: planned.selectedItems.map(paperIdForStage)
+    queued: targetItems.length,
+    selectedPaperIds: targetItems.map(paperIdForStage),
+    adminRepair: Boolean(retryPaperId),
+    repairAttempt: retryAttempt || undefined
   });
 
   const persistCall = async (record) => {
     const sequence = callSequence;
     callSequence += 1;
     await context.writeTrace(
-      `paper-writer-call-${String(sequence).padStart(4, "0")}`,
+      `paper-writer-call${traceSuffix}-${String(sequence).padStart(4, "0")}`,
       record
     );
     await context.recordTrace({
@@ -1659,13 +1675,16 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
 
   let result;
   try {
-    result = await writePaperSectionsBatch(planned.selectedItems, {
+    result = await writePaperSectionsBatch(targetItems, {
       paperConcurrency: concurrency,
       callModel,
       signal: context.signal,
       networkRetryDelayMs,
       onCall: persistCall,
-      onEvent: (event) => context.recordTrace(event)
+      onEvent: (event) => context.recordTrace(event),
+      repairIssuesByPaperId: retryPaperId
+        ? { [retryPaperId]: planned.paperSectionRetry?.issues || [] }
+        : {}
     });
   } catch (error) {
     if (error?.name === "AbortError" || context.signal?.aborted) {
@@ -1680,24 +1699,41 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     throw error;
   }
 
+  const draftByPaperId = new Map(preservedDrafts.map((draft) => [String(draft?.paperId || ""), draft]));
+  result.succeeded.forEach((entry) => draftByPaperId.set(String(entry.paperDraft?.paperId || ""), entry.paperDraft));
+  const paperDrafts = selectedItems
+    .map((item) => draftByPaperId.get(paperIdForStage(item)))
+    .filter(Boolean);
+  const attemptedPaperIds = new Set(targetItems.map(paperIdForStage));
+  const previousFailures = Array.isArray(planned.paperDraftResult?.failed)
+    ? planned.paperDraftResult.failed.filter((entry) => !attemptedPaperIds.has(paperIdForStage(entry.item)))
+    : [];
+  const failed = [...previousFailures, ...result.failed];
   const artifact = {
     concurrency: result.concurrency,
     attempted: result.attempted,
-    succeeded: result.succeeded.map((entry) => ({
-      paperId: entry.paperDraft.paperId,
-      paperDraft: entry.paperDraft,
-      repairAttempted: entry.repairAttempted,
-      responseRepairAttempted: entry.responseRepairAttempted
+    adminRepair: Boolean(retryPaperId),
+    repairAttempt: retryAttempt || undefined,
+    succeeded: paperDrafts.map((paperDraft) => ({
+      paperId: paperDraft.paperId,
+      paperDraft,
+      preserved: preservedDraftIds.has(String(paperDraft.paperId || ""))
     })),
-    failed: result.failed.map((entry) => ({
+    failed: failed.map((entry) => ({
       paperId: paperIdForStage(entry.item),
       error: entry.error
     }))
   };
-  await context.writeTrace("paper-drafts", artifact);
+  await context.writeTrace(`paper-drafts${traceSuffix}`, artifact);
 
-  if (result.failed.length) {
-    const firstFailure = result.failed[0];
+  const paperSectionRepairAttempts = { ...(planned.paperSectionRepairAttempts || {}) };
+  failed.forEach((entry) => {
+    const paperId = paperIdForStage(entry.item);
+    if (!paperSectionRepairAttempts[paperId]) paperSectionRepairAttempts[paperId] = 1;
+  });
+
+  if (failed.length) {
+    const firstFailure = failed[0];
     const failedPaperId = firstFailure.error.paperId || paperIdForStage(firstFailure.item);
     const failureDetail = firstFailure.error.message || "A selected paper did not produce a valid paperDraft.";
     const failureIssues = [{
@@ -1713,27 +1749,29 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
       durationMs: elapsed(stageStartedAt),
       code: failureIssues[0].code,
       paperId: failedPaperId,
-      failedPaperIds: result.failed.map((entry) => paperIdForStage(entry.item)),
+      failedPaperIds: failed.map((entry) => paperIdForStage(entry.item)),
       reason: failureDetail,
       decision: "manual_review"
     });
     return {
       ...planned,
       nextStage: "manual_review",
-      paperDrafts: result.succeeded.map((entry) => entry.paperDraft),
-      paperDraftResult: result,
+      paperDrafts,
+      paperDraftResult: { ...result, failed },
+      paperSectionRepairAttempts,
       manualReview: {
         stage: "write_paper_sections",
         paperId: failedPaperId,
-        summary: "该论文的逐篇稿件在自动修正后仍无法通过证据校验，可跳过该论文并重新校准其余候选。",
+        summary: "该论文的逐篇稿件在自动修正后仍无法通过证据校验，可继续定向修正当前论文，或跳过后重新校准其余候选。",
         issues: failureIssues,
-        repairAttempts: 1,
-        allowedActions: failedPaperId ? ["exit_task", "skip_paper"] : ["exit_task"]
+        repairAttempts: Math.max(1, Math.trunc(Number(paperSectionRepairAttempts[failedPaperId]) || 1)),
+        allowedActions: failedPaperId
+          ? ["continue_repair", "exit_task", "skip_paper"]
+          : ["exit_task"]
       }
     };
   }
 
-  const paperDrafts = result.succeeded.map((entry) => entry.paperDraft);
   await context.updateStage("write_paper_sections", {
     counts: planned.counts,
     warnings: planned.warnings || []
@@ -1753,7 +1791,9 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     ...planned,
     nextStage: "write_head_tail",
     paperDrafts,
-    paperDraftResult: result
+    paperDraftResult: { ...result, failed: [] },
+    paperSectionRetry: null,
+    paperSectionRepairAttempts
   };
 };
 

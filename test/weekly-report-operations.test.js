@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as weeklyReportOperations from "../public/weekly-report-operations.js";
 import {
   weeklyReportArtifactSummary,
   weeklyReportDisconnectedJob,
@@ -12,6 +13,20 @@ import {
 const paperEntry = (id, title = `Paper ${id}`) => ({
   paper: { id, title },
   contextPacket: { paperId: id }
+});
+
+test("Trace 摘要将结构化告警转换为可读文本而不是原始 JSON", () => {
+  assert.equal(typeof weeklyReportOperations.weeklyReportWarningSummary, "function");
+  assert.equal(weeklyReportOperations.weeklyReportWarningSummary({
+    stage: "extract_evidence",
+    paperId: "2608.26882",
+    message: "该论文连续两次未返回完整的 Evidence 结构化结果，已作为模型处理失败跳过。",
+    severity: "warning"
+  }), "论文 2608.26882：该论文连续两次未返回完整的 Evidence 结构化结果，已作为模型处理失败跳过。");
+  assert.equal(
+    weeklyReportOperations.weeklyReportWarningSummary("当前任务存在需要查看的提醒。"),
+    "当前任务存在需要查看的提醒。"
+  );
 });
 
 test("A disconnected page restore keeps the remembered job id instead of creating a replacement", () => {

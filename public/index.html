@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Paper Insight</title>
-    <link rel="stylesheet" href="/styles.css?v=weekly-operations-v2026-08-25">
+    <link rel="stylesheet" href="/styles.css?v=weekly-report-trace-summary-v2026-08-31">
   </head>
   <body>
     <dialog id="apiDialog" class="api-dialog">
@@ -146,7 +146,8 @@
           <p>等待开始。</p>
           <button id="taskRefreshCandidates" class="ghost-button" type="button" hidden>重新获取候选</button>
           <button id="taskForceArxiv" class="ghost-button" type="button" hidden>用 arXiv API 扩展</button>
-            <button id="taskRetry" class="ghost-button" type="button" hidden>重试当前操作</button>
+          <button id="taskRetry" class="ghost-button" type="button" hidden>重试当前操作</button>
+          <button id="taskSkipAnalysisPaper" class="ghost-button warning-action" type="button" hidden>跳过这篇论文并继续</button>
         </section>
 
         <section id="taskCandidatePanel" class="task-panel">
@@ -425,6 +426,7 @@
           <div class="spinner" aria-hidden="true"></div>
           <p>请输入 AI API Key，然后点击左侧“生成推荐列表”。</p>
           <button id="retryButton" class="ghost-button status-action" type="button" hidden>重试当前操作</button>
+          <button id="skipAnalysisPaperButton" class="ghost-button status-action warning-action" type="button" hidden>跳过这篇论文并继续</button>
         </section>
 
         <section id="homeView" class="content-view active">
@@ -539,6 +541,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=weekly-operations-v2026-08-25" type="module"></script>
+    <script src="/app.js?v=weekly-report-trace-summary-v2026-08-31" type="module"></script>
   </body>
 </html>

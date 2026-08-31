@@ -1,5 +1,6 @@
 ﻿import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { setDefaultAutoSelectFamily } from "node:net";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -18,6 +19,11 @@ import { buildContextPacket } from "./weekly-report/context-builder.js";
 import { WeeklyReportJobManager } from "./weekly-report/job-manager.js";
 import { runWeeklyReportAgentLoop } from "./weekly-report/pipeline-runner.js";
 import { WeeklyReportTraceStore } from "./weekly-report/trace-store.js";
+import { defaultQuery } from "./public/query-defaults.js";
+
+if (process.platform === "win32") {
+  setDefaultAutoSelectFamily(false);
+}
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(__dirname, "public");
@@ -55,7 +61,7 @@ const paperOriginalTextMaxChars = Math.min(
 const paperOriginalTextTotalMaxChars = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_TOTAL_MAX_CHARS || 120000), 20000), 500000);
 const paperOriginalTextConcurrency = Math.min(Math.max(Number(process.env.PAPER_ORIGINAL_TEXT_CONCURRENCY || 2), 1), 5);
 const llmResponseMaxChars = Number(process.env.LLM_RESPONSE_MAX_CHARS || 500000);
-const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 12000);
+const llmMaxOutputTokens = Number(process.env.LLM_MAX_OUTPUT_TOKENS || 128000);
 const normalizeWeeklyReportAgentMaxOutputTokens = (value) => {
   const raw = String(value ?? "").trim();
   const numeric = raw ? Number(raw) : 65536;
@@ -108,12 +114,6 @@ const weeklyReportSemanticReviewMode = () => normalizeSemanticReviewMode(
   process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_MODE,
   "warn"
 );
-
-const defaultQuery = `("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
-"multi-agent" OR "agentic AI" OR "autonomous agent") AND
-("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
-"network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR
-"agentic framework" OR "end-to-end framework" OR "closed-loop autonomy" OR "network automation")`;
 
 const dimensions = [
   {
@@ -281,15 +281,9 @@ const interestCalibrationForPaper = (paper = {}, analysis = {}) => {
 
 const researchQualityScore = (scores = {}) => {
   const totalWeight = dimensions.reduce((total, dimension) => total + dimension.weight, 0) || 1;
-  const base = dimensions.reduce((sum, dimension) => (
+  return clamp(dimensions.reduce((sum, dimension) => (
     sum + clamp(scores[dimension.key]) * dimension.weight
-  ), 0) / totalWeight;
-  const method = clamp(scores.methodNovelty);
-  const evidence = clamp(scores.evidence);
-  const weakestResearchSignal = Math.min(method, evidence);
-  const balancePenalty = Math.max(0, base - weakestResearchSignal) * 0.12;
-  const weakEvidencePenalty = Math.max(0, 70 - evidence) * 0.2;
-  return clamp(base * 1.2 - 22 - balancePenalty - weakEvidencePenalty);
+  ), 0) / totalWeight);
 };
 
 const weightedScore = (scores = {}, interestFit = "general_ai_system") => {

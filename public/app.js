@@ -13,35 +13,25 @@ import {
   weeklyReportHealthState,
   weeklyReportPhaseStatus,
   weeklyReportRequestRetryable,
-  weeklyReportSelectionRows
+  weeklyReportSelectionRows,
+  weeklyReportWarningSummary
 } from "./weekly-report-operations.js";
 
-const legacyIndustrialDefaultQuery = `("network" OR "telecom" OR "5G" OR "6G") AND
-("AI" OR "machine learning" OR "deep learning" OR "LLM" OR "large language model" OR "foundation model") AND
-("anomaly detection" OR "traffic prediction" OR "network optimization" OR "root cause analysis" OR
-"digital twin network" OR "intent-based networking" OR "network automation" OR "orchestration" OR
-"multi-agent" OR "AI agent" OR "autonomous agent" OR "agent-based system")`;
-
-const legacyResearchBalancedDefaultQuery = `("network" OR "wireless network" OR "mobile network" OR "wireless communication" OR "5G" OR "6G") AND
-("AI" OR "machine learning" OR "deep learning" OR "foundation model" OR "graph neural network" OR
-"reinforcement learning" OR "self-supervised learning" OR "LLM") AND
-("network representation learning" OR "semantic communication" OR "edge intelligence" OR "network modeling" OR
-"network measurement" OR "network simulation" OR "protocol learning" OR "routing" OR "resource allocation" OR
-"spectrum management" OR "channel estimation" OR "traffic modeling" OR "network optimization" OR "digital twin network")`;
-
-const legacyAgenticNetworkDefaultQuery = `("network" OR "wireless network" OR "mobile network" OR "telecommunication network" OR "5G" OR "6G") AND
-("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
-"multi-agent" OR "agentic AI" OR "autonomous agent") AND
-("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
-"network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR
-"agentic framework" OR "end-to-end framework" OR "closed-loop autonomy" OR "network automation")`;
-
-const defaultQuery = `("large language model" OR "LLM" OR "foundation model" OR "AI agent" OR "LLM agent" OR
-"multi-agent" OR "agentic AI" OR "autonomous agent") AND
-("autonomous network" OR "autonomous networking" OR "self-driving network" OR "zero-touch network" OR
-"network digital twin" OR "digital twin network" OR "intent-based networking" OR "agent framework" OR
-"agentic framework" OR "end-to-end framework" OR "closed-loop autonomy" OR "network automation")`;
-
+import {
+  buildQueryFromSelection,
+  defaultQuery,
+  defaultQuerySelection,
+  queryDefaultsVersion,
+  queryKeywordGroups,
+  queryTermDefaultSelected,
+  queryTermValue,
+  shouldResetStoredQueryDefaults
+} from "./query-defaults.js";
+import {
+  analysisProgressCounts,
+  runConcurrentTasks,
+  skipFailedAnalysisPaper
+} from "./analysis-pool.js";
 const dimensionLabels = {
   scenarioProblemValue: "研究问题价值",
   methodNovelty: "方法新意",
@@ -104,7 +94,10 @@ const interestFitAliases = {
 const candidateBatchMax = 100;
 const recommendationTargetMax = 100;
 const extraBatchMax = 10;
+const recommendationAnalysisConcurrency = 3;
 const readingListTitlePrefix = "【精选论文】";
+const scoringRulesVersion = "research-quality-rubric-soft-interest-no-cap-v2026-07-21b";
+const readingListStepOrder = ["collect", "evidence", "review", "calibrate", "select", "write", "qa", "save"];
 
 const dimensionFallbacks = {
   scenarioProblemValue: ["scenarioProblemValue", "taskFit"],
@@ -112,116 +105,6 @@ const dimensionFallbacks = {
   practicalValue: ["practicalValue"],
   evidence: ["evidence"]
 };
-
-const queryKeywordGroups = [
-  {
-    id: "domain",
-    title: "背景领域（可选）",
-    terms: [
-      { value: "network", selected: false },
-      { value: "wireless network", selected: false },
-      { value: "mobile network", selected: false },
-      { value: "telecommunication network", selected: false },
-      { value: "5G", selected: false },
-      { value: "6G", selected: false },
-      { value: "wireless communication", selected: false },
-      { value: "telecommunication", selected: false },
-      { value: "telecom", selected: false },
-      { value: "cellular network", selected: false },
-      { value: "radio access network", selected: false },
-      { value: "RAN", selected: false },
-      { value: "O-RAN", selected: false },
-      { value: "core network", selected: false },
-      { value: "edge network", selected: false },
-      { value: "cloud network", selected: false },
-      { value: "multi-access edge computing", selected: false },
-      { value: "network slicing", selected: false },
-      { value: "SDN", selected: false },
-      { value: "NFV", selected: false },
-      { value: "private network", selected: false },
-      { value: "IoT network", selected: false },
-      { value: "satellite network", selected: false },
-      { value: "optical network", selected: false }
-    ]
-  },
-  {
-    id: "ai",
-    title: "大模型/智能体",
-    terms: [
-      "large language model",
-      "LLM",
-      "foundation model",
-      "AI agent",
-      "LLM agent",
-      "multi-agent",
-      "agentic AI",
-      "autonomous agent",
-      { value: "AI", selected: false },
-      { value: "machine learning", selected: false },
-      { value: "deep learning", selected: false },
-      { value: "graph neural network", selected: false },
-      { value: "reinforcement learning", selected: false },
-      { value: "self-supervised learning", selected: false },
-      { value: "planning", selected: false },
-      { value: "tool use", selected: false },
-      { value: "time series forecasting", selected: false },
-      { value: "federated learning", selected: false },
-      { value: "transfer learning", selected: false },
-      { value: "retrieval augmented generation", selected: false },
-      { value: "knowledge graph", selected: false },
-      { value: "transformer", selected: false },
-      { value: "generative AI", selected: false },
-      { value: "Bayesian optimization", selected: false },
-      { value: "causal inference", selected: false }
-    ]
-  },
-  {
-    id: "task",
-    title: "研究方向",
-    terms: [
-      "autonomous network",
-      "autonomous networking",
-      "self-driving network",
-      "zero-touch network",
-      "network digital twin",
-      "digital twin network",
-      "intent-based networking",
-      "agent framework",
-      "agentic framework",
-      "end-to-end framework",
-      "closed-loop autonomy",
-      "network automation",
-      { value: "network orchestration", selected: false },
-      { value: "closed-loop automation", selected: false },
-      { value: "network management", selected: false },
-      { value: "agent-based system", selected: false },
-      { value: "multi-agent system", selected: false },
-      { value: "semantic communication", selected: false },
-      { value: "edge intelligence", selected: false },
-      { value: "network modeling", selected: false },
-      { value: "network simulation", selected: false },
-      { value: "protocol learning", selected: false },
-      { value: "network optimization", selected: false },
-      { value: "anomaly detection", selected: false },
-      { value: "traffic prediction", selected: false },
-      { value: "root cause analysis", selected: false },
-      { value: "orchestration", selected: false },
-      { value: "fault diagnosis", selected: false },
-      { value: "alarm correlation", selected: false },
-      { value: "performance prediction", selected: false },
-      { value: "QoS prediction", selected: false },
-      { value: "routing optimization", selected: false },
-      { value: "energy efficiency", selected: false },
-      { value: "load balancing", selected: false },
-      { value: "handover optimization", selected: false },
-      { value: "capacity planning", selected: false },
-      { value: "service assurance", selected: false },
-      { value: "security monitoring", selected: false },
-      { value: "intrusion detection", selected: false },
-      { value: "policy optimization", selected: false }
-    ]
-  }
-];
 
 const storageKeys = {
   reports: "paper-insight:weekly",
@@ -315,6 +198,7 @@ const elements = {
   taskRefreshCandidates: $("#taskRefreshCandidates"),
   taskForceArxiv: $("#taskForceArxiv"),
   taskRetry: $("#taskRetry"),
+  taskSkipAnalysisPaper: $("#taskSkipAnalysisPaper"),
   candidateForceArxiv: $("#candidateForceArxiv"),
   taskCandidatePanel: $("#taskCandidatePanel"),
   taskProgressPanel: $("#taskProgressPanel"),
@@ -373,6 +257,7 @@ const elements = {
   backToReports: $("#backToReports"),
   statusPanel: $("#statusPanel"),
   retryButton: $("#retryButton"),
+  skipAnalysisPaperButton: $("#skipAnalysisPaperButton"),
   homeView: $("#homeView"),
   exploreView: $("#exploreView"),
   reportView: $("#reportView"),
@@ -416,26 +301,16 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   minute: "2-digit"
 });
 
-const queryDefaultsVersion = "agentic-autonomy-no-domain-2026-06";
-const scoringRulesVersion = "research-quality-rubric-soft-interest-no-cap-v2026-07-21b";
-const readingListStepOrder = ["collect", "evidence", "review", "calibrate", "select", "write", "qa", "save"];
-
-function normalizeQueryText(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
 function migrateStoredQueryDefaults() {
-  if (localStorage.getItem(storageKeys.queryDefaultsVersion) === queryDefaultsVersion) {
+  const storedVersion = localStorage.getItem(storageKeys.queryDefaultsVersion);
+
+  if (storedVersion === queryDefaultsVersion) {
     return;
   }
 
-  const saved = localStorage.getItem(storageKeys.query);
-  const usesLegacyDefault = !saved
-    || normalizeQueryText(saved) === normalizeQueryText(legacyIndustrialDefaultQuery)
-    || normalizeQueryText(saved) === normalizeQueryText(legacyResearchBalancedDefaultQuery)
-    || normalizeQueryText(saved) === normalizeQueryText(legacyAgenticNetworkDefaultQuery);
+  const savedQuery = localStorage.getItem(storageKeys.query);
 
-  if (usesLegacyDefault) {
+  if (shouldResetStoredQueryDefaults({ storedVersion, savedQuery })) {
     localStorage.removeItem(storageKeys.query);
     localStorage.removeItem(storageKeys.queryMode);
     localStorage.removeItem(storageKeys.querySelection);
@@ -543,27 +418,8 @@ function replaceStoredReport(report) {
   return report;
 }
 
-function quoteQueryTerm(term) {
-  return `"${String(term).replace(/"/g, "").trim()}"`;
-}
-
-function queryTermValue(term) {
-  return typeof term === "string" ? term : term.value;
-}
-
-function queryTermDefaultSelected(term) {
-  return typeof term === "string" || term.selected !== false;
-}
-
 function queryGroupValues(group) {
   return group.terms.map(queryTermValue).filter(Boolean);
-}
-
-function defaultQuerySelection() {
-  return Object.fromEntries(queryKeywordGroups.map((group) => [
-    group.id,
-    group.terms.filter(queryTermDefaultSelected).map(queryTermValue)
-  ]));
 }
 
 function loadQuerySelection() {
@@ -666,17 +522,6 @@ function updateQuerySummary() {
     row.append(label, terms);
     elements.querySummaryDetails.append(row);
   });
-}
-
-function buildQueryFromSelection(selection) {
-  const groups = queryKeywordGroups
-    .map((group) => {
-      const terms = Array.isArray(selection[group.id]) ? selection[group.id] : [];
-      return terms.length ? `(${terms.map(quoteQueryTerm).join(" OR ")})` : "";
-    })
-    .filter(Boolean);
-
-  return groups.join(" AND ");
 }
 
 function buildQueryFromSelectedKeywords() {
@@ -1065,14 +910,7 @@ function researchQualityScore(paper) {
     return null;
   }
 
-  const base = weighted / totalWeight;
-  const method = rawDimensionScore(paper, "methodNovelty") ?? 0;
-  const evidence = rawDimensionScore(paper, "evidence") ?? 0;
-  const weakestResearchSignal = Math.min(method, evidence);
-  const balancePenalty = Math.max(0, base - weakestResearchSignal) * 0.12;
-  const weakEvidencePenalty = Math.max(0, 70 - evidence) * 0.2;
-
-  return clamp(base * 1.2 - 22 - balancePenalty - weakEvidencePenalty);
+  return clamp(weighted / totalWeight);
 }
 
 function weightedPaperScore(paper) {
@@ -1470,15 +1308,33 @@ function renderBreadcrumb(items) {
   });
 }
 
+function currentFailedAnalysisPaper() {
+  return state.analysisSession?.failedPapers?.[0] || state.analysisSession?.failedPaper || null;
+}
+
+function showPausedRecommendationAnalysis() {
+  const paper = currentFailedAnalysisPaper();
+  if (!paper) {
+    return false;
+  }
+
+  const title = String(paper.title || paper.id || "当前论文");
+  const action = state.recommendationRetryOperation ? "retry" : "";
+  showStatus(`推荐列表分析已暂停在“${title}”。可以重试当前操作，或跳过这篇论文并继续。`, "error", action);
+  return true;
+}
+
 function showStatus(message, type = "loading", action = "") {
   elements.statusPanel.className = `status-panel visible${type === "error" ? " error" : ""}${type === "warning" ? " warning" : ""}`;
   elements.statusPanel.querySelector("p").textContent = message;
   elements.retryButton.hidden = action !== "retry";
+  elements.skipAnalysisPaperButton.hidden = state.taskLocked || !currentFailedAnalysisPaper();
 }
 
 function hideStatus() {
   elements.statusPanel.className = "status-panel";
   elements.retryButton.hidden = true;
+  elements.skipAnalysisPaperButton.hidden = true;
 }
 
 function updateApiStatus() {
@@ -1551,6 +1407,7 @@ function setTaskStatus(message, type = "loading", action = "") {
   elements.taskRefreshCandidates.hidden = !showRefreshCandidates;
   elements.taskForceArxiv.hidden = !showForceArxiv;
   elements.taskRetry.hidden = action !== "retry";
+  elements.taskSkipAnalysisPaper.hidden = state.taskLocked || !currentFailedAnalysisPaper();
 }
 
 function rememberRecommendationRetry(stage, error, options = {}) {
@@ -1634,13 +1491,32 @@ function setReadingListStep(activeStep = "") {
   });
 }
 
-function setReadingListProgress(type, title, detail, { step = "", meta = "" } = {}) {
+function revealReadingListProgress() {
+  const readingListShell = elements.readingListDialog?.querySelector(".reading-list-shell");
+  if (!readingListShell || !elements.readingListProgress) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    const shellBounds = readingListShell.getBoundingClientRect();
+    const progressBounds = elements.readingListProgress.getBoundingClientRect();
+    const targetTop = Math.max(0, readingListShell.scrollTop + progressBounds.top - shellBounds.top);
+    readingListShell.scrollTo({ top: targetTop, behavior: "auto" });
+  });
+}
+
+function setReadingListProgress(type, title, detail, { step = "", meta = "", reveal = false } = {}) {
   elements.readingListDialog.classList.toggle("ready", type === "ready");
   elements.readingListDialog.classList.toggle("failed", type === "failed");
+  elements.readingListDialog.classList.toggle("idle", type === "idle");
+  elements.readingListDialog.classList.toggle("waiting", type === "waiting");
   elements.readingListProgressTitle.textContent = title;
   elements.readingListProgressDetail.textContent = detail;
   elements.readingListProgressMeta.textContent = meta;
   setReadingListStep(step);
+  if (reveal || type === "ready" || type === "failed") {
+    revealReadingListProgress();
+  }
 }
 
 function clearReadingListSourceStatus() {
@@ -3212,9 +3088,8 @@ function adjustReadingListOutputHeight() {
     return;
   }
 
-  const viewportLimit = Math.max(220, Math.min(500, window.innerHeight - 330));
   const contentHeight = elements.readingListOutput.scrollHeight + 4;
-  const nextHeight = Math.max(160, Math.min(contentHeight, viewportLimit));
+  const nextHeight = Math.max(160, contentHeight);
   elements.readingListOutput.style.height = `${Math.round(nextHeight)}px`;
 }
 
@@ -3254,7 +3129,8 @@ function openReadingListDialog(report = state.currentReport) {
       step: report.readingList?.markdown ? "save" : "",
       meta: report.readingList?.markdown
         ? `${report.readingList.paperCount || paperCount} 篇 · 已保存`
-        : "未开始"
+        : "未开始",
+      reveal: true
     }
   );
   setReadingListBusy(false);
@@ -3323,7 +3199,7 @@ function renderWeeklyReportJobProgress(job, { connectionInterrupted = false } = 
   const selectedText = counts.selected ? `，已选 ${counts.selected} 篇` : "";
   const excludedText = counts.excluded ? `，排除 ${counts.excluded} 篇` : "";
   const rawWarning = Array.isArray(job?.warnings) && job.warnings.length ? job.warnings[0] : "";
-  const warningText = rawWarning && typeof rawWarning === "object" ? JSON.stringify(rawWarning) : String(rawWarning || "");
+  const warningText = weeklyReportWarningSummary(rawWarning);
   const warning = warningText ? `；提醒：${warningText}` : "";
   showWeeklyReportTracePanel(job?.jobId, warningText ? `管理员提醒：${warningText}` : `${label} · 点击查看 Trace`);
   if (elements.weeklyReportTraceCancel) {
@@ -3347,7 +3223,7 @@ function renderWeeklyReportJobProgress(job, { connectionInterrupted = false } = 
       : `Agent Loop 正在后台执行。已处理 ${processed}/${total || "?"} 篇${selectedText}${excludedText}${warning}`;
 
   setReadingListProgress(
-    job?.state === "reject" ? "failed" : job?.state === "publish" ? "ready" : "loading",
+    job?.state === "reject" ? "failed" : job?.state === "publish" ? "ready" : waitingForAdmin ? "waiting" : "loading",
     job?.state === "publish" ? "质量门通过，允许发布" : job?.state === "reject" ? "质量门拒绝发布" : runningTitle,
     job?.state === "running"
       ? runningDetail
@@ -3356,7 +3232,8 @@ function renderWeeklyReportJobProgress(job, { connectionInterrupted = false } = 
         : `任务已拒绝发布：${job?.error?.detail || job?.error?.message || job?.result?.reason || "未通过质量门"}`,
     {
       step: job?.state === "publish" ? "save" : step,
-      meta: `${formatElapsedSeconds(weeklyReportJobElapsed(job))} · ${label} · ${waitingForAdmin ? "等待决策" : job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`
+      meta: `${formatElapsedSeconds(weeklyReportJobElapsed(job))} · ${label} · ${waitingForAdmin ? "等待决策" : job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`,
+      reveal: waitingForAdmin || connectionInterrupted
     }
   );
 }
@@ -4266,16 +4143,25 @@ async function fetchCandidates({ forceRefresh = false, forceArxiv = false } = {}
 }
 
 function updateProgress(progress) {
-  const { done, total, paper, phase, startedAt, paperStartedAt } = progress;
-  const percent = total ? Math.round((done / total) * 100) : 0;
-  const displayIndex = phase === "done" ? done : done + 1;
-  elements.progressTitle.textContent = phase === "done" ? "本篇分析完成" : `${providerLabel()} 正在分析`;
+  const {
+    done,
+    total,
+    activePapers = [],
+    failed = 0,
+    startedAt
+  } = progress;
+  const counts = analysisProgressCounts({ settled: done, failed, total });
+  const percent = counts.percent;
+  const activeTitles = activePapers.slice(0, recommendationAnalysisConcurrency).map((paper) => paper.title).join("；");
+  elements.progressTitle.textContent = done >= total
+    ? "本批分析完成"
+    : `${providerLabel()} 并发分析（${activePapers.length}/${recommendationAnalysisConcurrency}）`;
   elements.progressFill.style.width = `${percent}%`;
   elements.progressPercent.textContent = `${percent}%`;
-  elements.progressCurrent.textContent = paper
-    ? `${phase === "done" ? "已完成" : "正在分析"}第 ${Math.min(displayIndex, total)}/${total} 篇：${paper.title}`
-    : "正在准备分析任务。";
-  elements.progressElapsed.textContent = `总耗时 ${formatElapsedSeconds(secondsSince(startedAt))}，本篇耗时 ${formatElapsedSeconds(secondsSince(paperStartedAt || startedAt))}。`;
+  elements.progressCurrent.textContent = activeTitles
+    ? `成功 ${counts.successful}/${counts.total}，失败 ${counts.failed}，正在分析：${activeTitles}`
+    : `成功 ${counts.successful}/${counts.total}，失败 ${counts.failed}。`;
+  elements.progressElapsed.textContent = `总耗时 ${formatElapsedSeconds(secondsSince(startedAt))}，并发上限 ${recommendationAnalysisConcurrency} 篇。`;
 }
 
 function showProgressView(total, reusedCount = 0, analyzeCount = total) {
@@ -4283,18 +4169,19 @@ function showProgressView(total, reusedCount = 0, analyzeCount = total) {
   const targetText = target ? `，最低达标 ${target} 篇` : "";
   showTaskDialog();
   setTaskLocked(true);
+  hideStatus();
   setTaskStep("analyze");
   showTaskPanel("progress");
   elements.progressFill.style.width = "0%";
   elements.progressPercent.textContent = "0%";
   elements.progressTitle.textContent = "准备分析";
   elements.progressCurrent.textContent = reusedCount
-    ? `已复用 ${reusedCount} 篇历史分析，准备分析 ${analyzeCount} 篇新论文${targetText}。`
-    : `已确认 ${total} 篇候选论文${targetText}，准备调用 ${providerLabel()}。`;
-  elements.progressElapsed.textContent = "总耗时 0 秒，本篇耗时 0 秒。";
+    ? `已复用 ${reusedCount} 篇历史分析，准备并发分析 ${analyzeCount} 篇新论文${targetText}。`
+    : `已确认 ${total} 篇候选论文${targetText}，准备以 ${recommendationAnalysisConcurrency} 路并发调用 ${providerLabel()}。`;
+  elements.progressElapsed.textContent = `总耗时 0 秒，并发上限 ${recommendationAnalysisConcurrency} 篇。`;
   setTaskStatus(reusedCount
-    ? `已确认 ${total} 篇候选论文${targetText}，${reusedCount} 篇复用历史分析，${analyzeCount} 篇需要调用 ${providerLabel()}。`
-    : `已确认 ${total} 篇候选论文${targetText}，正在逐篇分析...`);
+    ? `已确认 ${total} 篇候选论文${targetText}，${reusedCount} 篇复用历史分析，${analyzeCount} 篇将按最多 ${recommendationAnalysisConcurrency} 路并发分析。`
+    : `已确认 ${total} 篇候选论文${targetText}，正在按最多 ${recommendationAnalysisConcurrency} 路并发分析...`);
 }
 
 function analysisErrorFromPayload(data, status = 0) {
@@ -4378,8 +4265,43 @@ function createAnalysisSession(papers) {
     extraBatchCount: 0,
     stoppedAfterTarget: false,
     skippedAfterTarget: 0,
-    failedPaper: null
+    failedPapers: [],
+    failedPaper: null,
+    skippedAnalysisPapers: []
   };
+}
+
+function analysisPaperKey(paper) {
+  return paperDuplicateKeys(paper)[0] || normalizedTitleKey(paper?.title);
+}
+
+function upsertSessionAnalyzedPaper(analyzed, paper) {
+  const key = analysisPaperKey(paper);
+  const existingIndex = analyzed.findIndex((item) => analysisPaperKey(item) === key);
+
+  if (existingIndex >= 0) {
+    analyzed[existingIndex] = paper;
+  } else {
+    analyzed.push(paper);
+  }
+}
+
+function orderSessionAnalyzedPapers(session) {
+  const order = new Map(session.papers.map((paper, index) => [analysisPaperKey(paper), index]));
+  session.analyzed.sort((a, b) => (order.get(analysisPaperKey(a)) ?? Number.MAX_SAFE_INTEGER)
+    - (order.get(analysisPaperKey(b)) ?? Number.MAX_SAFE_INTEGER));
+}
+
+function concurrentAnalysisError(errors) {
+  const first = errors[0]?.error instanceof Error ? errors[0].error : new Error("论文分析失败。");
+  const titles = errors.slice(0, 3).map(({ item }) => item.title).filter(Boolean).join("；");
+  const suffix = errors.length > 3 ? "；..." : "";
+  const error = new Error(`${errors.length} 篇论文分析失败，其他论文已继续完成。失败论文：${titles}${suffix}。首个错误：${first.message}`);
+  error.code = first.code || "LLM_ANALYSIS_FAILED";
+  error.status = Number(first.status || 0);
+  error.retryable = first.retryable !== false;
+  error.failedPapers = errors.map(({ item }) => item);
+  return error;
 }
 
 async function analyzeConfirmedPapers(papers, existingSession = null) {
@@ -4388,76 +4310,122 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
   }
 
   const session = existingSession || createAnalysisSession(papers);
-  const { reused, pending, analyzed } = session;
+  const reused = Array.isArray(session.reused) ? session.reused : [];
+  const pending = Array.isArray(session.pending) ? session.pending : [];
+  const analyzed = Array.isArray(session.analyzed) ? session.analyzed : [...reused];
+  session.reused = reused;
+  session.pending = pending;
+  session.analyzed = analyzed;
+  session.failedPapers = Array.isArray(session.failedPapers) ? session.failedPapers : [];
+  session.skippedAnalysisPapers = Array.isArray(session.skippedAnalysisPapers)
+    ? session.skippedAnalysisPapers
+    : [];
   const startIndex = Math.min(Math.max(Number(session.nextIndex || 0), 0), pending.length);
+  const initialWork = session.failedPapers.length ? [...session.failedPapers] : pending.slice(startIndex);
 
   state.analysisSession = session;
-  state.lastAnalyzePapers = pending[startIndex] ? [pending[startIndex]] : [];
+  state.lastAnalyzePapers = [...initialWork];
   state.currentThreshold = Number(elements.thresholdInput.value || 70);
   state.currentPaperView = "recommended";
   state.currentSort = "score";
   let mode = session.mode || (pending.length ? providerLabel() : "历史复用");
   const startedAt = performance.now();
 
-  showProgressView(session.papers.length, reused.length, pending.length);
+  showProgressView(session.papers.length, reused.length, initialWork.length);
+  resetProgressTimer();
+  state.progressTimer = window.setInterval(() => {
+    if (state.progressState) {
+      updateProgress(state.progressState);
+    }
+  }, 500);
 
   try {
     session.nextIndex = startIndex;
 
     while (true) {
-      while (session.nextIndex < pending.length) {
-        const index = session.nextIndex;
-        const paper = pending[index];
-        const paperStartedAt = performance.now();
-        state.progressState = { done: index, total: pending.length, paper, phase: "running", startedAt, paperStartedAt };
-        updateProgress(state.progressState);
-        resetProgressTimer();
-        state.progressTimer = window.setInterval(() => updateProgress(state.progressState), 500);
+      const retryingFailures = session.failedPapers.length > 0;
+      const workItems = retryingFailures ? [...session.failedPapers] : pending.slice(session.nextIndex);
+      session.failedPapers = [];
+      session.failedPaper = null;
 
-        session.nextIndex = index;
-        session.failedPaper = paper;
-        state.lastAnalyzePapers = [paper];
-
-        let result;
-        try {
-          result = await analyzeOnePaper(paper);
-        } catch (error) {
-          state.analysisSession = session;
-          state.lastAnalyzePapers = [paper];
-          throw error;
-        }
-
-        mode = reused.length ? `${result.mode} + 历史复用` : result.mode;
-        session.mode = mode;
-        analyzed.push(result.paper);
-        session.failedPaper = null;
-        session.nextIndex = index + 1;
-        state.lastAnalyzePapers = pending[index + 1] ? [pending[index + 1]] : [];
-
-        const tempReport = {
-          threshold: state.currentThreshold,
-          candidateCount: session.papers.length,
-          mode,
-          items: analyzed
+      if (workItems.length) {
+        const activePapers = new Map();
+        let settledCount = 0;
+        let failedCount = 0;
+        const updatePoolProgress = () => {
+          state.progressState = {
+            done: settledCount,
+            total: workItems.length,
+            activePapers: [...activePapers.values()],
+            failed: failedCount,
+            startedAt
+          };
+          updateProgress(state.progressState);
         };
-        const counts = splitReport(tempReport);
-        setMetrics({
-          candidates: session.papers.length,
-          recommended: counts.recommended.length,
-          hidden: counts.hidden.length,
-          mode
+
+        updatePoolProgress();
+        const outcome = await runConcurrentTasks(workItems, async (paper, index) => {
+          activePapers.set(index, paper);
+          updatePoolProgress();
+          return analyzeOnePaper(paper);
+        }, {
+          concurrency: recommendationAnalysisConcurrency,
+          onSettled: (entry) => {
+            activePapers.delete(entry.index);
+            settledCount += 1;
+
+            if (entry.status === "fulfilled") {
+              const result = entry.value;
+              mode = reused.length ? `${result.mode} + 历史复用` : result.mode;
+              session.mode = mode;
+              upsertSessionAnalyzedPaper(analyzed, result.paper);
+            } else {
+              failedCount += 1;
+            }
+
+            const tempReport = {
+              threshold: state.currentThreshold,
+              candidateCount: session.papers.length,
+              mode,
+              items: analyzed
+            };
+            const counts = splitReport(tempReport);
+            setMetrics({
+              candidates: session.papers.length,
+              recommended: counts.recommended.length,
+              hidden: counts.hidden.length,
+              mode
+            });
+            updatePoolProgress();
+
+            const target = Math.min(session.minRecommended || 0, recommendationTargetMax);
+            if (!retryingFailures && session.extraBatchCount > 0 && target && counts.recommended.length >= target) {
+              session.stoppedAfterTarget = true;
+              return false;
+            }
+
+            return true;
+          }
         });
 
-        state.progressState = { done: index + 1, total: pending.length, paper, phase: "done", startedAt, paperStartedAt };
-        updateProgress(state.progressState);
+        session.nextIndex = pending.length;
+        orderSessionAnalyzedPapers(session);
 
-        const target = Math.min(session.minRecommended || 0, recommendationTargetMax);
-        if (session.extraBatchCount > 0 && target && counts.recommended.length >= target) {
+        if (outcome.skipped.length) {
           session.stoppedAfterTarget = true;
-          session.skippedAfterTarget = Math.max(0, pending.length - session.nextIndex);
-          setTaskStatus(`阈值以上论文已达到 ${counts.recommended.length}/${target} 篇，停止分析剩余追加候选。`, "success");
-          break;
+          session.skippedAfterTarget += outcome.skipped.length;
+          setTaskStatus(`阈值以上论文已达到最低数量，停止分析剩余 ${outcome.skipped.length} 篇追加候选。`, "success");
         }
+
+        if (outcome.errors.length) {
+          session.failedPapers = outcome.errors.map(({ item }) => item);
+          session.failedPaper = session.failedPapers[0] || null;
+          state.analysisSession = session;
+          state.lastAnalyzePapers = [...session.failedPapers];
+          throw concurrentAnalysisError(outcome.errors);
+        }
+
+        state.lastAnalyzePapers = [];
       }
 
       const currentCounts = splitReport({
@@ -4493,10 +4461,12 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
         break;
       }
 
+      const nextPendingIndex = pending.length;
       session.papers.push(...extraPapers);
       pending.push(...extraPapers);
-      state.lastAnalyzePapers = [pending[session.nextIndex]];
-      showProgressView(session.papers.length, reused.length, pending.length);
+      session.nextIndex = nextPendingIndex;
+      state.lastAnalyzePapers = [...extraPapers];
+      showProgressView(session.papers.length, reused.length, extraPapers.length);
     }
   } finally {
     resetProgressTimer();
@@ -4527,6 +4497,7 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
     extraBatchCount: session.extraBatchCount,
     stoppedAfterTarget: session.stoppedAfterTarget,
     skippedAfterTarget: session.skippedAfterTarget,
+    skippedAnalysisCount: session.skippedAnalysisPapers.length,
     candidateCount: analyzed.length,
     items: analyzed
   };
@@ -4550,12 +4521,16 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
   const stoppedText = session.stoppedAfterTarget
     ? `达到最低达标数后已停止 ${session.skippedAfterTarget} 篇追加候选分析。`
     : "";
+  const skippedAnalysisText = session.skippedAnalysisPapers.length
+    ? `已按管理员选择跳过 ${session.skippedAnalysisPapers.length} 篇分析失败论文。`
+    : "";
   const reusedText = reused.length ? `复用 ${reused.length} 篇历史分析。` : "";
   elements.taskDoneSummary.textContent = [
     `推荐 ${counts.recommended.length} 篇，隐藏 ${counts.hidden.length} 篇。`,
     targetText,
     expansionText,
     stoppedText,
+    skippedAnalysisText,
     reusedText
   ].filter(Boolean).join("");
 
@@ -5552,12 +5527,16 @@ elements.candidateForceArxiv.addEventListener("click", confirmForceArxivFetch);
 
 elements.taskClose.addEventListener("click", () => {
   closeTaskDialog();
+  showPausedRecommendationAnalysis();
 });
 
 elements.taskDialog.addEventListener("cancel", (event) => {
   if (state.taskLocked) {
     event.preventDefault();
+    return;
   }
+
+  showPausedRecommendationAnalysis();
 });
 
 async function retryRecommendationOperation() {
@@ -5576,6 +5555,42 @@ async function retryRecommendationOperation() {
   await analyzeConfirmedPapers(retrySession ? retrySession.papers : state.lastAnalyzePapers, retrySession);
 }
 
+async function skipCurrentRecommendationPaper() {
+  if (state.taskLocked) {
+    return false;
+  }
+
+  const session = state.analysisSession;
+  const paper = currentFailedAnalysisPaper();
+
+  if (!session || !paper) {
+    throw new Error("当前没有可跳过的失败论文，请重新生成推荐列表。");
+  }
+
+  const apiKeyMessage = `请先设置 ${providerLabel()} API Key，再跳过论文并继续分析。`;
+  if (!ensureApiKey(apiKeyMessage)) {
+    setTaskStatus(apiKeyMessage, "error");
+    return false;
+  }
+
+  const title = String(paper.title || paper.id || "当前论文");
+  if (!window.confirm(`确认跳过论文“${title}”并继续？已成功完成的论文分析会保留。`)) {
+    return false;
+  }
+
+  const { skipped } = skipFailedAnalysisPaper(session);
+  if (!skipped) {
+    throw new Error("当前失败论文已经处理，请刷新任务状态。");
+  }
+
+  state.analysisSession = session;
+  state.lastAnalyzePapers = [...session.failedPapers];
+  hideStatus();
+  setTaskStatus(`已跳过“${title}”，正在继续处理其余论文。`, "warning");
+  await analyzeConfirmedPapers(session.papers, session);
+  return true;
+}
+
 elements.taskRetry.addEventListener("click", async () => {
   elements.taskRetry.hidden = true;
 
@@ -5592,6 +5607,20 @@ elements.taskRetry.addEventListener("click", async () => {
   }
 });
 
+elements.taskSkipAnalysisPaper.addEventListener("click", async () => {
+  try {
+    await skipCurrentRecommendationPaper();
+  } catch (error) {
+    resetProgressTimer();
+    setTaskLocked(false);
+    setTaskStatus(
+      `跳过后继续失败：${error.message}`,
+      "error",
+      rememberRecommendationRetry("analysis", error)
+    );
+  }
+});
+
 elements.retryButton.addEventListener("click", async () => {
   elements.retryButton.hidden = true;
   try {
@@ -5600,6 +5629,20 @@ elements.retryButton.addEventListener("click", async () => {
     resetProgressTimer();
     showStatus(
       `重试失败：${error.message}`,
+      "error",
+      rememberRecommendationRetry("analysis", error)
+    );
+  }
+});
+
+elements.skipAnalysisPaperButton.addEventListener("click", async () => {
+  try {
+    await skipCurrentRecommendationPaper();
+  } catch (error) {
+    resetProgressTimer();
+    setTaskLocked(false);
+    showStatus(
+      `跳过后继续失败：${error.message}`,
       "error",
       rememberRecommendationRetry("analysis", error)
     );

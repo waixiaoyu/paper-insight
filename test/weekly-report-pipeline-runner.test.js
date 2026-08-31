@@ -230,6 +230,55 @@ test("Pipeline Runner waits for an administrator after repair exhaustion and gra
   assert.equal(result.markdown, "# Inspectable draft");
 });
 
+test("Pipeline Runner routes a paper writer decision back to the failed paper", async () => {
+  let retryInput;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({ action: "continue_repair" })
+  };
+  const steps = {
+    prepare: async () => ({
+      nextStage: "manual_review",
+      paperDrafts: [{ paperId: "2608.51001" }],
+      manualReview: {
+        stage: "write_paper_sections",
+        paperId: "2608.51002",
+        issues: [{
+          code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
+          details: [{ code: "numeric_claim_not_in_evidence", path: "oneSentenceTakeaway.text" }]
+        }],
+        repairAttempts: 1,
+        allowedActions: ["continue_repair", "exit_task", "skip_paper"]
+      }
+    }),
+    paperSections: async (value) => {
+      retryInput = value;
+      return {
+        ...value,
+        nextStage: "publish",
+        markdown: "# Repaired weekly report",
+        qaReport: { status: "passed" }
+      };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop({ reportKey: "2026-W35" }, context, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps
+  });
+
+  assert.equal(result.state, "publish");
+  assert.equal(retryInput.nextStage, "write_paper_sections");
+  assert.equal(retryInput.paperSectionRetry.paperId, "2608.51002");
+  assert.deepEqual(retryInput.paperSectionRetry.issues, [
+    { code: "numeric_claim_not_in_evidence", path: "oneSentenceTakeaway.text" }
+  ]);
+  assert.equal(retryInput.paperSectionRetry.attempt, 1);
+  assert.equal(retryInput.paperSectionRepairAttempts["2608.51002"], 2);
+  assert.deepEqual(retryInput.paperDrafts, [{ paperId: "2608.51001" }]);
+});
+
 test("Pipeline Runner restarts calibration after an administrator skips one paper", async () => {
   const calls = [];
   let calibrationInput;

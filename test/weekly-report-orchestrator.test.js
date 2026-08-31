@@ -1691,10 +1691,74 @@ test("write_paper_sections preserves valid drafts while requesting an administra
     });
   assert.equal(written.nextStage, "manual_review");
   assert.equal(written.manualReview.paperId, "2607.19602");
-  assert.deepEqual(written.manualReview.allowedActions, ["exit_task", "skip_paper"]);
+  assert.deepEqual(written.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
   assert.equal(execution.sections.get("paper-drafts").succeeded.length, 1);
   assert.equal(execution.sections.get("paper-drafts").failed.length, 1);
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
+});
+
+test("write_paper_sections retries only the failed paper and preserves completed drafts", async () => {
+  const execution = fakeExecutionContext();
+  const selectedItems = [
+    calibratedItemFor("2607.19611", 88, "must_read"),
+    calibratedItemFor("2607.19612", 78, "worth_reading")
+  ].map((entry, index) => ({
+    ...entry,
+    selection: {
+      selected: true,
+      finalScore: entry.reviewResult.rawScore,
+      readingTier: entry.calibrationResult.readingTier,
+      rank: index + 1
+    }
+  }));
+  const planned = {
+    nextStage: "write_paper_sections",
+    options: { paperConcurrency: 2 },
+    selectedItems,
+    editorialPlan: editorialPlanFor(selectedItems),
+    counts: { primary: 2, reserve: 0, fullTextEligible: 2, reviewed: 2, calibrated: 2, selected: 2, excluded: 0 },
+    warnings: []
+  };
+
+  const first = await writeWeeklyReportPaperSections(planned, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const paperId = JSON.parse(prompt).paper.paperId;
+      const draft = paperDraftFor(paperId);
+      if (paperId === "2607.19612") draft.limitationsAndConstraints = [];
+      return draft;
+    }
+  });
+  const preservedDraft = first.paperDrafts[0];
+  const retriedPaperIds = [];
+  const retriedTasks = [];
+  const retried = await writeWeeklyReportPaperSections({
+    ...first,
+    nextStage: "write_paper_sections",
+    manualReview: null,
+    paperSectionRetry: {
+      paperId: "2607.19612",
+      issues: [{ code: "limitations_missing", path: "limitationsAndConstraints" }],
+      attempt: 1
+    },
+    paperSectionRepairAttempts: { "2607.19612": 2 }
+  }, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      retriedPaperIds.push(payload.paper.paperId);
+      retriedTasks.push(payload.task);
+      return paperDraftFor(payload.paper.paperId);
+    }
+  });
+
+  assert.equal(retried.nextStage, "write_head_tail");
+  assert.deepEqual(retriedPaperIds, ["2607.19612"]);
+  assert.deepEqual(retriedTasks, ["weekly_report_write_paper_section_repair"]);
+  assert.equal(retried.paperDrafts[0], preservedDraft);
+  assert.deepEqual(retried.paperDrafts.map((draft) => draft.paperId), ["2607.19611", "2607.19612"]);
+  assert.equal(execution.sections.has("paper-drafts-admin-0001"), true);
+  assert.equal([...execution.sections.keys()].some((name) => name.startsWith("paper-writer-call-admin-0001-")), true);
 });
 
 test("write_head_tail completes the existing Editorial Agent and persists its model call and normalized artifact", async () => {
@@ -2574,6 +2638,6 @@ test("write_paper_sections exposes a skip decision for one unsupported selected 
 
   assert.equal(written.nextStage, "manual_review");
   assert.equal(written.manualReview.paperId, "2607.19602");
-  assert.deepEqual(written.manualReview.allowedActions, ["exit_task", "skip_paper"]);
+  assert.deepEqual(written.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });

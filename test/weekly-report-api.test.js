@@ -62,6 +62,94 @@ const mockLlmServer = createServer(async (request, response) => {
   }));
 });
 
+test("recommendation scores use the four-dimension weighted average plus interest adjustment", async () => {
+  const previousGenerationText = mockGenerationText;
+  const papers = [
+    {
+      id: "2608.30001",
+      title: "Balanced recommendation candidate",
+      authors: ["Test Author"],
+      categories: ["cs.AI"],
+      primaryCategory: "cs.AI",
+      published: "2026-08-28T00:00:00Z",
+      summary: "A balanced general AI systems paper."
+    },
+    {
+      id: "2608.30002",
+      title: "Evidence-limited recommendation candidate",
+      authors: ["Test Author"],
+      categories: ["cs.AI"],
+      primaryCategory: "cs.AI",
+      published: "2026-08-28T00:00:00Z",
+      summary: "A general AI systems paper with limited evidence."
+    }
+  ];
+  const analysisFor = (paper, scores) => ({
+    id: paper.id,
+    score: 0,
+    scores,
+    interestFit: "general_ai_system",
+    interestReason: "The method is transferable to general AI systems.",
+    tldr: "A concrete recommendation judgment.",
+    problem: "A defined research problem.",
+    background: "Relevant research background.",
+    method: "A concrete technical method.",
+    technicalDetails: "Technical implementation details.",
+    contribution: "A specific contribution.",
+    experiment: "The reported experimental evidence.",
+    networkUseCase: "Potential application value.",
+    limitations: "The current evidence boundary.",
+    recommendedReadingPath: "Read the method and experiments first.",
+    readingGuide: ["Check the method.", "Check the evidence."],
+    whyRecommend: "The paper has a clear research contribution.",
+    matchedKeywords: ["agent"],
+    industryTags: []
+  });
+
+  try {
+    mockGenerationText = JSON.stringify({
+      recommendations: [
+        analysisFor(papers[0], {
+          scenarioProblemValue: 70,
+          methodNovelty: 70,
+          practicalValue: 70,
+          evidence: 70
+        }),
+        analysisFor(papers[1], {
+          scenarioProblemValue: 80,
+          methodNovelty: 80,
+          practicalValue: 80,
+          evidence: 60
+        })
+      ]
+    });
+
+    const response = await fetch(`${baseUrl}/api/analyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "AI agent",
+        threshold: 70,
+        maxAnalyze: 2,
+        maxRecommendations: 2,
+        papers,
+        llmApiKey: "test-api-key",
+        llmProvider: "glm-coding-anthropic",
+        llmModel: "glm-5.3"
+      })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200, payload.detail || payload.message);
+    assert.deepEqual(
+      payload.analyzedPapers.map((paper) => paper.analysis.score),
+      [72, 76]
+    );
+  } finally {
+    mockGenerationText = previousGenerationText;
+  }
+});
+
 const semanticReviewRequestPayload = () => ({
   date: "2026-07-29",
   month: "2026-07",
@@ -145,7 +233,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-type") || "", /text\/html/);
   const html = await page.text();
-  assert.match(html, /weekly-operations-v2026-08-25/);
+  assert.match(html, /weekly-report-trace-summary-v2026-08-31/);
   assert.match(html, /id="weeklyReportTraceDialog"/);
   assert.match(html, /id="weeklyReportJobHealth"/);
   assert.match(html, /id="weeklyReportTraceReconnect"/);
@@ -194,7 +282,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(stylesheet, /\.weekly-report-trace-shell\s*\{[^}]*overscroll-behavior:\s*contain/s);
   assert.match(stylesheet, /\.reading-list-shell\s*\{[^}]*overflow-y:\s*auto/s);
   assert.match(stylesheet, /\.reading-list-shell\s*\{[^}]*overscroll-behavior:\s*contain/s);
-  assert.match(stylesheet, /\.reading-list-shell\s*\{[^}]*minmax\(240px,\s*1fr\)/s);
+  assert.match(stylesheet, /\.reading-list-shell\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/s);
   assert.match(stylesheet, /\.weekly-report-trace-artifact-list\s*\{/);
   assert.match(stylesheet, /\.weekly-report-trace-artifact\s*\{/);
   assert.match(source, /本步骤做什么：/);
@@ -203,6 +291,64 @@ test("首页和静态资源仍可访问", async () => {
     source,
     /function weeklyReportPapers\(report = state\.currentReport\)\s*\{\s*return reportPapers\(report\);\s*\}/s
   );
+});
+
+test("周报弹窗只使用外层纵向滚动", async () => {
+  const styles = await fetch(`${baseUrl}/styles.css`);
+  assert.equal(styles.status, 200);
+  const stylesheet = await styles.text();
+  assert.match(stylesheet, /\.reading-list-output\s*\{[^}]*overflow:\s*hidden/s);
+  assert.doesNotMatch(stylesheet, /\.reading-list-output\s*\{[^}]*overflow:\s*auto/s);
+});
+
+test("周报弹窗在关键状态时显示进度区", async () => {
+  const [app, styles] = await Promise.all([
+    fetch(`${baseUrl}/app.js`),
+    fetch(`${baseUrl}/styles.css`)
+  ]);
+  assert.equal(app.status, 200);
+  assert.equal(styles.status, 200);
+  const source = await app.text();
+  const stylesheet = await styles.text();
+  assert.match(stylesheet, /\.reading-list-progress\s*\{[^}]*position:\s*sticky[^}]*top:\s*0[^}]*z-index:/s);
+  assert.match(source, /function revealReadingListProgress\(/);
+  assert.match(source, /readingListShell\.scrollTo\(\{\s*top:/s);
+  assert.match(source, /reveal:\s*true/);
+});
+
+test("周报弹窗不会为 Markdown 预览压缩进度步骤", async () => {
+  const styles = await fetch(`${baseUrl}/styles.css`);
+  assert.equal(styles.status, 200);
+  const stylesheet = await styles.text();
+  assert.match(stylesheet, /\.reading-list-progress\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
+  assert.match(stylesheet, /\.reading-list-preview\s*\{[^}]*flex:\s*1\s+0\s+240px/s);
+  assert.match(stylesheet, /@media\s*\(max-height:\s*700px\)[\s\S]*?\.reading-list-preview\s*\{[^}]*flex-basis:\s*160px/s);
+});
+
+test("周报未开始和等待管理员处理时不显示旋转动画", async () => {
+  const [app, styles] = await Promise.all([
+    fetch(`${baseUrl}/app.js`),
+    fetch(`${baseUrl}/styles.css`)
+  ]);
+  assert.equal(app.status, 200);
+  assert.equal(styles.status, 200);
+  const source = await app.text();
+  const stylesheet = await styles.text();
+  assert.match(source, /classList\.toggle\("idle",\s*type === "idle"\)/);
+  assert.match(source, /classList\.toggle\("waiting",\s*type === "waiting"\)/);
+  assert.match(source, /waitingForAdmin\s*\?\s*"waiting"\s*:/);
+  assert.match(stylesheet, /\.reading-list-dialog\.idle \.reading-list-progress \.spinner[\s\S]*?animation:\s*none/);
+  assert.match(stylesheet, /\.reading-list-dialog\.waiting \.reading-list-progress \.spinner[\s\S]*?animation:\s*none/);
+});
+
+test("Agent Loop Trace 摘要不会被长告警文本挤出卡片", async () => {
+  const styles = await fetch(`${baseUrl}/styles.css`);
+  assert.equal(styles.status, 200);
+  const stylesheet = await styles.text();
+  assert.match(stylesheet, /\.reading-list-source-heading\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)/s);
+  assert.match(stylesheet, /\.reading-list-source-heading strong\s*\{[^}]*white-space:\s*nowrap/s);
+  assert.match(stylesheet, /\.reading-list-source-actions span\s*\{[^}]*white-space:\s*normal[^}]*overflow-wrap:\s*anywhere[^}]*-webkit-line-clamp:\s*2/s);
+  assert.match(stylesheet, /\.reading-list-source-toggle\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
 });
 
 test("周报 API 接受当前推荐列表中的跨周候选", async () => {

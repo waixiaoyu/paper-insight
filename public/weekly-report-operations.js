@@ -13,6 +13,18 @@ const paperTitleFor = (item = {}, paperId = paperIdFor(item)) => String(
   item?.paper?.title || item?.title || paperId || "未记录论文标题"
 );
 
+export const weeklyReportWarningSummary = (warning) => {
+  if (!warning) return "";
+  if (typeof warning !== "object") return String(warning).trim();
+
+  const message = String(warning.message || warning.detail || warning.summary || "").trim();
+  const paperId = paperIdFor({ paperId: warning.paperId });
+  if (message) {
+    return paperId && !message.includes(paperId) ? `论文 ${paperId}：${message}` : message;
+  }
+  return paperId ? `论文 ${paperId}：存在需要管理员查看的执行提醒。` : "存在需要管理员查看的执行提醒。";
+};
+
 export const weeklyReportArtifactSummary = (name, artifact = {}) => {
   const normalizedName = String(name || "").toLowerCase();
   if (["evidence-artifacts", "review-artifacts"].includes(normalizedName)) {

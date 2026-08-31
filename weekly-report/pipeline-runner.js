@@ -147,6 +147,44 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           };
         }
         if (action === "continue_repair") {
+          if (String(review.stage || "") === "write_paper_sections") {
+            const paperId = String(review.paperId || "").trim();
+            if (!paperId) {
+              throw new WeeklyReportPipelineError(
+                "Paper Section administrator repair requires one concrete paperId.",
+                {
+                  code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                  stage: "write_paper_sections",
+                  traceId: context.traceId
+                }
+              );
+            }
+            const repairIssues = (Array.isArray(review.issues) ? review.issues : []).flatMap((itemIssue) => (
+              Array.isArray(itemIssue?.details) && itemIssue.details.length
+                ? itemIssue.details
+                : [itemIssue]
+            ));
+            const previousAttempts = Math.max(
+              1,
+              Math.trunc(Number(current?.paperSectionRepairAttempts?.[paperId]) || 0),
+              Math.trunc(Number(review.repairAttempts) || 0)
+            );
+            current = {
+              ...current,
+              nextStage: "write_paper_sections",
+              manualReview: null,
+              paperSectionRetry: {
+                paperId,
+                issues: repairIssues,
+                attempt: Math.max(0, Math.trunc(Number(current?.paperSectionRetry?.attempt) || 0)) + 1
+              },
+              paperSectionRepairAttempts: {
+                ...(current?.paperSectionRepairAttempts || {}),
+                [paperId]: previousAttempts + 1
+              }
+            };
+            continue;
+          }
           current = {
             ...current,
             nextStage: "repair_once",

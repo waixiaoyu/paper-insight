@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { getDefaultAutoSelectFamily } from "node:net";
 import test from "node:test";
 
 import {
@@ -6,6 +7,12 @@ import {
   callWeeklyReportAgentModel,
   normalizeWeeklyReportAgentMaxOutputTokens
 } from "../server.js";
+
+test("Windows server startup disables Node network family auto-selection", {
+  skip: process.platform !== "win32"
+}, () => {
+  assert.equal(getDefaultAutoSelectFamily(), false);
+});
 
 test("weekly-report output token configuration uses a finite bounded integer", () => {
   assert.equal(normalizeWeeklyReportAgentMaxOutputTokens(undefined), 65536);
@@ -93,6 +100,49 @@ test("recommendation analysis retries one truncated Anthropic JSON response and 
 
     assert.deepEqual(result, [{ id: "2608.23104", tldr: "重试后返回完整分析。" }]);
     assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = nativeFetch;
+  }
+});
+
+test("recommendation analysis requests the maximum configured model output capacity", async () => {
+  const nativeFetch = globalThis.fetch;
+  let requestPayload = null;
+  const paper = {
+    id: "2608.23105",
+    title: "Bounded Recommendation Analysis",
+    authors: ["Test Author"],
+    categories: ["cs.AI"],
+    published: "2026-08-27T00:00:00Z",
+    summary: "A test paper."
+  };
+
+  try {
+    globalThis.fetch = async (_input, init = {}) => {
+      requestPayload = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        content: [{
+          type: "text",
+          text: JSON.stringify({ recommendations: [{ id: paper.id }] })
+        }],
+        stop_reason: "end_turn"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+
+    await callLlmAnalyzer({
+      query: "AI agent",
+      papers: [paper],
+      llm: {
+        apiKey: "test-key",
+        endpoint: "https://example.test/api/anthropic/v1/messages",
+        model: "glm-5.3"
+      }
+    });
+
+    assert.equal(requestPayload.max_tokens, 128000);
   } finally {
     globalThis.fetch = nativeFetch;
   }

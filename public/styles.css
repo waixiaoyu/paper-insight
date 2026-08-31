@@ -556,8 +556,8 @@ button {
 }
 
 .reading-list-shell {
-  display: grid;
-  grid-template-rows: auto auto auto minmax(240px, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   max-height: calc(100dvh - 40px);
   min-height: 0;
@@ -615,6 +615,7 @@ button {
 .reading-list-header,
 .reading-list-footer {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -638,6 +639,7 @@ button {
 
 .reading-list-options {
   display: grid;
+  flex: 0 0 auto;
   gap: 10px;
   padding: 12px 20px;
   background: #fff;
@@ -800,13 +802,18 @@ button {
 
 .reading-list-progress {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 4;
   min-height: 98px;
   padding: 12px 20px;
   background: var(--accent-soft);
   border-bottom: 1px solid rgba(23, 107, 135, 0.18);
+  box-shadow: 0 3px 10px rgba(23, 32, 43, 0.08);
 }
 
 .reading-list-progress .spinner {
@@ -814,6 +821,28 @@ button {
   height: 26px;
   border-width: 3px;
   margin-top: 2px;
+}
+
+.reading-list-dialog.idle .reading-list-progress .spinner {
+  animation: none;
+  border-color: #bdd1da;
+  background: #fff;
+}
+
+.reading-list-dialog.waiting .reading-list-progress .spinner {
+  display: grid;
+  place-items: center;
+  animation: none;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber);
+}
+
+.reading-list-dialog.waiting .reading-list-progress .spinner::after {
+  content: "!";
+  font-size: 15px;
+  font-weight: 900;
+  line-height: 1;
 }
 
 .reading-list-progress-main {
@@ -924,9 +953,9 @@ button {
 }
 
 .reading-list-source-heading {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   margin-bottom: 8px;
 }
@@ -939,24 +968,33 @@ button {
   margin: 0;
   color: var(--ink);
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .reading-list-source-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
 }
 
 .reading-list-source-actions span {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
-  white-space: nowrap;
+  line-height: 1.4;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .reading-list-source-toggle {
+  flex: 0 0 auto;
   min-height: 26px;
   padding: 0 9px;
   color: var(--accent-strong);
@@ -1122,9 +1160,10 @@ button {
 
 .reading-list-preview {
   display: grid;
+  flex: 1 0 240px;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   background: #fbfcfe;
 }
 
@@ -1157,7 +1196,7 @@ button {
   min-height: 0;
   max-height: none;
   padding: 16px 20px;
-  overflow: auto;
+  overflow: hidden;
   color: var(--ink);
   background: transparent;
   border: 0;
@@ -1169,7 +1208,7 @@ button {
 }
 
 .reading-list-dialog.ready .reading-list-output {
-  height: 100%;
+  height: auto;
 }
 
 .reading-list-footer {
@@ -3136,6 +3175,12 @@ button:disabled {
   }
 }
 
+@media (max-height: 700px) {
+  .reading-list-preview {
+    flex-basis: 160px;
+  }
+}
+
 @media (max-width: 1080px) {
   .insight-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3294,6 +3339,7 @@ button:disabled {
 
   .reading-list-progress {
     grid-template-columns: 1fr;
+    position: static;
   }
 
   .reading-list-option-grid {

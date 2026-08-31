@@ -736,6 +736,7 @@ export const runPaperSectionWriter = async ({
   signal,
   onCall,
   onEvent,
+  repairIssues = [],
   networkRetryDelayMs = 50
 } = {}) => {
   const paperId = paperIdForItem(item);
@@ -839,10 +840,22 @@ export const runPaperSectionWriter = async ({
     }
   };
 
+  const administratorRepairIssues = Array.isArray(repairIssues) ? repairIssues.slice(0, 40) : [];
+  let repairAttempted = administratorRepairIssues.length > 0;
+  if (repairAttempted) {
+    await onEvent?.({
+      type: "paper_section_admin_repair_requested",
+      stage: "write_paper_sections",
+      paperId,
+      issues: administratorRepairIssues
+    });
+  }
   let responseRepairAttempted = false;
   let validation = await invokeWithNetworkRetry(
-    buildPaperSectionPrompt({ item }),
-    "initial"
+    repairAttempted
+      ? buildPaperSectionRepairPrompt({ item, issues: administratorRepairIssues })
+      : buildPaperSectionPrompt({ item }),
+    repairAttempted ? "admin_repair" : "initial"
   );
   if (hasOnlyResponseContractIssues(validation)) {
     const responseIssues = validation.issues;
@@ -855,14 +868,18 @@ export const runPaperSectionWriter = async ({
       issues: responseIssues
     });
     validation = await invokeWithNetworkRetry(
-      buildPaperSectionResponseRepairPrompt({ item, responseIssues }),
-      "initial_response_repair"
+      buildPaperSectionResponseRepairPrompt({
+        item,
+        issues: administratorRepairIssues,
+        responseIssues
+      }),
+      repairAttempted ? "admin_repair_response_repair" : "initial_response_repair"
     );
   }
   if (validation.valid) {
     return {
       paperDraft: validation.paperDraft,
-      repairAttempted: false,
+      repairAttempted,
       responseRepairAttempted,
       calls
     };
@@ -941,6 +958,7 @@ export const writePaperSectionsBatch = async (items, {
   signal,
   onCall,
   onEvent,
+  repairIssuesByPaperId = {},
   networkRetryDelayMs = 50
 } = {}) => {
   const candidates = Array.isArray(items) ? items : [];
@@ -962,6 +980,9 @@ export const writePaperSectionsBatch = async (items, {
         signal,
         onCall,
         onEvent,
+        repairIssues: Array.isArray(repairIssuesByPaperId?.[paperId])
+          ? repairIssuesByPaperId[paperId]
+          : [],
         networkRetryDelayMs
       });
       await onEvent?.({
