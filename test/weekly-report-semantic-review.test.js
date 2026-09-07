@@ -97,6 +97,29 @@ test("任何 high 问题都会把语义结论提升为 reject", () => {
   assert.equal(review.requiresManualReview, true);
 });
 
+test("只有内部发布流程泄漏时保留告警但不阻止发布", () => {
+  const review = normalizeWeeklyReportSemanticReview({
+    verdict: "reject",
+    score: 70,
+    summary: "正文提到了内部候选下限。",
+    checks: passingChecks,
+    issues: [
+      {
+        severity: "high",
+        category: "internal_process_leak",
+        claim: "该论文作为 fallback 进入周报。",
+        reason: "这是 Paper Insight 的内部选稿流程。"
+      }
+    ]
+  }, { mode: "enforce" });
+
+  assert.equal(review.verdict, "pass");
+  assert.equal(review.publishable, true);
+  assert.equal(review.requiresManualReview, false);
+  assert.equal(review.issues[0].severity, "low");
+  assert.doesNotThrow(() => assertSemanticReviewAllowsPublication(review, { mode: "enforce" }));
+});
+
 test("无效 verdict 会被拒绝而不是静默当作通过", () => {
   assert.throws(
     () => normalizeWeeklyReportSemanticReview({

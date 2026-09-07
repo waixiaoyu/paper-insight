@@ -85,24 +85,19 @@ test("摘要模式下每篇论文都必须声明证据边界", () => {
   assert.match(result.errors.join("\n"), /摘要模式下依据声明/);
 });
 
-test("发布正文出现内部流程词时阻止发布", () => {
-  const invalid = markdown.replace("本周两篇论文", "本周复评阈值通过的两篇论文");
+test("发布正文出现内部流程词时只记录管理员提示", () => {
+  const warned = markdown.replace("本周两篇论文", "本周复评阈值通过的两篇论文");
 
-  assert.throws(
-    () => assertWeeklyReportPublishable({
-      markdown: invalid,
-      papers,
-      report,
-      useOriginalText: false,
-      footerNote
-    }),
-    (error) => {
-      assert.equal(error.code, "WEEKLY_REPORT_QUALITY_GATE_FAILED");
-      assert.equal(error.status, 502);
-      assert.match(error.message, /内部流程词/);
-      return true;
-    }
-  );
+  const result = assertWeeklyReportPublishable({
+    markdown: warned,
+    papers,
+    report,
+    useOriginalText: false,
+    footerNote
+  });
+
+  assert.equal(result.valid, true, result.errors.join("\n"));
+  assert.match(result.warnings.join("\n"), /内部流程/);
 });
 
 test("发布元数据或固定尾注不符合约定时阻止发布", () => {

@@ -1516,10 +1516,14 @@ export const planWeeklyReportEditorial = async (selected, context = {}, {
         : undefined
     });
 
+    const warnings = uniqueWarnings([
+      ...(selected.warnings || []),
+      ...(result.warnings || [])
+    ]);
     await context.writeTrace("editorial-plan", result.editorialPlan);
     await context.updateStage("editorial_plan", {
       counts: selected.counts,
-      warnings: selected.warnings || []
+      warnings
     });
     await context.recordTrace({
       type: "stage_completed",
@@ -1529,12 +1533,14 @@ export const planWeeklyReportEditorial = async (selected, context = {}, {
       selectedPaperIds: selected.selectedItems.map(paperIdForStage),
       repairAttempted: result.repairAttempted,
       responseRepairAttempted: result.responseRepairAttempted,
+      warnings: result.warnings || [],
       decision: "continue"
     });
 
     return {
       ...selected,
       nextStage: "write_paper_sections",
+      warnings,
       editorialPlan: result.editorialPlan,
       editorialResult: result
     };
@@ -1637,6 +1643,10 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
   if (retryPaperId && targetItems.length !== 1) {
     throw new TypeError("Paper Section administrator repair target must match one selected paper.");
   }
+  const retryFailure = retryPaperId
+    ? (Array.isArray(planned.paperDraftResult?.failed) ? planned.paperDraftResult.failed : [])
+      .find((entry) => paperIdForStage(entry.item) === retryPaperId)
+    : null;
   let callSequence = 0;
   await context.updateStage("write_paper_sections", {
     counts: planned.counts,
@@ -1684,6 +1694,9 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
       onEvent: (event) => context.recordTrace(event),
       repairIssuesByPaperId: retryPaperId
         ? { [retryPaperId]: planned.paperSectionRetry?.issues || [] }
+        : {},
+      repairDraftByPaperId: retryPaperId && retryFailure?.error?.paperDraft
+        ? { [retryPaperId]: retryFailure.error.paperDraft }
         : {}
     });
   } catch (error) {
@@ -1709,6 +1722,13 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     ? planned.paperDraftResult.failed.filter((entry) => !attemptedPaperIds.has(paperIdForStage(entry.item)))
     : [];
   const failed = [...previousFailures, ...result.failed];
+  const warnings = uniqueWarnings([
+    ...(planned.warnings || []),
+    ...result.succeeded.flatMap((entry) => (entry.warnings || []).map((warning) => ({
+      ...warning,
+      paperId: paperIdForStage(entry.item)
+    })))
+  ]);
   const artifact = {
     concurrency: result.concurrency,
     attempted: result.attempted,
@@ -1756,6 +1776,7 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     return {
       ...planned,
       nextStage: "manual_review",
+      warnings,
       paperDrafts,
       paperDraftResult: { ...result, failed },
       paperSectionRepairAttempts,
@@ -1774,7 +1795,7 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
 
   await context.updateStage("write_paper_sections", {
     counts: planned.counts,
-    warnings: planned.warnings || []
+    warnings
   });
   await context.recordTrace({
     type: "stage_completed",
@@ -1784,12 +1805,14 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     concurrency,
     completed: paperDrafts.length,
     repairCount: result.succeeded.filter((entry) => entry.repairAttempted).length,
+    warnings: result.succeeded.flatMap((entry) => entry.warnings || []),
     decision: "continue"
   });
 
   return {
     ...planned,
     nextStage: "write_head_tail",
+    warnings,
     paperDrafts,
     paperDraftResult: { ...result, failed: [] },
     paperSectionRetry: null,
@@ -1857,10 +1880,14 @@ export const writeWeeklyReportHeadTail = async (written, context = {}, {
       onEvent: (event) => context.recordTrace(event)
     });
 
+    const warnings = uniqueWarnings([
+      ...(written.warnings || []),
+      ...(result.warnings || [])
+    ]);
     await context.writeTrace("head-tail-draft", result.headTailDraft);
     await context.updateStage("write_head_tail", {
       counts: written.counts,
-      warnings: written.warnings || []
+      warnings
     });
     await context.recordTrace({
       type: "stage_completed",
@@ -1869,12 +1896,14 @@ export const writeWeeklyReportHeadTail = async (written, context = {}, {
       durationMs: elapsed(stageStartedAt),
       repairAttempted: result.repairAttempted,
       responseRepairAttempted: result.responseRepairAttempted,
+      warnings: result.warnings || [],
       decision: "continue"
     });
 
     return {
       ...written,
       nextStage: "assemble",
+      warnings,
       headTailDraft: result.headTailDraft,
       headTailResult: result
     };
@@ -1963,10 +1992,14 @@ export const assembleWeeklyReport = async (completed, context = {}) => {
       paperDrafts: completed.paperDrafts,
       headTailDraft: completed.headTailDraft
     });
+    const warnings = uniqueWarnings([
+      ...(completed.warnings || []),
+      ...(result.warnings || [])
+    ]);
     await context.writeTrace("assembled-report", result);
     await context.updateStage("assemble", {
       counts: completed.counts,
-      warnings: completed.warnings || []
+      warnings
     });
     await context.recordTrace({
       type: "stage_completed",
@@ -1975,11 +2008,13 @@ export const assembleWeeklyReport = async (completed, context = {}) => {
       durationMs: elapsed(stageStartedAt),
       markdownChars: result.markdown.length,
       paperCount: result.publishedPapers.length,
+      warnings: result.warnings || [],
       decision: "continue"
     });
     return {
       ...completed,
       nextStage: "deterministic_qa",
+      warnings,
       markdown: result.markdown,
       assemblyResult: result,
       publishedPapers: result.publishedPapers,

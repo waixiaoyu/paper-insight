@@ -1,3 +1,5 @@
+import { paperDraftRepairPaths } from "./paper-draft-patch.js";
+
 const paperIdFrom = (paper = {}, contextPacket = {}) => String(
   contextPacket.paperId || paper.id || paper.absLink || paper.link || ""
 ).trim();
@@ -776,6 +778,13 @@ const paperDraftOutputSchema = {
   }
 };
 
+const paperDraftPatchOutputSchema = {
+  patches: [{
+    path: "one path from repairPaths",
+    value: "complete replacement value for that path"
+  }]
+};
+
 const paperSectionRules = [
   "Write only this paper's weekly-report body artifact. Do not return Markdown.",
   "Write every reader-facing text field in Simplified Chinese; paper titles and indispensable technical terms may remain in their original language.",
@@ -799,7 +808,7 @@ const paperSectionRules = [
   "Preserve time-horizon scope. Translate medium-horizon as 中期 or describe the concrete multi-encounter span; do not expand it to 中长期, 长期, or 长周期 unless the cited Evidence explicitly says long-term or long-horizon. Do not use the unnatural phrase 中时间跨度.",
   "Preserve strongest, best-performing, subset, and named-model qualifiers exactly in meaning. Never rewrite a result about selected top models as a result about frontier models or models as a whole.",
   "Do not introduce facts from outside knowledge, abstracts, prior analysis, or any other paper.",
-  "Any exact number must occur in the Evidence excerpts cited by that text field.",
+  "Any exact number must occur in the Evidence excerpts cited by that text field. A section number in reader guidance may instead be supported by the section metadata of a cited Evidence source; this exception applies only to the number occurrence used as a section reference.",
   "Provide at least two separately grounded limitations or applicability constraints.",
   "The two required limitations must be materially independent. Do not split the same word-level grounding or exact-evidence-linking gap into two bullets; add a distinct supported scope, cohort, data, seed, comparison, or missing-validation boundary.",
   "A poor performance result is not by itself a separate study limitation. Limitations must describe experiment design, data, seeds, comparison setup, scope, missing validation, or applicability boundaries.",
@@ -837,21 +846,43 @@ export const buildPaperSectionPrompt = ({ item } = {}) => JSON.stringify(
   basePaperSectionPayload({ task: "weekly_report_write_paper_section", item })
 );
 
-export const buildPaperSectionRepairPrompt = ({ item, issues = [] } = {}) => JSON.stringify({
-  ...basePaperSectionPayload({ task: "weekly_report_write_paper_section_repair", item }),
-  repairInstruction: "Regenerate the complete paperDraft and correct only the listed validation classes. Revalidate every field in the regenerated draft, not only the listed paths. For every exact number, cite all Evidence refs needed to support that number in the same text field or remove the number. Do not move an unsupported number to another field. Keep citations only in evidenceRefs arrays; never insert [field:index] or field:index into text.",
-  issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
-    .map((itemIssue) => writingRepairIssue(itemIssue, "paper_section_validation_failed"))
-});
+export const buildPaperSectionRepairPrompt = ({
+  item,
+  currentPaperDraft,
+  issues = []
+} = {}) => {
+  if (!currentPaperDraft || !paperDraftRepairPaths(issues).length) {
+    throw new TypeError("Paper Section repair requires a previous draft and at least one safe repair path.");
+  }
+  return JSON.stringify({
+    ...basePaperSectionPayload({ task: "weekly_report_write_paper_section_repair", item }),
+    currentPaperDraft,
+    outputSchema: paperDraftPatchOutputSchema,
+    repairPaths: paperDraftRepairPaths(issues),
+    repairInstruction: "Return a JSON patch only. Each patch path must exactly equal one repairPaths item and its value must replace that complete field. Every unpatched value is retained by the server. Do not return a full paperDraft. For every exact number in a patched field, cite all Evidence refs needed to support that number or remove the number. Do not move an unsupported number to another field. Keep citations only in evidenceRefs arrays.",
+    issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
+      .filter((itemIssue) => paperDraftRepairPaths([itemIssue]).length > 0)
+      .map((itemIssue) => writingRepairIssue(itemIssue, "paper_section_validation_failed"))
+  });
+};
 
 export const buildPaperSectionResponseRepairPrompt = ({
   item,
+  currentPaperDraft,
   issues = [],
   responseIssues = []
 } = {}) => JSON.stringify({
   ...basePaperSectionPayload({ task: "weekly_report_write_paper_section_response_repair", item }),
-  repairInstruction: "Regenerate the complete paperDraft with valid JSON and schema. Preserve the original content-repair scope when issues are present; do not introduce a second or broader content repair. Revalidate the complete result and do not reproduce or depend on the prior malformed raw response.",
+  ...(currentPaperDraft && paperDraftRepairPaths(issues).length ? {
+    currentPaperDraft,
+    outputSchema: paperDraftPatchOutputSchema,
+    repairPaths: paperDraftRepairPaths(issues),
+    repairInstruction: "The preceding patch response was malformed. Return a valid JSON patch only, limited to repairPaths. Every unpatched value is retained by the server. Do not return a full paperDraft or reproduce the malformed response."
+  } : {
+    repairInstruction: "Regenerate the complete paperDraft with valid JSON and schema. Preserve the original content-repair scope when issues are present; do not introduce a second or broader content repair. Revalidate the complete result and do not reproduce or depend on the prior malformed raw response."
+  }),
   issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
+    .filter((itemIssue) => paperDraftRepairPaths([itemIssue]).length > 0)
     .map((itemIssue) => writingRepairIssue(itemIssue, "paper_section_validation_failed")),
   responseValidationIssues: (Array.isArray(responseIssues) ? responseIssues : []).slice(0, 40)
     .map((itemIssue) => ({
@@ -984,7 +1015,9 @@ const normalizedContentRepairIssues = (issues = []) => (
 export const buildPaperSectionQaRepairPrompt = ({ item, paperDraft, issues = [] } = {}) => JSON.stringify({
   ...basePaperSectionPayload({ task: "weekly_report_repair_paper_section", item }),
   currentPaperDraft: paperSemanticDraft(paperDraft),
-  repairInstruction: "Regenerate this paper's complete paperDraft. Correct only the normalized QA issues while preserving all supported content and evidence boundaries.",
+  outputSchema: paperDraftPatchOutputSchema,
+  repairPaths: paperDraftRepairPaths(normalizedContentRepairIssues(issues)),
+  repairInstruction: "Return a JSON patch only. Each patch path must exactly equal one repairPaths item and replace that complete field. Every unpatched value is retained by the server. Do not return a full paperDraft.",
   issues: normalizedContentRepairIssues(issues)
 });
 
@@ -996,7 +1029,9 @@ export const buildPaperSectionQaRepairResponsePrompt = ({
 } = {}) => JSON.stringify({
   ...basePaperSectionPayload({ task: "weekly_report_repair_paper_section_response", item }),
   currentPaperDraft: paperSemanticDraft(paperDraft),
-  repairInstruction: "Regenerate the complete repaired paperDraft and correct the response validation classes. Do not broaden the requested content repair.",
+  outputSchema: paperDraftPatchOutputSchema,
+  repairPaths: paperDraftRepairPaths(normalizedContentRepairIssues(issues)),
+  repairInstruction: "The preceding patch response was invalid. Return a valid JSON patch only, limited to repairPaths. Every unpatched value is retained by the server. Do not return a full paperDraft or broaden the requested content repair.",
   issues: normalizedContentRepairIssues(issues),
   responseValidationIssues: (Array.isArray(responseIssues) ? responseIssues : []).slice(0, 40)
     .map((itemIssue) => ({

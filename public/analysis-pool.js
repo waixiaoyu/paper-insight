@@ -23,6 +23,16 @@ export function analysisProgressCounts({ settled = 0, failed = 0, total = 0 } = 
   };
 }
 
+export function isBackendUnavailableError(error) {
+  const code = String(error?.code || "").trim().toUpperCase();
+  if (code === "BACKEND_UNAVAILABLE") {
+    return true;
+  }
+
+  const message = String(error?.message || "").trim();
+  return /^(failed to fetch|fetch failed|networkerror when attempting to fetch resource\.?|load failed)$/i.test(message);
+}
+
 export function skipFailedAnalysisPaper(session = {}) {
   const failedPapers = Array.isArray(session.failedPapers) ? [...session.failedPapers] : [];
   const skipped = failedPapers.shift() || null;

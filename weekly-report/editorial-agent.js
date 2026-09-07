@@ -6,6 +6,7 @@ import {
   buildHeadTailRepairPrompt,
   buildHeadTailResponseRepairPrompt
 } from "./prompts.js";
+import { internalProcessWarnings } from "./internal-process-policy.js";
 
 const MATURITY_LEVELS = new Set(["emerging", "developing", "mature", "uncertain"]);
 const EVIDENCE_FIELDS = [
@@ -17,7 +18,6 @@ const EVIDENCE_FIELDS = [
   "limitations",
   "affiliations"
 ];
-const INTERNAL_TERM_PATTERN = /\bfallback\b|\b(?:score|selection|review)\s+thresholds?\b|(?:评分|选稿|推荐|复评)\s*阈值|\bselection\s*reason\b|\bselectionreason\b|\bagent\s+(?:loop|stage)\b|\bprompts?\b|\bartifacts?\b|\binternal\s+json\b|内部\s*json|定向重评|横向校准|复评阈值|保底补入/iu;
 const GENERIC_TITLE_PATTERN = /新范式|值得关注|加速落地|new\s+paradigm|worth\s+watching|accelerat(?:e|ed|ing)\s+(?:adoption|deployment)/iu;
 const RHETORICAL_STYLE_PATTERN = /不等于|不等同于|并非.{0,12}而是|而非|揭示|迈向|赋能|解锁|重塑|颠覆|革命性?|坚实(?:的)?(?:量化)?证据|有效(?:解决|方法|暴露|测试)|具有(?:较高|很高|重要)的?(?:直接)?参考价值|不排除未来.{0,30}(?:可能|改进|消除)|鸿沟|浪潮|拐点|破局|\breveal(?:s|ed|ing)?\b|\bunlock(?:s|ed|ing)?\b|\breshape(?:s|d|ing)?\b|\brevolutionary\b/iu;
 const LIMITED_TOP_MODEL_EVIDENCE_PATTERN = /\b(?:the\s+)?(?:strongest|best(?:-performing)?|best\s+performer)\s+models?\b/iu;
@@ -554,14 +554,8 @@ const validateMetricLabelSupport = ({ text, sourceText, path, issues }) => {
   issues.push(validationIssue);
 };
 
-const validateInternalText = (value, path, issues) => {
-  if (INTERNAL_TERM_PATTERN.test(value)) {
-    issues.push(issue(
-      "internal_term_leak",
-      path,
-      "Editorial Plan text must not expose internal workflow or selection terms."
-    ));
-  }
+const validateInternalText = (value, path, issues, warnings) => {
+  warnings.push(...internalProcessWarnings(value, { path }));
   if (RHETORICAL_STYLE_PATTERN.test(value)) {
     const validationIssue = issue(
       "rhetorical_prose_style",
@@ -611,11 +605,13 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
   const refs = evidenceReferenceMap(rankedItems);
   const allEvidenceExcerptText = [...refs.values()].map((entry) => entry.excerpt).join(" ");
   const issues = [];
+  const warnings = [];
 
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {
       valid: false,
       issues: [issue("schema_invalid", "response", "Editorial Plan must be an object.")],
+      warnings,
       editorialPlan: null
     };
   }
@@ -646,8 +642,8 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
     validationIssue.repairKinds = ["paper_title_prefix"];
     issues.push(validationIssue);
   }
-  validateInternalText(coreTheme, "coreTheme", issues);
-  validateInternalText(titleAngle, "titleAngle", issues);
+  validateInternalText(coreTheme, "coreTheme", issues, warnings);
+  validateInternalText(titleAngle, "titleAngle", issues, warnings);
   validateModelCohortScope({ text: coreTheme, sourceText: allEvidenceExcerptText, path: "coreTheme", issues });
   validateModelCohortScope({ text: titleAngle, sourceText: allEvidenceExcerptText, path: "titleAngle", issues });
   validateTemporalScope({ text: coreTheme, sourceText: allEvidenceExcerptText, path: "coreTheme", issues });
@@ -728,8 +724,8 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
     }
     validateClaimNumbers({ claim, refs, evidenceRefs, path: `${path}.claim`, issues });
     validatePercentageMetricLabels({ claim, refs, evidenceRefs, path: `${path}.claim`, issues });
-    validateInternalText(claim, `${path}.claim`, issues);
-    validateInternalText(caveat, `${path}.caveat`, issues);
+    validateInternalText(claim, `${path}.claim`, issues, warnings);
+    validateInternalText(caveat, `${path}.caveat`, issues, warnings);
     validateModelCohortScope({
       text: claim,
       sourceText: evidenceRefs.map((reference) => refs.get(reference)?.excerpt || "").join(" "),
@@ -802,8 +798,8 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
     }
     validateClaimNumbers({ claim, refs, evidenceRefs, path: `${path}.claim`, issues });
     validatePercentageMetricLabels({ claim, refs, evidenceRefs, path: `${path}.claim`, issues });
-    validateInternalText(claim, `${path}.claim`, issues);
-    validateInternalText(caveat, `${path}.caveat`, issues);
+    validateInternalText(claim, `${path}.claim`, issues, warnings);
+    validateInternalText(caveat, `${path}.caveat`, issues, warnings);
     validateModelCohortScope({
       text: claim,
       sourceText: evidenceRefs.map((reference) => refs.get(reference)?.excerpt || "").join(" "),
@@ -854,7 +850,7 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
       if (!reason) {
         issues.push(issue("reading_reason_missing", `readingOrder[${index}].reason`, "Reading-order reason is required."));
       }
-      validateInternalText(reason, `readingOrder[${index}].reason`, issues);
+      validateInternalText(reason, `readingOrder[${index}].reason`, issues, warnings);
       validateModelCohortScope({
         text: reason,
         sourceText: [...refs.values()]
@@ -933,6 +929,7 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
   return {
     valid: normalizedIssues.length === 0,
     issues: normalizedIssues,
+    warnings: uniqueIssues(warnings),
     editorialPlan: {
       coreTheme,
       titleAngle,
@@ -1068,6 +1065,7 @@ export const runEditorialPlanAgent = async ({
       validation = {
         valid: false,
         issues: [issue("invalid_json", "response", error.message)],
+        warnings: [],
         editorialPlan: null
       };
     }
@@ -1078,7 +1076,11 @@ export const runEditorialPlanAgent = async ({
       prompt,
       rawOutput,
       normalizedOutput: validation.editorialPlan,
-      validation: { valid: validation.valid, issues: validation.issues },
+      validation: {
+        valid: validation.valid,
+        issues: validation.issues,
+        warnings: validation.warnings || []
+      },
       durationMs: Math.max(0, Date.now() - startedAt),
       error: null
     };
@@ -1186,7 +1188,8 @@ export const runEditorialPlanAgent = async ({
         : {
           valid: false,
           editorialPlan: currentEditorialPlan,
-          issues: contentIssues
+          issues: contentIssues,
+          warnings: []
         };
       if (patchResult.valid) {
         await onEvent?.({
@@ -1219,7 +1222,11 @@ export const runEditorialPlanAgent = async ({
       prompt,
       rawOutput,
       normalizedOutput: repairedValidation.editorialPlan,
-      validation: { valid: repairedValidation.valid, issues: repairedValidation.issues },
+      validation: {
+        valid: repairedValidation.valid,
+        issues: repairedValidation.issues,
+        warnings: repairedValidation.warnings || []
+      },
       durationMs: Math.max(0, Date.now() - startedAt),
       error: null
     };
@@ -1230,6 +1237,7 @@ export const runEditorialPlanAgent = async ({
   if (validation.valid) {
     return {
       editorialPlan: validation.editorialPlan,
+      warnings: validation.warnings || [],
       repairAttempted: false,
       responseRepairAttempted,
       calls
@@ -1323,6 +1331,7 @@ export const runEditorialPlanAgent = async ({
     if (validation.valid) {
       return {
         editorialPlan: validation.editorialPlan,
+        warnings: validation.warnings || [],
         repairAttempted: true,
         repairAttempts: repairAttempt,
         responseRepairAttempted,
@@ -1379,6 +1388,7 @@ const unknownPaperIdsInText = (value, selectedIds) => {
 const validateHeadTailText = (value, {
   path,
   issues,
+  warnings,
   selectedIds,
   numericSource = "",
   maximum = 5000,
@@ -1388,9 +1398,7 @@ const validateHeadTailText = (value, {
   if (required && !text) {
     issues.push(issue("head_tail_text_missing", path, "Head/Tail text is required."));
   }
-  if (INTERNAL_TERM_PATTERN.test(text)) {
-    issues.push(issue("internal_term_leak", path, "Head/Tail text exposes internal workflow or selection terms."));
-  }
+  warnings.push(...internalProcessWarnings(text, { path }));
   if (MARKDOWN_STRUCTURE_PATTERN.test(text)) {
     issues.push(issue("head_tail_markdown_forbidden", path, "Head/Tail fields must not contain Markdown structure."));
   }
@@ -1435,7 +1443,8 @@ const validateIndexedEditorialEntries = ({
   indexField,
   mismatchCode,
   selectedIds,
-  issues
+  issues,
+  warnings
 }) => {
   const source = Array.isArray(sourceEntries) ? sourceEntries : [];
   const normalizedValue = value === undefined && source.length === 0 ? [] : value;
@@ -1468,6 +1477,7 @@ const validateIndexedEditorialEntries = ({
     const claim = validateHeadTailText(entry?.claim, {
       path: `${collectionPath}[${index}].claim`,
       issues,
+      warnings,
       selectedIds,
       numericSource,
       maximum: 3000
@@ -1475,6 +1485,7 @@ const validateIndexedEditorialEntries = ({
     const caveat = validateHeadTailText(entry?.caveat, {
       path: `${collectionPath}[${index}].caveat`,
       issues,
+      warnings,
       selectedIds,
       numericSource,
       maximum: 2400
@@ -1591,10 +1602,12 @@ export const validateHeadTailDraft = (value, {
   const expectedOrder = rankedItems.map(selectedPaperId);
   const selectedIds = new Set(expectedOrder);
   const issues = [];
+  const warnings = [];
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {
       valid: false,
       issues: [issue("schema_invalid", "response", "headTailDraft must be an object.")],
+      warnings,
       headTailDraft: null
     };
   }
@@ -1608,6 +1621,7 @@ export const validateHeadTailDraft = (value, {
   const titleAngle = validateHeadTailText(value.titleAngle, {
     path: "titleAngle",
     issues,
+    warnings,
     selectedIds,
     numericSource: allSourceText,
     maximum: 200
@@ -1639,6 +1653,7 @@ export const validateHeadTailDraft = (value, {
   const description = validateHeadTailText(value.description, {
     path: "description",
     issues,
+    warnings,
     selectedIds,
     numericSource: allSourceText,
     maximum: 500
@@ -1654,6 +1669,7 @@ export const validateHeadTailDraft = (value, {
     const normalized = validateHeadTailText(tag, {
       path: `tags[${index}]`,
       issues,
+      warnings,
       selectedIds,
       numericSource: allSourceText,
       maximum: 80
@@ -1670,6 +1686,7 @@ export const validateHeadTailDraft = (value, {
   const reportIntroduction = validateHeadTailText(value.reportIntroduction, {
     path: "reportIntroduction",
     issues,
+    warnings,
     selectedIds,
     numericSource: allSourceText
   });
@@ -1680,7 +1697,8 @@ export const validateHeadTailDraft = (value, {
     indexField: "trendIndex",
     mismatchCode: "head_tail_trend_mapping_mismatch",
     selectedIds,
-    issues
+    issues,
+    warnings
   });
   const singlePaperObservations = validateIndexedEditorialEntries({
     value: value.singlePaperObservations,
@@ -1689,7 +1707,8 @@ export const validateHeadTailDraft = (value, {
     indexField: "observationIndex",
     mismatchCode: "head_tail_observation_mapping_mismatch",
     selectedIds,
-    issues
+    issues,
+    warnings
   });
 
   if (!Array.isArray(value.readingOrder)) {
@@ -1701,6 +1720,7 @@ export const validateHeadTailDraft = (value, {
       reason: validateHeadTailText(entry?.reason, {
         path: `readingOrder[${index}].reason`,
         issues,
+        warnings,
         selectedIds,
         numericSource: allSourceText,
         maximum: 2400
@@ -1719,6 +1739,7 @@ export const validateHeadTailDraft = (value, {
   const closingSummary = validateHeadTailText(value.closingSummary, {
     path: "closingSummary",
     issues,
+    warnings,
     selectedIds,
     numericSource: allSourceText
   });
@@ -1869,6 +1890,7 @@ export const validateHeadTailDraft = (value, {
   return {
     valid: normalizedIssues.length === 0,
     issues: normalizedIssues,
+    warnings: uniqueIssues(warnings),
     headTailDraft: {
       titleAngle,
       description,
@@ -1950,6 +1972,7 @@ export const runHeadTailWriter = async ({
       validation = {
         valid: false,
         issues: [issue("invalid_json", "response", error.message)],
+        warnings: [],
         headTailDraft: null
       };
     }
@@ -1960,7 +1983,11 @@ export const runHeadTailWriter = async ({
       prompt,
       rawOutput,
       normalizedOutput: validation.headTailDraft,
-      validation: { valid: validation.valid, issues: validation.issues },
+      validation: {
+        valid: validation.valid,
+        issues: validation.issues,
+        warnings: validation.warnings || []
+      },
       durationMs: Math.max(0, Date.now() - startedAt),
       error: null
     };
@@ -2023,6 +2050,7 @@ export const runHeadTailWriter = async ({
   if (validation.valid) {
     return {
       headTailDraft: validation.headTailDraft,
+      warnings: validation.warnings || [],
       repairAttempted: false,
       responseRepairAttempted,
       calls
@@ -2074,6 +2102,7 @@ export const runHeadTailWriter = async ({
 
   return {
     headTailDraft: validation.headTailDraft,
+    warnings: validation.warnings || [],
     repairAttempted: true,
     responseRepairAttempted,
     calls

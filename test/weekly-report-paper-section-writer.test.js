@@ -10,6 +10,7 @@ import {
   buildPaperSectionPrompt,
   buildPaperSectionRepairPrompt
 } from "../weekly-report/prompts.js";
+import { applyPaperDraftPatch } from "../weekly-report/paper-draft-patch.js";
 
 const source = (anchor, section, excerpt) => ({ anchor, section, excerpt });
 
@@ -121,6 +122,28 @@ const selectedItemFor = (paperId, rank = 1) => ({
 });
 
 const item = selectedItemFor("2607.60001");
+
+test("GRAY-118 complete draft missing closing brace needs no model repair", async () => {
+  const events = [];
+  let count = 0;
+  const result = await runPaperSectionWriter({ item, networkRetryDelayMs: 0,
+    onEvent: async (event) => events.push(event),
+    callModel: async () => { count += 1; return JSON.stringify(validDraft()).slice(0, -1); }
+  });
+  assert.equal(count, 1);
+  assert.equal(result.responseRepairAttempted, false);
+  assert.equal(result.calls[0].normalization.addedDelimiters, "}");
+  assert.equal(events.find((event) => event.type === "paper_section_json_normalized").validationPassed, true);
+});
+test("GRAY-118 recovered JSON still requires complete schema", async () => {
+  const events = [];
+  await assert.rejects(() => runPaperSectionWriter({ item, networkRetryDelayMs: 0,
+    onEvent: async (event) => events.push(event),
+    callModel: async () => '{"paperId":"2607.60001"'
+  }), PaperSectionWriterError);
+  assert.equal(events.filter((event) => event.type === "paper_section_json_normalized").length > 0, true);
+  assert.equal(events.some((event) => event.type === "paper_section_json_normalized" && event.validationPassed), false);
+});
 
 const grounded = (text, evidenceRefs) => ({ text, evidenceRefs });
 
@@ -866,14 +889,115 @@ test("Paper Section rejects two bullets that split the same grounding limitation
   assert.deepEqual(validationIssue?.repairKinds, ["duplicate_grounding_limitations"]);
 });
 
-test("Writer output cannot expose workflow terms, other arXiv papers, or model-owned score fields", () => {
+test("Paper Section accepts a source-grounded experimental threshold", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.results.sources = [source(
+    "S4",
+    "4 Results",
+    "At the default 10-s threshold, the average severe-session ratio decreases from 39.01% to 9.79%."
+  )];
   const draft = validDraft();
-  draft.coreContribution.text = "This fallback paper missed the internal threshold; see arXiv:2607.60002.";
+  draft.experimentsAndResults = grounded(
+    "在默认 10 秒阈值下，平均严重会话比例从 39.01% 降至 9.79%。",
+    ["results:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, true, validation.issues.map((entry) => entry.code).join(", "));
+  assert.equal(validation.issues.some((entry) => entry.code === "internal_term_leak"), false);
+  assert.deepEqual(validation.warnings, []);
+});
+
+test("Paper Section accepts reader guidance to cited Evidence section numbers", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.method.sources[0].section = "3 Method";
+  scopedItem.evidenceCard.results.sources[0].section = "4 Results";
+  scopedItem.evidenceCard.limitations.sources[0].section = "5 Analysis";
+  const draft = validDraft();
+  draft.readingValue.recommendedFocus = grounded(
+    "建议依次阅读第 3 节的方法、第 4 节的结果和第 5 节的分析。",
+    ["method:0", "results:0", "limitations:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, true, validation.issues.map((entry) => entry.code).join(", "));
+});
+
+test("Paper Section rejects a reader-guidance section number absent from cited Evidence metadata", () => {
+  const draft = validDraft();
+  draft.readingValue.recommendedFocus = grounded(
+    "建议优先阅读第 9 节。",
+    ["method:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "numeric_claim_not_in_evidence"
+    && entry.path === "readingValue.recommendedFocus.text"
+  )), true);
+});
+
+test("Paper Section metadata does not support a same-valued experimental number outside the section reference", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.method.sources[0].section = "3 Method";
+  const draft = validDraft();
+  draft.readingValue.recommendedFocus = grounded(
+    "建议阅读第 3 节，并比较其中的 3 个模型。",
+    ["method:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "numeric_claim_not_in_evidence"
+    && entry.path === "readingValue.recommendedFocus.text"
+  )), true);
+});
+
+test("Paper Section does not treat 节点 as a section reference", () => {
+  const scopedItem = structuredClone(item);
+  scopedItem.evidenceCard.experiments.sources[0] = source(
+    "S3",
+    "Experimental Setup",
+    "The application executes a 46-node inventory consolidation SOP on 410 real tickets."
+  );
+  const draft = validDraft();
+  draft.experimentsAndResults = grounded(
+    "该应用在 410 个真实工单上执行 46 节点的库存合并 SOP。",
+    ["experiments:0"]
+  );
+
+  const validation = validatePaperDraft(draft, { item: scopedItem });
+
+  assert.equal(validation.valid, true, validation.issues.map((entry) => entry.detail).join("; "));
+});
+
+test("Paper Section reports publication-process leakage as a non-blocking warning", () => {
+  const draft = validDraft();
+  draft.coreContribution.text = "该论文因未达到候选下限而作为 fallback 进入本周周报。";
+  const validation = validatePaperDraft(draft, { item });
+
+  assert.equal(validation.valid, true, validation.issues.map((entry) => entry.code).join(", "));
+  assert.equal(validation.issues.some((entry) => entry.code === "internal_term_leak"), false);
+  assert.equal(validation.warnings.some((entry) => (
+    entry.code === "internal_process_leak"
+    && entry.path === "coreContribution.text"
+    && entry.severity === "warning"
+  )), true);
+});
+
+test("Writer output still rejects other arXiv papers and model-owned score fields", () => {
+  const draft = validDraft();
+  draft.coreContribution.text = "See arXiv:2607.60002.";
   draft.finalScore = 100;
   const validation = validatePaperDraft(draft, { item });
 
   assert.equal(validation.valid, false);
-  assert.equal(validation.issues.some((issue) => issue.code === "internal_term_leak"), true);
   assert.equal(validation.issues.some((issue) => issue.code === "cross_paper_reference"), true);
   assert.equal(validation.issues.some((issue) => issue.code === "writer_field_forbidden"), true);
 });
@@ -881,6 +1005,7 @@ test("Writer output cannot expose workflow terms, other arXiv papers, or model-o
 test("Paper Section Writer gets one structured repair without carrying its prior raw response", async () => {
   const invalid = validDraft();
   invalid.limitationsAndConstraints = [];
+  invalid.SECRET_PRIOR_RAW_RESPONSE = "must not enter repair context";
   const prompts = [];
   const result = await runPaperSectionWriter({
     item,
@@ -888,7 +1013,14 @@ test("Paper Section Writer gets one structured repair without carrying its prior
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
       prompts.push(payload);
-      return payload.task === "weekly_report_write_paper_section" ? invalid : validDraft();
+      return payload.task === "weekly_report_write_paper_section"
+        ? invalid
+        : {
+          patches: [{
+            path: "limitationsAndConstraints",
+            value: validDraft().limitationsAndConstraints
+          }]
+        };
     }
   });
 
@@ -897,6 +1029,10 @@ test("Paper Section Writer gets one structured repair without carrying its prior
     "weekly_report_write_paper_section",
     "weekly_report_write_paper_section_repair"
   ]);
+  assert.deepEqual(prompts[1].repairPaths, ["limitationsAndConstraints"]);
+  assert.deepEqual(prompts[1].currentPaperDraft.coreContribution, invalid.coreContribution);
+  assert.deepEqual(result.paperDraft.coreContribution, invalid.coreContribution);
+  assert.deepEqual(result.paperDraft.limitationsAndConstraints, validDraft().limitationsAndConstraints);
   assert.doesNotMatch(JSON.stringify(prompts[1]), /SECRET_PRIOR_RAW_RESPONSE/);
 });
 
@@ -916,7 +1052,12 @@ test("Paper Section Writer gets one response-format repair after a malformed con
       if (payload.task === "weekly_report_write_paper_section_repair") {
         return '{"paperId":"2607.60001","SECRET_MALFORMED_RAW"';
       }
-      return validDraft();
+      return {
+        patches: [{
+          path: "adnInsight",
+          value: validDraft().adnInsight
+        }]
+      };
     }
   });
 
@@ -929,7 +1070,167 @@ test("Paper Section Writer gets one response-format repair after a malformed con
   ]);
   assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
   assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
+  assert.deepEqual(prompts[2].repairPaths, ["adnInsight"]);
+  assert.deepEqual(prompts[2].currentPaperDraft.coreContribution, invalid.coreContribution);
   assert.doesNotMatch(JSON.stringify(prompts[2]), /SECRET_MALFORMED_RAW/);
+});
+
+test("Paper Section administrator repair patches the preserved invalid draft", async () => {
+  const invalid = validDraft();
+  invalid.readingValue.recommendedFocus.text = "建议阅读第 9 节。";
+  const prompts = [];
+  const events = [];
+  const result = await runPaperSectionWriter({
+    item,
+    repairDraft: invalid,
+    repairIssues: [{
+      code: "numeric_claim_not_in_evidence",
+      path: "readingValue.recommendedFocus.text"
+    }, {
+      code: "stale_issue_already_resolved",
+      path: "coreContribution.text"
+    }],
+    networkRetryDelayMs: 0,
+    onEvent: async (event) => events.push(event),
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      prompts.push(payload);
+      return {
+        patches: [{
+          path: "readingValue.recommendedFocus",
+          value: validDraft().readingValue.recommendedFocus
+        }]
+      };
+    }
+  });
+
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].task, "weekly_report_write_paper_section_repair");
+  assert.deepEqual(prompts[0].repairPaths, ["readingValue.recommendedFocus", "coreContribution"]);
+  assert.deepEqual(result.paperDraft.coreContribution, invalid.coreContribution);
+  assert.deepEqual(result.paperDraft.readingValue.recommendedFocus, validDraft().readingValue.recommendedFocus);
+  const patchEvent = events.find((event) => event.type === "paper_section_patch_applied");
+  assert.deepEqual(patchEvent.repairPaths, ["readingValue.recommendedFocus", "coreContribution"]);
+  assert.deepEqual(patchEvent.patchedPaths, ["readingValue.recommendedFocus"]);
+  assert.deepEqual(patchEvent.diff.map((entry) => entry.path), ["readingValue.recommendedFocus"]);
+});
+
+test("Paper Section repair rejects changes outside the listed issue paths", () => {
+  const current = validDraft();
+  const result = applyPaperDraftPatch({
+    paperDraft: current,
+    issues: [{ code: "rhetorical_prose_style", path: "adnInsight.text" }],
+    patchResponse: {
+      patches: [{
+        path: "coreContribution",
+        value: { text: "Unrelated replacement.", evidenceRefs: ["method:0"] }
+      }]
+    }
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.issues[0].code, "schema_invalid");
+  assert.deepEqual(result.paperDraft, current);
+});
+
+test("Paper Section repair rejects a patch item without a value", () => {
+  const current = validDraft();
+  const result = applyPaperDraftPatch({
+    paperDraft: current,
+    issues: [{ code: "numeric_claim_not_in_evidence", path: "experimentsAndResults.text" }],
+    patchResponse: {
+      patches: [{
+        path: "experimentsAndResults",
+        text: "Incorrect patch shape.",
+        evidenceRefs: ["experiments:0"]
+      }]
+    }
+  });
+
+  assert.equal(result.valid, false);
+  assert.equal(result.issues[0].code, "schema_invalid");
+  assert.deepEqual(result.paperDraft, current);
+});
+
+test("Paper Section uses response-format repair when a patch item omits value", async () => {
+  const invalid = validDraft();
+  invalid.readingValue.recommendedFocus.text = "建议优先阅读第 9 节。";
+  const prompts = [];
+  const result = await runPaperSectionWriter({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      prompts.push(payload);
+      if (payload.task === "weekly_report_write_paper_section") return invalid;
+      if (payload.task === "weekly_report_write_paper_section_repair") {
+        return {
+          patches: [{
+            path: "readingValue.recommendedFocus",
+            text: "Incorrect patch shape.",
+            evidenceRefs: ["method:0"]
+          }]
+        };
+      }
+      return {
+        patches: [{
+          path: "readingValue.recommendedFocus",
+          value: validDraft().readingValue.recommendedFocus
+        }]
+      };
+    }
+  });
+
+  assert.equal(result.responseRepairAttempted, true);
+  assert.deepEqual(prompts.map((payload) => payload.task), [
+    "weekly_report_write_paper_section",
+    "weekly_report_write_paper_section_repair",
+    "weekly_report_write_paper_section_response_repair"
+  ]);
+  assert.deepEqual(result.paperDraft.readingValue.recommendedFocus, validDraft().readingValue.recommendedFocus);
+});
+
+test("Paper Section deterministically removes an unknown response field without regenerating the draft", async () => {
+  const invalid = validDraft();
+  invalid.unexpectedModelField = "remove me";
+  const prompts = [];
+  const result = await runPaperSectionWriter({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      prompts.push(payload);
+      return invalid;
+    }
+  });
+
+  assert.equal(result.paperDraft.paperId, "2607.60001");
+  assert.equal("unexpectedModelField" in result.paperDraft, false);
+  assert.equal(prompts.length, 1);
+});
+
+test("Paper Section keeps the current draft when a patch transport retry is exhausted", async () => {
+  const invalid = validDraft();
+  invalid.limitationsAndConstraints = [];
+  let calls = 0;
+  await assert.rejects(
+    () => runPaperSectionWriter({
+      item,
+      networkRetryDelayMs: 0,
+      callModel: async () => {
+        calls += 1;
+        if (calls === 1) return invalid;
+        throw new Error("temporary backend failure");
+      }
+    }),
+    (error) => (
+      error instanceof PaperSectionWriterError
+      && error.paperDraft?.paperId === "2607.60001"
+      && Array.isArray(error.paperDraft.limitationsAndConstraints)
+      && error.paperDraft.limitationsAndConstraints.length === 0
+    )
+  );
+  assert.equal(calls, 3);
 });
 
 test("Paper Section Writer network failure retries once", async () => {
@@ -972,6 +1273,7 @@ test("Paper Section Writer still invalid after repair becomes a report-level rej
 test("Paper Section repair prompt includes issue paths but never issue details", () => {
   const prompt = buildPaperSectionRepairPrompt({
     item,
+    currentPaperDraft: validDraft(),
     issues: [{
       code: "limitations_insufficient",
       path: "limitationsAndConstraints",
@@ -995,7 +1297,9 @@ test("Paper Section repair prompt includes issue paths but never issue details",
 
   assert.match(prompt, /weekly_report_write_paper_section_repair/);
   assert.match(prompt, /limitationsAndConstraints/);
-  assert.match(prompt, /Revalidate every field in the regenerated draft/i);
+  assert.match(prompt, /Return a JSON patch only/i);
+  assert.match(prompt, /Every unpatched value is retained by the server/i);
+  assert.doesNotMatch(prompt, /Regenerate the complete paperDraft/i);
   assert.match(prompt, /cite all Evidence refs needed to support that number/i);
   assert.match(prompt, /Do not move an unsupported number to another field/i);
   assert.match(prompt, /remove resource budgeting\/资源预算/i);

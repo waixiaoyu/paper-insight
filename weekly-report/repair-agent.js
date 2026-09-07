@@ -5,7 +5,12 @@ import {
   buildPaperSectionQaRepairPrompt,
   buildPaperSectionQaRepairResponsePrompt
 } from "./prompts.js";
-import { validatePaperDraft } from "./report-writer.js";
+import { repairablePaperDraft, validatePaperDraft } from "./report-writer.js";
+import {
+  applyPaperDraftPatch,
+  paperDraftRepairPaths,
+  valueAtPaperDraftPath
+} from "./paper-draft-patch.js";
 
 const cleanText = (value, maximum = 1200) => String(value || "")
   .replace(/\s+/g, " ")
@@ -113,7 +118,8 @@ const runTargetedRepairCall = async ({
   signal,
   onCall,
   onEvent,
-  networkRetryDelayMs
+  networkRetryDelayMs,
+  patchContext = null
 }) => {
   const calls = [];
   const invoke = async (currentPrompt, attemptType) => {
@@ -157,12 +163,52 @@ const runTargetedRepairCall = async ({
 
     let validation;
     try {
-      validation = validate(parseModelJson(rawOutput));
+      const parsedOutput = parseModelJson(rawOutput);
+      if (patchContext?.paperDraft) {
+        const patchResult = applyPaperDraftPatch({
+          paperDraft: patchContext.paperDraft,
+          issues: patchContext.issues,
+          patchResponse: parsedOutput
+        });
+        validation = patchResult.valid
+          ? validate(patchResult.paperDraft)
+          : patchResult;
+        if (patchResult.valid) {
+          const repairPaths = paperDraftRepairPaths(patchContext.issues);
+          const patchedPaths = parsedOutput.patches.map((patch) => String(patch?.path || ""));
+          await onEvent?.({
+            type: "paper_section_patch_applied",
+            stage: "repair_once",
+            scope: "paper",
+            paperId,
+            attemptType,
+            repairPaths,
+            patchedPaths,
+            diff: patchedPaths.map((path) => ({
+              path,
+              before: valueAtPaperDraftPath(patchContext.paperDraft, path),
+              after: valueAtPaperDraftPath(patchResult.paperDraft, path)
+            })),
+            remainingIssues: validation.issues
+          });
+        } else {
+          await onEvent?.({
+            type: "paper_section_patch_rejected",
+            stage: "repair_once",
+            scope: "paper",
+            paperId,
+            attemptType,
+            issues: patchResult.issues
+          });
+        }
+      } else {
+        validation = validate(parsedOutput);
+      }
     } catch (error) {
       validation = {
         valid: false,
         issues: [validationIssue("invalid_json", "response", error.message)],
-        [outputKey]: null
+        [outputKey]: patchContext?.paperDraft || null
       };
     }
     const record = {
@@ -266,6 +312,17 @@ export const repairPaperSectionFromQa = async ({
     throw new TypeError("Paper repair callModel is required.");
   }
 
+  const patchIssues = issues.map((entry) => ({
+    ...entry,
+    path: String(entry?.path || entry?.field || "")
+  }));
+  if (!paperDraftRepairPaths(patchIssues).length) {
+    throw new RepairStageError("Paper repair has no safe issue path for a targeted patch.", {
+      paperId,
+      issues: patchIssues
+    });
+  }
+
   const result = await runTargetedRepairCall({
     prompt: buildPaperSectionQaRepairPrompt({ item, paperDraft, issues }),
     responsePrompt: (responseIssues) => buildPaperSectionQaRepairResponsePrompt({
@@ -282,7 +339,11 @@ export const repairPaperSectionFromQa = async ({
     signal,
     onCall,
     onEvent,
-    networkRetryDelayMs
+    networkRetryDelayMs,
+    patchContext: {
+      paperDraft: repairablePaperDraft(paperDraft),
+      issues: patchIssues
+    }
   });
   return {
     paperDraft: result.artifact,

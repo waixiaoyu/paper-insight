@@ -1,3 +1,5 @@
+import { internalProcessWarnings } from "./internal-process-policy.js";
+
 const REQUIRED_SECTIONS = [
   "报告导读",
   "本周趋势判断",
@@ -12,16 +14,6 @@ const REQUIRED_PAPER_BLOCKS = [
   "实验与结果",
   "局限与适用约束",
   "ADN 启发与阅读价值"
-];
-
-const INTERNAL_PROCESS_PATTERNS = [
-  { label: "复评分", pattern: /复评分/ },
-  { label: "复评阈值", pattern: /复评阈值/ },
-  { label: "保底补入", pattern: /保底补入/ },
-  { label: "内部筛选", pattern: /内部筛选/ },
-  { label: "候选下限", pattern: /候选下限/ },
-  { label: "selectionReason", pattern: /\bselectionReason\b/i },
-  { label: "fallback", pattern: /\bfallback\b/i }
 ];
 
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -432,11 +424,8 @@ export const validateWeeklyReportMarkdown = ({
     errors.push(`保底论文不能进入「本周必读」：${fallbackInMustRead.map((paper) => paper.title || paper.id).join("、")}。`);
   }
 
-  INTERNAL_PROCESS_PATTERNS.forEach(({ label, pattern }) => {
-    if (pattern.test(text)) {
-      errors.push(`发布正文包含内部流程词「${label}」。`);
-    }
-  });
+  internalProcessWarnings(text, { path: "report.markdown" })
+    .forEach((warning) => warnings.push(warning.message));
 
   if (!useOriginalText) {
     const evidenceNoticeCount = countLabel(text, "基于摘要和已有分析");

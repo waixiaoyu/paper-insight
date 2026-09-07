@@ -3,6 +3,12 @@ import {
   buildPaperSectionRepairPrompt,
   buildPaperSectionResponseRepairPrompt
 } from "./prompts.js";
+import { internalProcessWarnings } from "./internal-process-policy.js";
+import {
+  applyPaperDraftPatch,
+  paperDraftRepairPaths,
+  valueAtPaperDraftPath
+} from "./paper-draft-patch.js";
 
 const EVIDENCE_FIELDS = [
   "problem",
@@ -39,7 +45,6 @@ const ALLOWED_TOP_LEVEL_FIELDS = new Set([
   "limitationsAndConstraints",
   "readingValue"
 ]);
-const INTERNAL_TERM_PATTERN = /\bfallback\b|\bthresholds?\b|阈值|复评分|复评阈值|保底补入|内部筛选|候选下限|\bselection\s*reason\b|\bselectionreason\b|\bagent\s+(?:loop|stage)\b|\bprompts?\b|\bartifacts?\b|\binternal\s+json\b|内部\s*json|定向重评|横向校准/iu;
 const RHETORICAL_STYLE_PATTERN = /不等于|不等同于|并非.{0,12}而是|揭示|迈向|赋能|解锁|重塑|颠覆|革命性?|坚实(?:的)?(?:量化)?证据|有效(?:解决|方法|暴露|测试)|不排除未来.{0,30}(?:可能|改进|消除)|鸿沟|浪潮|拐点|破局|\breveal(?:s|ed|ing)?\b|\bunlock(?:s|ed|ing)?\b|\breshape(?:s|d|ing)?\b|\brevolutionary\b/iu;
 const LIMITED_TOP_MODEL_EVIDENCE_PATTERN = /\b(?:the\s+)?(?:strongest|best(?:-performing)?|best\s+performer)\s+models?\b/iu;
 const BROAD_MODEL_SUBJECT_PATTERN = /(?:前沿|当前|现有|多数|大多数)?(?:大语言模型|大模型|语言模型|模型|抽取系统|系统|方法)|(?:frontier\s+)?(?:LLMs?|large\s+language\s+models?|models?)|\bmost\s+(?:systems?|methods?)\b/iu;
@@ -309,32 +314,7 @@ const validateSpecificSetupClaims = ({ text, sourceText, path, issues }) => {
   }
 };
 
-const parseModelJson = (raw) => {
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    if (raw.paperId || raw.oneSentenceTakeaway || raw.researchProblem) {
-      return raw;
-    }
-    if (typeof raw.text === "string") {
-      return parseModelJson(raw.text);
-    }
-    if (Array.isArray(raw.content)) {
-      return parseModelJson(raw.content
-        .filter((block) => block?.type === "text")
-        .map((block) => block.text || "")
-        .join("\n"));
-    }
-  }
-
-  const text = String(raw || "").trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "");
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    throw new TypeError("Paper Section Writer did not return a JSON object.");
-  }
-  return JSON.parse(text.slice(start, end + 1));
-};
+import { parseModelJsonObject } from "./model-json.js";
 
 const evidenceReferenceMap = (item) => {
   const refs = new Map();
@@ -345,6 +325,7 @@ const evidenceReferenceMap = (item) => {
       refs.set(`${field}:${index}`, {
         field,
         index,
+        section: normalizeText(source?.section, 500),
         excerpt: normalizeText(source?.excerpt, 12000)
       });
     });
@@ -382,6 +363,32 @@ const numericTokens = (value) => {
   const numberWords = [...text.matchAll(/\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/giu)]
     .map((match) => ENGLISH_NUMBER_WORDS[match[1].toLowerCase()]);
   return [...explicit, ...months, ...numberWords];
+};
+
+const sectionReferencePatterns = () => [
+  /(?:第\s*)?(\d+(?:\.\d+)?(?:\s*(?:[、,/，]|和|与)\s*\d+(?:\.\d+)?)*)\s*(?:章节|节)(?!点)/gu,
+  /\bsections?\s+(\d+(?:\.\d+)?(?:\s*(?:,|and|&)\s*\d+(?:\.\d+)?)*)/giu
+];
+
+const sectionReferenceTokens = (value) => {
+  const text = normalizeText(value, 12000);
+  return new Set(sectionReferencePatterns().flatMap((pattern) => (
+    [...text.matchAll(pattern)].flatMap((match) => match[1].match(/\d+(?:\.\d+)?/g) || [])
+  )));
+};
+
+const withoutSectionReferences = (value) => sectionReferencePatterns()
+  .reduce((text, pattern) => text.replace(pattern, " "), normalizeText(value, 12000));
+
+const sectionNumbersFromMetadata = (value) => {
+  const text = normalizeText(value, 500);
+  const match = text.match(/^(?:section\s+|第\s*)?(\d+(?:\.\d+)?)(?:\s*节)?(?:\b|\s)/iu);
+  if (!match) {
+    return [];
+  }
+  const number = match[1];
+  const topLevel = number.split(".")[0];
+  return number === topLevel ? [number] : [number, topLevel];
 };
 
 const validatePercentageMetricLabels = ({ text, evidenceRefs, refs, path, issues }) => {
@@ -426,7 +433,8 @@ const validateGroundedText = (value, {
   path,
   expectedPaperId,
   refs,
-  issues
+  issues,
+  warnings
 }) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     issues.push(issue("grounded_text_invalid", path, "Writer field must contain text and evidenceRefs."));
@@ -466,12 +474,25 @@ const validateGroundedText = (value, {
     .map((reference) => refs.get(reference)?.excerpt || "")
     .join(" ");
   const citedNumbers = new Set(numericTokens(citedExcerptText));
-  [...new Set(numericTokens(text))].forEach((number) => {
+  const claimedSectionNumbers = sectionReferenceTokens(text);
+  const citedSectionNumbers = new Set(evidenceRefs.flatMap((reference) => (
+    sectionNumbersFromMetadata(refs.get(reference)?.section)
+  )));
+  [...new Set(numericTokens(withoutSectionReferences(text)))].forEach((number) => {
     if (!citedNumbers.has(number)) {
       issues.push(issue(
         "numeric_claim_not_in_evidence",
         `${path}.text`,
         `Exact number ${number} does not occur in the cited Evidence excerpts.`
+      ));
+    }
+  });
+  claimedSectionNumbers.forEach((number) => {
+    if (!citedSectionNumbers.has(number)) {
+      issues.push(issue(
+        "numeric_claim_not_in_evidence",
+        `${path}.text`,
+        `Section number ${number} does not occur in the cited Evidence section metadata.`
       ));
     }
   });
@@ -482,13 +503,7 @@ const validateGroundedText = (value, {
     path: `${path}.text`,
     issues
   });
-  if (INTERNAL_TERM_PATTERN.test(text)) {
-    issues.push(issue(
-      "internal_term_leak",
-      `${path}.text`,
-      "Paper prose must not expose internal workflow or selection terms."
-    ));
-  }
+  warnings.push(...internalProcessWarnings(text, { path: `${path}.text` }));
   if (RHETORICAL_STYLE_PATTERN.test(text)) {
     const validationIssue = issue(
       "rhetorical_prose_style",
@@ -562,10 +577,12 @@ export const validatePaperDraft = (value, { item } = {}) => {
   const expectedPaperId = paperIdForItem(item);
   const refs = evidenceReferenceMap(item);
   const issues = [];
+  const warnings = [];
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {
       valid: false,
       issues: [issue("schema_invalid", "response", "paperDraft must be an object.")],
+      warnings,
       paperDraft: null
     };
   }
@@ -590,7 +607,8 @@ export const validatePaperDraft = (value, { item } = {}) => {
       path: field,
       expectedPaperId,
       refs,
-      issues
+      issues,
+      warnings
     });
   });
 
@@ -608,7 +626,8 @@ export const validatePaperDraft = (value, { item } = {}) => {
     path: `limitationsAndConstraints[${index}]`,
     expectedPaperId,
     refs,
-    issues
+    issues,
+    warnings
   }));
   normalized.limitationsAndConstraints.forEach((entry, index) => {
     if (PERFORMANCE_RESTATED_AS_LIMITATION_PATTERN.test(entry.text)
@@ -663,7 +682,8 @@ export const validatePaperDraft = (value, { item } = {}) => {
       path: `readingValue.${field}`,
       expectedPaperId,
       refs,
-      issues
+      issues,
+      warnings
     })
   ]));
   normalized.publicationMeta = publicationMetaFor(item, expectedPaperId);
@@ -672,6 +692,7 @@ export const validatePaperDraft = (value, { item } = {}) => {
   return {
     valid: normalizedIssues.length === 0,
     issues: normalizedIssues,
+    warnings: uniqueIssues(warnings),
     paperDraft: normalized
   };
 };
@@ -682,6 +703,7 @@ export class PaperSectionWriterError extends Error {
     paperId = "",
     retryable = false,
     issues = [],
+    paperDraft = null,
     cause
   } = {}) {
     super(message, cause ? { cause } : undefined);
@@ -693,6 +715,7 @@ export class PaperSectionWriterError extends Error {
     this.excludePaper = false;
     this.rejectJob = true;
     this.issues = issues;
+    this.paperDraft = paperDraft;
   }
 }
 
@@ -727,8 +750,22 @@ const serializedError = (error, paperId = "") => ({
   retryable: Boolean(error?.retryable),
   excludePaper: false,
   rejectJob: Boolean(error?.rejectJob),
-  issues: Array.isArray(error?.issues) ? error.issues : []
+  issues: Array.isArray(error?.issues) ? error.issues : [],
+  paperDraft: error?.paperDraft && typeof error.paperDraft === "object"
+    ? error.paperDraft
+    : null
 });
+
+export const repairablePaperDraft = (paperDraft) => {
+  if (!paperDraft || typeof paperDraft !== "object" || Array.isArray(paperDraft)) {
+    return null;
+  }
+  return Object.fromEntries(
+    [...ALLOWED_TOP_LEVEL_FIELDS]
+      .filter((field) => Object.hasOwn(paperDraft, field))
+      .map((field) => [field, structuredClone(paperDraft[field])])
+  );
+};
 
 export const runPaperSectionWriter = async ({
   item,
@@ -737,6 +774,7 @@ export const runPaperSectionWriter = async ({
   onCall,
   onEvent,
   repairIssues = [],
+  repairDraft = null,
   networkRetryDelayMs = 50
 } = {}) => {
   const paperId = paperIdForItem(item);
@@ -751,7 +789,7 @@ export const runPaperSectionWriter = async ({
   }
 
   const calls = [];
-  const invoke = async (prompt, attemptType) => {
+  const invoke = async (prompt, attemptType, patchContext = null) => {
     if (signal?.aborted) {
       throw abortError();
     }
@@ -784,14 +822,63 @@ export const runPaperSectionWriter = async ({
     }
 
     let validation;
+    let normalization = null;
     try {
-      validation = validatePaperDraft(parseModelJson(rawOutput), { item });
+      const parsed = parseModelJsonObject(rawOutput, { label: "逐篇稿件" });
+      const parsedOutput = parsed.value;
+      normalization = parsed.normalization;
+      if (patchContext?.paperDraft) {
+        const patchResult = applyPaperDraftPatch({
+          paperDraft: patchContext.paperDraft,
+          issues: patchContext.issues,
+          patchResponse: parsedOutput
+        });
+        validation = patchResult.valid
+          ? validatePaperDraft(patchResult.paperDraft, { item })
+          : { ...patchResult, warnings: [] };
+        if (patchResult.valid) {
+          const repairPaths = paperDraftRepairPaths(patchContext.issues);
+          const patchedPaths = parsedOutput.patches.map((patch) => String(patch?.path || ""));
+          await onEvent?.({
+            type: "paper_section_patch_applied",
+            stage: "write_paper_sections",
+            scope: "paper",
+            paperId,
+            attemptType,
+            repairPaths,
+            patchedPaths,
+            diff: patchedPaths.map((path) => ({
+              path,
+              before: valueAtPaperDraftPath(patchContext.paperDraft, path),
+              after: valueAtPaperDraftPath(patchResult.paperDraft, path)
+            })),
+            remainingIssues: validation.issues
+          });
+        } else {
+          await onEvent?.({
+            type: "paper_section_patch_rejected",
+            stage: "write_paper_sections",
+            scope: "paper",
+            paperId,
+            attemptType,
+            issues: patchResult.issues
+          });
+        }
+      } else {
+        validation = validatePaperDraft(parsedOutput, { item });
+      }
     } catch (error) {
       validation = {
         valid: false,
         issues: [issue("invalid_json", "response", error.message)],
-        paperDraft: null
+        warnings: [],
+        paperDraft: patchContext?.paperDraft || null
       };
+    }
+    if (normalization) {
+      await onEvent?.({ type: "paper_section_json_normalized", stage: "write_paper_sections",
+        scope: "paper", paperId, attemptType, ...normalization, validationPassed: validation.valid,
+        message: "模型响应末尾缺少 JSON 闭合符，系统已补全并继续校验。" });
     }
     const record = {
       role: "paper_section_writer",
@@ -799,8 +886,13 @@ export const runPaperSectionWriter = async ({
       attemptType,
       prompt,
       rawOutput,
+      normalization,
       normalizedOutput: validation.paperDraft,
-      validation: { valid: validation.valid, issues: validation.issues },
+      validation: {
+        valid: validation.valid,
+        issues: validation.issues,
+        warnings: validation.warnings || []
+      },
       durationMs: Math.max(0, Date.now() - startedAt),
       error: null
     };
@@ -809,9 +901,9 @@ export const runPaperSectionWriter = async ({
     return validation;
   };
 
-  const invokeWithNetworkRetry = async (prompt, attemptType) => {
+  const invokeWithNetworkRetry = async (prompt, attemptType, patchContext = null) => {
     try {
-      return await invoke(prompt, attemptType);
+      return await invoke(prompt, attemptType, patchContext);
     } catch (error) {
       if (!error?.modelCallFailed || error?.name === "AbortError" || signal?.aborted) {
         throw error;
@@ -825,7 +917,7 @@ export const runPaperSectionWriter = async ({
       });
       await waitForRetry(networkRetryDelayMs, signal);
       try {
-        return await invoke(prompt, `${attemptType}_network_retry`);
+        return await invoke(prompt, `${attemptType}_network_retry`, patchContext);
       } catch (retryError) {
         if (retryError?.name === "AbortError") {
           throw retryError;
@@ -834,6 +926,7 @@ export const runPaperSectionWriter = async ({
           code: "READING_LIST_PAPER_SECTION_FAILED",
           paperId,
           retryable: false,
+          paperDraft: repairablePaperDraft(patchContext?.paperDraft),
           cause: retryError
         });
       }
@@ -851,11 +944,58 @@ export const runPaperSectionWriter = async ({
     });
   }
   let responseRepairAttempted = false;
+  const preservedRepairDraft = repairAttempted
+    && repairDraft
+    && typeof repairDraft === "object"
+    && !Array.isArray(repairDraft)
+    ? repairablePaperDraft(repairDraft)
+    : null;
+  if (repairAttempted && !preservedRepairDraft) {
+    throw new PaperSectionWriterError("Paper Section targeted repair requires the previous normalized draft.", {
+      code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
+      paperId,
+      issues: administratorRepairIssues
+    });
+  }
+  const initialPatchContext = preservedRepairDraft
+    && paperDraftRepairPaths(administratorRepairIssues).length
+    ? { paperDraft: preservedRepairDraft, issues: administratorRepairIssues }
+    : null;
+  if (repairAttempted && preservedRepairDraft && !initialPatchContext) {
+    const normalizedRepair = validatePaperDraft(preservedRepairDraft, { item });
+    if (normalizedRepair.valid) {
+      await onEvent?.({
+        type: "paper_section_deterministic_normalization_applied",
+        stage: "write_paper_sections",
+        scope: "paper",
+        paperId,
+        removedIssuePaths: administratorRepairIssues.map((entry) => String(entry?.path || "")).filter(Boolean)
+      });
+      return {
+        paperDraft: normalizedRepair.paperDraft,
+        warnings: normalizedRepair.warnings || [],
+        repairAttempted: true,
+        responseRepairAttempted: false,
+        calls
+      };
+    }
+    throw new PaperSectionWriterError("paperDraft has no safe issue path for a targeted repair.", {
+      code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
+      paperId,
+      issues: normalizedRepair.issues,
+      paperDraft: preservedRepairDraft
+    });
+  }
   let validation = await invokeWithNetworkRetry(
     repairAttempted
-      ? buildPaperSectionRepairPrompt({ item, issues: administratorRepairIssues })
+      ? buildPaperSectionRepairPrompt({
+        item,
+        currentPaperDraft: initialPatchContext?.paperDraft,
+        issues: administratorRepairIssues
+      })
       : buildPaperSectionPrompt({ item }),
-    repairAttempted ? "admin_repair" : "initial"
+    repairAttempted ? "admin_repair" : "initial",
+    initialPatchContext
   );
   if (hasOnlyResponseContractIssues(validation)) {
     const responseIssues = validation.issues;
@@ -870,15 +1010,18 @@ export const runPaperSectionWriter = async ({
     validation = await invokeWithNetworkRetry(
       buildPaperSectionResponseRepairPrompt({
         item,
+        currentPaperDraft: initialPatchContext?.paperDraft,
         issues: administratorRepairIssues,
         responseIssues
       }),
-      repairAttempted ? "admin_repair_response_repair" : "initial_response_repair"
+      repairAttempted ? "admin_repair_response_repair" : "initial_response_repair",
+      initialPatchContext
     );
   }
   if (validation.valid) {
     return {
       paperDraft: validation.paperDraft,
+      warnings: validation.warnings || [],
       repairAttempted,
       responseRepairAttempted,
       calls
@@ -888,11 +1031,43 @@ export const runPaperSectionWriter = async ({
     throw new PaperSectionWriterError("paperDraft response remains invalid after one response-format repair.", {
       code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
       paperId,
-      issues: validation.issues
+      issues: validation.issues,
+      paperDraft: repairablePaperDraft(validation.paperDraft)
     });
   }
 
   const contentIssues = validation.issues;
+  const currentRepairDraft = repairablePaperDraft(validation.paperDraft);
+  const contentRepairPaths = paperDraftRepairPaths(contentIssues);
+  const contentPatchContext = currentRepairDraft
+    && contentRepairPaths.length
+    ? { paperDraft: currentRepairDraft, issues: contentIssues }
+    : null;
+  if (!contentPatchContext) {
+    const normalizedRepair = validatePaperDraft(currentRepairDraft, { item });
+    if (normalizedRepair.valid) {
+      await onEvent?.({
+        type: "paper_section_deterministic_normalization_applied",
+        stage: "write_paper_sections",
+        scope: "paper",
+        paperId,
+        removedIssuePaths: contentIssues.map((entry) => String(entry?.path || "")).filter(Boolean)
+      });
+      return {
+        paperDraft: normalizedRepair.paperDraft,
+        warnings: normalizedRepair.warnings || [],
+        repairAttempted,
+        responseRepairAttempted,
+        calls
+      };
+    }
+    throw new PaperSectionWriterError("paperDraft has no safe issue path for a targeted repair.", {
+      code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
+      paperId,
+      issues: normalizedRepair.issues,
+      paperDraft: currentRepairDraft
+    });
+  }
   await onEvent?.({
     type: "paper_section_repair_requested",
     stage: "write_paper_sections",
@@ -900,8 +1075,13 @@ export const runPaperSectionWriter = async ({
     issues: contentIssues
   });
   validation = await invokeWithNetworkRetry(
-    buildPaperSectionRepairPrompt({ item, issues: contentIssues }),
-    "repair"
+    buildPaperSectionRepairPrompt({
+      item,
+      currentPaperDraft: contentPatchContext?.paperDraft,
+      issues: contentIssues
+    }),
+    "repair",
+    contentPatchContext
   );
   if (hasOnlyResponseContractIssues(validation) && !responseRepairAttempted) {
     const responseIssues = validation.issues;
@@ -916,22 +1096,33 @@ export const runPaperSectionWriter = async ({
     validation = await invokeWithNetworkRetry(
       buildPaperSectionResponseRepairPrompt({
         item,
+        currentPaperDraft: contentPatchContext
+          ? repairablePaperDraft(validation.paperDraft) || currentRepairDraft
+          : null,
         issues: contentIssues,
         responseIssues
       }),
-      "repair_response_repair"
+      "repair_response_repair",
+      contentPatchContext
+        ? {
+          paperDraft: repairablePaperDraft(validation.paperDraft) || currentRepairDraft,
+          issues: contentIssues
+        }
+        : null
     );
   }
   if (!validation.valid) {
     throw new PaperSectionWriterError("paperDraft remains unsupported after one structured repair.", {
       code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
       paperId,
-      issues: validation.issues
+      issues: validation.issues,
+      paperDraft: repairablePaperDraft(validation.paperDraft)
     });
   }
 
   return {
     paperDraft: validation.paperDraft,
+    warnings: validation.warnings || [],
     repairAttempted: true,
     responseRepairAttempted,
     calls
@@ -959,6 +1150,7 @@ export const writePaperSectionsBatch = async (items, {
   onCall,
   onEvent,
   repairIssuesByPaperId = {},
+  repairDraftByPaperId = {},
   networkRetryDelayMs = 50
 } = {}) => {
   const candidates = Array.isArray(items) ? items : [];
@@ -983,6 +1175,7 @@ export const writePaperSectionsBatch = async (items, {
         repairIssues: Array.isArray(repairIssuesByPaperId?.[paperId])
           ? repairIssuesByPaperId[paperId]
           : [],
+        repairDraft: repairDraftByPaperId?.[paperId] || null,
         networkRetryDelayMs
       });
       await onEvent?.({
@@ -990,7 +1183,8 @@ export const writePaperSectionsBatch = async (items, {
         stage: "write_paper_sections",
         paperId,
         repairAttempted: result.repairAttempted,
-        responseRepairAttempted: result.responseRepairAttempted
+        responseRepairAttempted: result.responseRepairAttempted,
+        warnings: result.warnings || []
       });
       return { ok: true, item, ...result };
     } catch (error) {
@@ -1010,6 +1204,7 @@ export const writePaperSectionsBatch = async (items, {
     succeeded: results.filter((entry) => entry.ok).map((entry) => ({
       item: entry.item,
       paperDraft: entry.paperDraft,
+      warnings: entry.warnings || [],
       repairAttempted: entry.repairAttempted,
       responseRepairAttempted: entry.responseRepairAttempted
     })),
@@ -1393,11 +1588,7 @@ export const assembleWeeklyReportMarkdown = ({
   });
   lines.push("", READING_LIST_FOOTER_NOTE);
   const markdown = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  if (INTERNAL_TERM_PATTERN.test(markdown)) {
-    throw new WeeklyReportAssemblyError("Assembled Markdown contains internal workflow language.", {
-      code: "READING_LIST_ASSEMBLY_CONTENT_INVALID"
-    });
-  }
+  const warnings = internalProcessWarnings(markdown, { path: "report.markdown" });
   const publishedPapers = rankedItems.map(publishedPaperForItem);
   return {
     markdown,
@@ -1407,6 +1598,7 @@ export const assembleWeeklyReportMarkdown = ({
       paperCount: rankedItems.length
     },
     publishedPapers,
+    warnings,
     footerNote: READING_LIST_FOOTER_NOTE
   };
 };

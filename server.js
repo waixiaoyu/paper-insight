@@ -241,6 +241,38 @@ const targetInterestPattern = /\b(autonomous network(?:ing)?|self-driving networ
 const generalAiInterestPattern = /\b(large language model|LLM|foundation model|AI[-\s]?agents?|LLM[-\s]?agents?|agentic AI|autonomous agents?|multi[-\s]?agents?|RAG|retrieval[-\s]?augmented|tool[-\s]?calling|agent[-\s]?framework|agentic[-\s]?framework|workflow|benchmark|evaluation|guardrail|safety|alignment|planning|reasoning|orchestration|system architecture)\b|大模型|智能体|多智能体|工具调用|检索增强|评测|基准|安全|规划|推理|系统架构|工程化/i;
 const outOfScopeDomainPattern = /\b(medical|medicine|clinical|healthcare|diagnosis|patient|disease|cancer|genom(?:e|ic)|gene|protein|drug|brain|neuroscience|biology|biomedical|bioinformatics|geospatial|geography|earth observation|remote sensing|game|gaming|recommender systems?|social network|social media|education|finance|financial|legal|law|economics|chemistry|molecular)\b|医学|医疗|临床|诊断|患者|疾病|癌症|基因|蛋白|药物|脑科学|神经科学|生命科学|生物|地理|遥感|游戏|推荐系统|社交网络|教育|金融|法律|经济|化学|分子/i;
 const falseNetworkDomainPattern = /\b(social network|regulatory network|protein network|gene network|brain network)\b|社交网络|调控网络|蛋白网络|基因网络|脑网络/i;
+const primaryHardwareTitlePattern = /\b(3D[-\s]?(?:DRAM|memory)|DRAM[-\s]?stacked|HBM|chiplets?|chips?|accelerators?|RTL|Verilog|VHDL|FPGA|ASIC|VLSI|microarchitecture|semiconductor|silicon|electronic design automation|EDA|logic synthesis|circuit design|hardware co[-\s]?design)\b|芯片|加速器|存储器|内存堆叠|硬件协同设计|电路设计|逻辑综合/i;
+const primaryHardwareDetailPattern = /\b(DRAM|HBM|chiplets?|accelerators?|RTL|Verilog|VHDL|FPGA|ASIC|VLSI|microarchitecture|semiconductor|electronic design automation|EDA|logic synthesis|circuit design|hardware co[-\s]?design)\b|芯片|加速器|存储器|内存堆叠|硬件协同设计|电路设计|逻辑综合/i;
+const primaryHardwareScopeReason = "主要贡献属于芯片、加速器、存储、RTL/Verilog、EDA、电路或其他硬件设计，不在当前推荐范围。";
+
+const recommendationScopeForPaper = (paper = {}, analysis = {}) => {
+  const title = normalizeText(paper.title);
+  const details = [
+    paper.summary,
+    analysis.problem,
+    analysis.method,
+    analysis.technicalDetails,
+    analysis.contribution
+  ].filter(Boolean).join(" ");
+  const categoryLooksHardware = [paper.primaryCategory, ...(Array.isArray(paper.categories) ? paper.categories : [])]
+    .some((category) => /^(?:cs\.AR|cs\.ET)$/i.test(String(category || "").trim()));
+  const primaryHardware = primaryHardwareTitlePattern.test(title)
+    || (categoryLooksHardware && primaryHardwareDetailPattern.test(details));
+
+  return primaryHardware
+    ? {
+        eligible: false,
+        code: "primary_hardware_domain",
+        label: "硬件方向（不推荐）",
+        reason: primaryHardwareScopeReason
+      }
+    : {
+        eligible: true,
+        code: "",
+        label: "",
+        reason: ""
+      };
+};
 
 const inferInterestFit = (paper = {}, analysis = {}) => {
   const text = textForInterestFit(paper, analysis);
@@ -2410,6 +2442,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
             "只有当论文的主问题域是通信/电信/网络基础设施时，才能在 industryTags 中写 ICT，例如 5G/6G、RAN/O-RAN、无线/蜂窝/移动/核心/边缘/光/卫星网络、网络切片、路由、QoS、频谱、切换、业务保障、告警关联或故障诊断。泛 AI agent、泛多智能体系统、泛 graph/neural network、社交网络、一般 computer network 或只出现 network 一词，都不要标 ICT。",
             "对于产业宣介、实践总结、框架愿景或标准化流程型论文，要按实际研究贡献、可验证机制和证据强度打分，不要因为业务方向高度匹配而抬高研究问题价值、方法新意或系统价值。",
             "非目标领域的定义是：论文主问题、评价对象或主要应用场景明确落在医学、生命科学、脑科学、基因组、地理、游戏、教育、金融、法律、社科、推荐系统等专用垂直领域，且摘要没有展示可迁移的通用 AI/Agent/系统方法。若论文只是使用这些垂直数据做验证，但主要贡献是通用机制、架构、评测或 agent 方法，应设为 general_ai_system，而不是 out_of_scope_domain。",
+            "当前推荐范围不包括以芯片、加速器、DRAM/HBM、RTL/Verilog、EDA、电路、微架构或硬件协同设计为主要贡献的论文；即使它服务于 LLM 推理、使用智能体或包含系统框架，也必须设为 out_of_scope_domain。只有硬件仅作为实验载体、主要贡献仍是可迁移的网络自治或智能体软件方法时，才不要按硬件方向排除。",
             "分析正文要尽量具体、完整、可读：把问题背景、方法机制、技术路线、实验可信度、网络应用价值、局限和阅读路径写成可以直接帮助研究人员快速判断论文价值的内容。",
             "如果只能基于摘要分析，也要明确区分事实、合理推断和需要打开原文核验的部分。",
             "只返回 JSON，不要输出 Markdown。"
@@ -3098,13 +3131,30 @@ const normalizeAnalysis = (paper, analysis) => {
   const scores = Object.fromEntries(
     dimensions.map((dimension) => [dimension.key, clamp(analysis.scores[dimension.key])])
   );
-  const interest = interestCalibrationForPaper(paper, analysis);
-  const interestReason = normalizeText(analysis.interestReason) || interest.reason;
+  const scope = recommendationScopeForPaper(paper, analysis);
+  const inferredInterest = interestCalibrationForPaper(paper, analysis);
+  const interest = scope.eligible
+    ? inferredInterest
+    : {
+        fit: "out_of_scope_domain",
+        label: scope.label,
+        adjustment: interestFitRules.out_of_scope_domain.adjustment,
+        reason: scope.reason
+      };
+  const interestReason = scope.eligible
+    ? normalizeText(analysis.interestReason) || interest.reason
+    : scope.reason;
   const score = weightedScore(scores, interest.fit);
+  const notRecommendReason = scope.eligible
+    ? notRecommendReasonForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason })
+    : scope.reason;
 
   return {
     score: Math.round(score),
     scores,
+    recommendationEligible: scope.eligible,
+    scopeExclusionCode: scope.code,
+    scopeExclusionReason: scope.reason,
     interestFit: interest.fit,
     interestLabel: interest.label,
     interestAdjustment: interest.adjustment,
@@ -3130,7 +3180,7 @@ const normalizeAnalysis = (paper, analysis) => {
       8,
       analysis.matchedKeywords
     ),
-    notRecommendReason: normalizeText(notRecommendReasonForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason })),
+    notRecommendReason: normalizeText(notRecommendReason),
     whyRecommend: normalizeText(analysis.whyRecommend)
   };
 };
@@ -3701,11 +3751,11 @@ const handleAnalyzeRequest = async (request, response) => {
       }));
 
     const recommendations = analyzed
-      .filter((paper) => paper.analysis.score >= threshold)
+      .filter((paper) => paper.analysis.recommendationEligible && paper.analysis.score >= threshold)
       .sort((a, b) => b.analysis.score - a.analysis.score || new Date(b.published) - new Date(a.published))
       .slice(0, maxRecommendations);
     const hiddenPapers = analyzed
-      .filter((paper) => paper.analysis.score < threshold)
+      .filter((paper) => !paper.analysis.recommendationEligible || paper.analysis.score < threshold)
       .sort((a, b) => b.analysis.score - a.analysis.score || new Date(b.published) - new Date(a.published));
 
     sendJson(response, 200, {

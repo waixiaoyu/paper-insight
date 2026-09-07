@@ -79,6 +79,34 @@ test("one paper failure does not cancel other paper analyses", async () => {
   assert.equal(settled.length, 4);
 });
 
+test("backend connection failures are classified and stop scheduling the remaining papers", async () => {
+  assert.ok(analysisPool, "analysis pool module should exist");
+  assert.equal(typeof analysisPool.isBackendUnavailableError, "function");
+
+  const started = [];
+  const connectionError = new TypeError("Failed to fetch");
+  assert.equal(analysisPool.isBackendUnavailableError(connectionError), true);
+
+  const outcome = await analysisPool.runConcurrentTasks([0, 1, 2, 3, 4], async (item) => {
+    started.push(item);
+    if (item === 0) {
+      await wait(1);
+      throw connectionError;
+    }
+    await wait(20);
+    return item;
+  }, {
+    concurrency: 2,
+    onSettled: (entry) => entry.status === "rejected" && analysisPool.isBackendUnavailableError(entry.error)
+      ? false
+      : true
+  });
+
+  assert.deepEqual(started, [0, 1]);
+  assert.equal(outcome.errors.length, 1);
+  assert.deepEqual(outcome.skipped.map(({ item }) => item), [2, 3, 4]);
+});
+
 test("paper analysis pool stops scheduling new work after the caller reaches its target", async () => {
   assert.ok(analysisPool, "analysis pool module should exist");
 

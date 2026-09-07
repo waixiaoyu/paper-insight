@@ -145,6 +145,10 @@ test("paper QA repair prompt contains one current draft, normalized issue detail
   assert.equal(parsed.task, "weekly_report_repair_paper_section");
   assert.equal(parsed.paper.paperId, "2608.30001");
   assert.equal(parsed.currentPaperDraft.paperId, "2608.30001");
+  assert.deepEqual(parsed.repairPaths, ["coreContribution"]);
+  assert.equal(Array.isArray(parsed.outputSchema.patches), true);
+  assert.match(parsed.repairInstruction, /JSON patch only/i);
+  assert.doesNotMatch(parsed.repairInstruction, /Regenerate.*complete paperDraft/i);
   assert.equal(parsed.issues[0].reason, "The Evidence only supports a guardrail.");
   assert.doesNotMatch(serialized, /ABSTRACT_MUST_NOT_ENTER_REPAIR/);
   assert.doesNotMatch(serialized, /OLD_ANALYSIS_MUST_NOT_ENTER_REPAIR/);
@@ -167,13 +171,19 @@ test("paper QA repair is validated, preserves server metadata, and records one c
     }],
     networkRetryDelayMs: 0,
     onEvent: async (event) => events.push(event),
-    callModel: async () => draftFor(item.paper.id)
+    callModel: async () => ({
+      patches: [{
+        path: "oneSentenceTakeaway",
+        value: draftFor(item.paper.id).oneSentenceTakeaway
+      }]
+    })
   });
 
   assert.equal(result.paperDraft.oneSentenceTakeaway.text, "A guardrail validates autonomous actions before execution.");
   assert.equal(result.paperDraft.publicationMeta.finalScore, 79);
   assert.equal(result.responseRepairAttempted, false);
   assert.equal(result.calls.length, 1);
+  assert.equal(events.some((event) => event.type === "paper_section_patch_applied"), true);
   assert.equal(events.some((event) => event.type === "model_call_started" && event.paperId === item.paper.id), true);
 });
 
@@ -187,13 +197,22 @@ test("an invalid repaired paper gets one response-schema correction without broa
     networkRetryDelayMs: 0,
     callModel: async (prompt) => {
       prompts.push(JSON.parse(prompt));
-      return prompts.length === 1 ? { paperId: item.paper.id } : draftFor(item.paper.id);
+      return prompts.length === 1
+        ? '{"patches":[{"path":"limitationsAndConstraints"'
+        : {
+          patches: [{
+            path: "limitationsAndConstraints",
+            value: draftFor(item.paper.id).limitationsAndConstraints
+          }]
+        };
     }
   });
 
   assert.equal(result.responseRepairAttempted, true);
   assert.equal(prompts[1].task, "weekly_report_repair_paper_section_response");
   assert.equal(prompts[1].issues[0].code, "limitation_gap");
+  assert.deepEqual(prompts[1].repairPaths, ["limitationsAndConstraints"]);
+  assert.equal(Array.isArray(prompts[1].outputSchema.patches), true);
   assert.equal(prompts[1].responseValidationIssues.every((issue) => Object.keys(issue).every((key) => ["code", "path"].includes(key))), true);
   assert.equal("priorResponse" in prompts[1], false);
 });

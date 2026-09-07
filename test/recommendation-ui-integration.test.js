@@ -31,14 +31,24 @@ test("recommendation analysis errors offer a per-paper skip action in both statu
   assert.match(appSource, /确认跳过论文/);
 });
 
+test("recommendation analysis identifies a disconnected backend with an actionable message", () => {
+  assert.match(appSource, /本地后端服务不可用/);
+  assert.match(appSource, /确认 Paper Insight 服务已启动后重试/);
+});
+
+test("a disconnected backend never offers a per-paper skip action", () => {
+  assert.match(appSource, /function failedAnalysisPaperCanBeSkipped\(/);
+  assert.match(appSource, /!failedAnalysisPaperCanBeSkipped\(\)/);
+});
+
 test("shared retry buttons keep a generic label for non-analysis failures", () => {
   assert.match(htmlSource, /id="taskRetry"[^>]*>重试当前操作<\/button>/);
   assert.match(htmlSource, /id="retryButton"[^>]*>重试当前操作<\/button>/);
 });
 
 test("failed-paper skip visibility does not depend on whether the error is retryable", () => {
-  assert.match(appSource, /skipAnalysisPaperButton\.hidden\s*=\s*state\.taskLocked\s*\|\|\s*!currentFailedAnalysisPaper\(\)/);
-  assert.match(appSource, /taskSkipAnalysisPaper\.hidden\s*=\s*state\.taskLocked\s*\|\|\s*!currentFailedAnalysisPaper\(\)/);
+  assert.match(appSource, /skipAnalysisPaperButton\.hidden\s*=\s*state\.taskLocked\s*\|\|\s*!failedAnalysisPaperCanBeSkipped\(\)/);
+  assert.match(appSource, /taskSkipAnalysisPaper\.hidden\s*=\s*state\.taskLocked\s*\|\|\s*!failedAnalysisPaperCanBeSkipped\(\)/);
   assert.doesNotMatch(appSource, /skipAnalysisPaperButton\.hidden\s*=\s*action\s*!==\s*"retry"/);
   assert.doesNotMatch(appSource, /taskSkipAnalysisPaper\.hidden\s*=\s*action\s*!==\s*"retry"/);
 });
@@ -69,4 +79,23 @@ test("starting or resuming analysis immediately removes stale skip controls", ()
 
   assert.match(progressSource, /hideStatus\(\)/);
   assert.match(skipSource, /if\s*\(state\.taskLocked\)\s*\{\s*return false;/);
+});
+
+test("frontend never restores scope-excluded papers to the recommended view by score", () => {
+  const start = appSource.indexOf("function isRecommendedPaper(");
+  const end = appSource.indexOf("function splitReport(", start);
+  const functionSource = appSource.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(functionSource, /recommendationEligible\s*!==\s*false/);
+  assert.match(functionSource, /paperScore\(paper\)\s*>=\s*thresholdFor\(report\)/);
+});
+
+test("historical analyses without a scope decision are reanalyzed instead of reused", () => {
+  const start = appSource.indexOf("function findHistoricalAnalysis(");
+  const end = appSource.indexOf("function mergeHistoricalAnalysis(", start);
+  const functionSource = appSource.slice(start, end);
+
+  assert.ok(start >= 0 && end > start);
+  assert.match(functionSource, /typeof item\.analysis\.recommendationEligible\s*!==\s*"boolean"/);
 });

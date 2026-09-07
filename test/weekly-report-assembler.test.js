@@ -270,6 +270,24 @@ test("assemble follows Selection rank even when paperDraft input order is shuffl
   assert.doesNotMatch(secondBlock, /FIRST_PAPER_ONLY/);
 });
 
+test("assemble keeps publication-process leakage as a Trace warning instead of rejecting", () => {
+  const warnedDrafts = structuredClone(paperDrafts);
+  warnedDrafts[0].coreContribution.text = "该论文因未达到候选下限而作为 fallback 进入本周周报。";
+
+  const result = assembleWeeklyReportMarkdown({
+    reportMeta,
+    selectedItems,
+    paperDrafts: warnedDrafts,
+    headTailDraft
+  });
+
+  assert.match(result.markdown, /候选下限/);
+  assert.equal(result.warnings.some((entry) => (
+    entry.code === "internal_process_leak"
+    && entry.severity === "warning"
+  )), true);
+});
+
 test("assemble preserves all four reading tiers with reader-facing labels", () => {
   const tiers = ["must_read", "worth_reading", "skim", "background_only"];
   const items = tiers.map((readingTier, index) => selectedItemFor(`2607.71${String(index).padStart(3, "0")}`, index + 1, {

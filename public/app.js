@@ -29,6 +29,7 @@ import {
 } from "./query-defaults.js";
 import {
   analysisProgressCounts,
+  isBackendUnavailableError,
   runConcurrentTasks,
   skipFailedAnalysisPaper
 } from "./analysis-pool.js";
@@ -836,7 +837,7 @@ function findHistoricalAnalysis(paper) {
 
   for (const report of state.reports) {
     for (const item of reportPapers(report)) {
-      if (!item?.analysis) {
+      if (!item?.analysis || typeof item.analysis.recommendationEligible !== "boolean") {
         continue;
       }
 
@@ -1011,7 +1012,8 @@ function setScorePill(pill, paper) {
 }
 
 function isRecommendedPaper(paper, report = state.currentReport) {
-  return paperScore(paper) >= thresholdFor(report);
+  return paper?.analysis?.recommendationEligible !== false
+    && paperScore(paper) >= thresholdFor(report);
 }
 
 function splitReport(report = state.currentReport) {
@@ -1312,10 +1314,21 @@ function currentFailedAnalysisPaper() {
   return state.analysisSession?.failedPapers?.[0] || state.analysisSession?.failedPaper || null;
 }
 
+function failedAnalysisPaperCanBeSkipped() {
+  return Boolean(currentFailedAnalysisPaper())
+    && !isBackendUnavailableError(state.analysisSession?.failedAnalysisError);
+}
+
 function showPausedRecommendationAnalysis() {
   const paper = currentFailedAnalysisPaper();
   if (!paper) {
     return false;
+  }
+
+  if (!failedAnalysisPaperCanBeSkipped()) {
+    const action = state.recommendationRetryOperation ? "retry" : "";
+    showStatus("推荐列表分析因本地后端服务不可用而暂停。请确认 Paper Insight 服务已启动后重试。", "error", action);
+    return true;
   }
 
   const title = String(paper.title || paper.id || "当前论文");
@@ -1328,7 +1341,7 @@ function showStatus(message, type = "loading", action = "") {
   elements.statusPanel.className = `status-panel visible${type === "error" ? " error" : ""}${type === "warning" ? " warning" : ""}`;
   elements.statusPanel.querySelector("p").textContent = message;
   elements.retryButton.hidden = action !== "retry";
-  elements.skipAnalysisPaperButton.hidden = state.taskLocked || !currentFailedAnalysisPaper();
+  elements.skipAnalysisPaperButton.hidden = state.taskLocked || !failedAnalysisPaperCanBeSkipped();
 }
 
 function hideStatus() {
@@ -1407,7 +1420,7 @@ function setTaskStatus(message, type = "loading", action = "") {
   elements.taskRefreshCandidates.hidden = !showRefreshCandidates;
   elements.taskForceArxiv.hidden = !showForceArxiv;
   elements.taskRetry.hidden = action !== "retry";
-  elements.taskSkipAnalysisPaper.hidden = state.taskLocked || !currentFailedAnalysisPaper();
+  elements.taskSkipAnalysisPaper.hidden = state.taskLocked || !failedAnalysisPaperCanBeSkipped();
 }
 
 function rememberRecommendationRetry(stage, error, options = {}) {
@@ -2579,6 +2592,7 @@ function weeklyReportTraceEventText(event = {}) {
     case "evidence_processing_started": text = `开始提取论文 ${event.paperId || "-"} 的证据，正在等待模型响应`; break;
     case "review_processing_started": text = `开始复评论文 ${event.paperId || "-"}，正在等待模型响应`; break;
     case "paper_section_processing_started": text = `开始撰写论文 ${event.paperId || "-"} 的正文，正在等待模型响应`; break;
+    case "paper_section_json_normalized": text = `论文 ${event.paperId || "-"}：已补全响应末尾 ${event.count || 1} 个 JSON 闭合符，${event.validationPassed ? "稿件校验通过" : "继续处理稿件校验问题"}`; break;
     case "model_call_started": text = `${event.paperId ? `论文 ${event.paperId}：` : ""}已发起模型调用，正在等待响应（${event.attemptType || "当前尝试"}）`; break;
     case "repair_requested": text = `发现 ${issueCount || "若干"} 项问题，发起一次定向修正`; break;
     case "manual_review_requested": text = event.kind === "execution_failure"
@@ -4199,39 +4213,50 @@ function analysisErrorFromPayload(data, status = 0) {
 }
 
 async function analyzeOnePaper(paper) {
-  const response = await fetch("/api/analyze", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      query: currentSearchQuery(),
-      threshold: state.currentThreshold,
-      maxRecommendations: 1,
-      maxAnalyze: 1,
-      totalCandidates: 1,
-      papers: [paper],
-      ...llmPayload()
-    })
-  });
-  const data = await response.json();
+  try {
+    const response = await fetch("/api/analyze", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        query: currentSearchQuery(),
+        threshold: state.currentThreshold,
+        maxRecommendations: 1,
+        maxAnalyze: 1,
+        totalCandidates: 1,
+        papers: [paper],
+        ...llmPayload()
+      })
+    });
+    const data = await response.json();
 
-  if (!response.ok) {
-    throw analysisErrorFromPayload(data, response.status);
+    if (!response.ok) {
+      throw analysisErrorFromPayload(data, response.status);
+    }
+
+    const analyzedPaper = data.analyzedPapers?.[0] || data.recommendations?.[0] || data.hiddenPapers?.[0];
+
+    if (!analyzedPaper) {
+      const error = new Error("LLM 没有返回本篇论文的分析结果。");
+      error.retryable = true;
+      throw error;
+    }
+
+    return {
+      mode: modeLabel(data.mode),
+      paper: analyzedPaper
+    };
+  } catch (error) {
+    if (!isBackendUnavailableError(error)) {
+      throw error;
+    }
+
+    const unavailable = new Error("本地后端服务不可用。请确认 Paper Insight 服务已启动后重试。");
+    unavailable.code = "BACKEND_UNAVAILABLE";
+    unavailable.retryable = true;
+    throw unavailable;
   }
-
-  const analyzedPaper = data.analyzedPapers?.[0] || data.recommendations?.[0] || data.hiddenPapers?.[0];
-
-  if (!analyzedPaper) {
-    const error = new Error("LLM 没有返回本篇论文的分析结果。");
-    error.retryable = true;
-    throw error;
-  }
-
-  return {
-    mode: modeLabel(data.mode),
-    paper: analyzedPaper
-  };
 }
 
 function createAnalysisSession(papers) {
@@ -4267,6 +4292,7 @@ function createAnalysisSession(papers) {
     skippedAfterTarget: 0,
     failedPapers: [],
     failedPaper: null,
+    failedAnalysisError: null,
     skippedAnalysisPapers: []
   };
 }
@@ -4317,6 +4343,7 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
   session.pending = pending;
   session.analyzed = analyzed;
   session.failedPapers = Array.isArray(session.failedPapers) ? session.failedPapers : [];
+  session.failedAnalysisError = session.failedAnalysisError || null;
   session.skippedAnalysisPapers = Array.isArray(session.skippedAnalysisPapers)
     ? session.skippedAnalysisPapers
     : [];
@@ -4347,6 +4374,7 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
       const workItems = retryingFailures ? [...session.failedPapers] : pending.slice(session.nextIndex);
       session.failedPapers = [];
       session.failedPaper = null;
+      session.failedAnalysisError = null;
 
       if (workItems.length) {
         const activePapers = new Map();
@@ -4410,6 +4438,21 @@ async function analyzeConfirmedPapers(papers, existingSession = null) {
 
         session.nextIndex = pending.length;
         orderSessionAnalyzedPapers(session);
+
+        const backendUnavailable = outcome.errors.find(({ error }) => isBackendUnavailableError(error));
+
+        if (backendUnavailable) {
+          const unresolved = new Set([
+            ...outcome.errors.map(({ item }) => analysisPaperKey(item)),
+            ...outcome.skipped.map(({ item }) => analysisPaperKey(item))
+          ]);
+          session.failedPapers = workItems.filter((paper) => unresolved.has(analysisPaperKey(paper)));
+          session.failedPaper = session.failedPapers[0] || null;
+          session.failedAnalysisError = backendUnavailable.error;
+          state.analysisSession = session;
+          state.lastAnalyzePapers = [...session.failedPapers];
+          throw backendUnavailable.error;
+        }
 
         if (outcome.skipped.length) {
           session.stoppedAfterTarget = true;

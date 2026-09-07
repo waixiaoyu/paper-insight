@@ -75,12 +75,13 @@ export const normalizeWeeklyReportSemanticReview = (value, { mode = "warn" } = {
   const issues = (Array.isArray(value.issues) ? value.issues : [])
     .slice(0, 20)
     .map((issue) => {
-      const severity = ALLOWED_SEVERITIES.has(String(issue?.severity || "").toLowerCase())
+      const rawSeverity = ALLOWED_SEVERITIES.has(String(issue?.severity || "").toLowerCase())
         ? String(issue.severity).toLowerCase()
         : "medium";
       const category = ALLOWED_CATEGORIES.has(String(issue?.category || "").toLowerCase())
         ? String(issue.category).toLowerCase()
         : "other";
+      const severity = category === "internal_process_leak" ? "low" : rawSeverity;
 
       return {
         severity,
@@ -92,15 +93,21 @@ export const normalizeWeeklyReportSemanticReview = (value, { mode = "warn" } = {
       };
     })
     .filter((issue) => issue.claim || issue.reason);
-  const hasHigh = issues.some((issue) => issue.severity === "high");
-  const hasMedium = issues.some((issue) => issue.severity === "medium");
+  const publicationIssues = issues.filter((issue) => issue.category !== "internal_process_leak");
+  const hasHigh = publicationIssues.some((issue) => issue.severity === "high");
+  const hasMedium = publicationIssues.some((issue) => issue.severity === "medium");
   const hasCriticalCheckFailure = REQUIRED_CHECKS.some((key) => CRITICAL_CHECKS.has(key) && !checks[key]);
   const hasAdvisoryCheckFailure = REQUIRED_CHECKS.some((key) => !CRITICAL_CHECKS.has(key) && !checks[key]);
+  const onlyInternalProcessWarnings = issues.length > 0
+    && publicationIssues.length === 0
+    && !hasCriticalCheckFailure
+    && !hasAdvisoryCheckFailure;
+  const effectiveRequestedVerdict = onlyInternalProcessWarnings ? "pass" : requestedVerdict;
   const verdict = hasHigh || hasCriticalCheckFailure
     ? "reject"
-    : requestedVerdict === "pass" && (hasMedium || hasAdvisoryCheckFailure)
+    : effectiveRequestedVerdict === "pass" && (hasMedium || hasAdvisoryCheckFailure)
       ? "review"
-      : requestedVerdict;
+      : effectiveRequestedVerdict;
   const score = Math.max(0, Math.min(100, Math.round(rawScore)));
 
   return {

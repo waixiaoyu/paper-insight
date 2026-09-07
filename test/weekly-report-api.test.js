@@ -150,6 +150,101 @@ test("recommendation scores use the four-dimension weighted average plus interes
   }
 });
 
+test("primary hardware papers never enter the recommendation list", async () => {
+  const previousGenerationText = mockGenerationText;
+  const papers = [
+    {
+      id: "2604.04750",
+      title: "DeepStack: Facilitating Co-Design Exploration of 3D DRAM-Stacked Accelerators for Distributed LLM Inference",
+      authors: ["Test Author"],
+      categories: ["cs.AR"],
+      primaryCategory: "cs.AR",
+      published: "2026-08-28T00:00:00Z",
+      summary: "We propose an analytical model and design-space exploration framework for 3D DRAM-stacked LLM inference accelerators."
+    },
+    {
+      id: "2608.30003",
+      title: "Auditable Tool Planning for Multi-Agent Systems",
+      authors: ["Test Author"],
+      categories: ["cs.AI"],
+      primaryCategory: "cs.AI",
+      published: "2026-08-28T00:00:00Z",
+      summary: "A reusable agent planning and tool execution method with audit traces and failure recovery."
+    },
+    {
+      id: "2602.00704",
+      title: "QiMeng-ChipV-RTL: Exploiting Information Locality for IP-level Verilog Generation",
+      authors: ["Test Author"],
+      categories: ["cs.AR"],
+      primaryCategory: "cs.AR",
+      published: "2026-08-28T00:00:00Z",
+      summary: "A multi-agent LLM workflow for RTL and Verilog generation in chip design automation."
+    }
+  ];
+  const analysisFor = (paper) => ({
+    id: paper.id,
+    score: 0,
+    scores: {
+      scenarioProblemValue: 82,
+      methodNovelty: 82,
+      practicalValue: 82,
+      evidence: 82
+    },
+    interestFit: "general_ai_system",
+    interestReason: "The work contributes to a general AI system.",
+    tldr: "A concrete recommendation judgment.",
+    problem: "A defined research problem.",
+    background: "Relevant research background.",
+    method: "A concrete technical method.",
+    technicalDetails: "Technical implementation details.",
+    contribution: "A specific contribution.",
+    experiment: "The reported experimental evidence.",
+    networkUseCase: "Potential application value.",
+    limitations: "The current evidence boundary.",
+    recommendedReadingPath: "Read the method and experiments first.",
+    readingGuide: ["Check the method.", "Check the evidence."],
+    whyRecommend: "The paper has a clear research contribution.",
+    matchedKeywords: ["LLM", "agent"],
+    industryTags: []
+  });
+
+  try {
+    mockGenerationText = JSON.stringify({
+      recommendations: papers.map(analysisFor)
+    });
+
+    const response = await fetch(`${baseUrl}/api/analyze`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "LLM agent",
+        threshold: 70,
+        maxAnalyze: 3,
+        maxRecommendations: 3,
+        papers,
+        llmApiKey: "test-api-key",
+        llmProvider: "glm-coding-anthropic",
+        llmModel: "glm-5.3"
+      })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200, payload.detail || payload.message);
+    assert.deepEqual(payload.recommendations.map((paper) => paper.id), ["2608.30003"]);
+    const excluded = payload.hiddenPapers.find((paper) => paper.id === "2604.04750");
+    assert.ok(excluded);
+    assert.equal(excluded.analysis.recommendationEligible, false);
+    assert.equal(excluded.analysis.scopeExclusionCode, "primary_hardware_domain");
+    assert.match(excluded.analysis.notRecommendReason, /硬件/);
+    const excludedRtl = payload.hiddenPapers.find((paper) => paper.id === "2602.00704");
+    assert.ok(excludedRtl);
+    assert.equal(excludedRtl.analysis.recommendationEligible, false);
+    assert.equal(excludedRtl.analysis.scopeExclusionCode, "primary_hardware_domain");
+  } finally {
+    mockGenerationText = previousGenerationText;
+  }
+});
+
 const semanticReviewRequestPayload = () => ({
   date: "2026-07-29",
   month: "2026-07",

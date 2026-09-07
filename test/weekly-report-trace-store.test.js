@@ -48,7 +48,10 @@ test("Trace 深度脱敏认证字段和嵌入字符串，但保留模型 token �
 
 test("Trace 所有落盘入口都执行脱敏，reject 也保存最终稿", async () => {
   const rootDir = await makeTempDirectory();
-  const store = new WeeklyReportTraceStore({ rootDir });
+  const store = new WeeklyReportTraceStore({
+    rootDir,
+    now: () => new Date("2026-08-01T12:00:00.000Z")
+  });
 
   await store.createTrace({
     traceId: "trace-reject",

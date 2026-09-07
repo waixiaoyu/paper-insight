@@ -701,13 +701,14 @@ test("Editorial Plan allows only one combined observation for each paper", () =>
   assert.equal(validation.issues.some((entry) => entry.code === "single_paper_observation_duplicate"), true);
 });
 
-test("internal terms such as fallback and thresholds are rejected from Editorial Plan text", () => {
+test("publication-process terms produce a non-blocking Editorial Plan warning", () => {
   const plan = validPlan();
   plan.singlePaperObservations[0].caveat = "该论文是 fallback，因为没有达到内部阈值。";
   const validation = validateEditorialPlan(plan, { selectedItems });
 
-  assert.equal(validation.valid, false);
-  assert.equal(validation.issues.some((issue) => issue.code === "internal_term_leak"), true);
+  assert.equal(validation.valid, true, validation.issues.map((entry) => entry.code).join(", "));
+  assert.equal(validation.issues.some((issue) => issue.code === "internal_term_leak"), false);
+  assert.equal(validation.warnings.some((entry) => entry.code === "internal_process_leak"), true);
 });
 
 test("Editorial Plan gets one structured repair and does not include the prior raw response", async () => {
@@ -1212,7 +1213,7 @@ test("Head/Tail cannot omit Editorial Plan entries or reorder selected papers", 
   assert.equal(validation.issues.some((issue) => issue.code === "reading_order_mismatch"), true);
 });
 
-test("Head/Tail cannot invent new exact numbers, generic title slogans, internal terms, or unknown papers", () => {
+test("Head/Tail keeps factual blockers while treating internal process text as a warning", () => {
   const draft = validHeadTail();
   draft.titleAngle = "A new paradigm worth watching";
   draft.trendJudgments[0].claim = "The internal fallback threshold produced a 42% gain; see arXiv:2607.59999.";
@@ -1225,7 +1226,8 @@ test("Head/Tail cannot invent new exact numbers, generic title slogans, internal
   assert.equal(validation.valid, false);
   assert.equal(validation.issues.some((issue) => issue.code === "generic_title_angle"), true);
   assert.equal(validation.issues.some((issue) => issue.code === "numeric_claim_not_in_source"), true);
-  assert.equal(validation.issues.some((issue) => issue.code === "internal_term_leak"), true);
+  assert.equal(validation.issues.some((issue) => issue.code === "internal_term_leak"), false);
+  assert.equal(validation.warnings.some((issue) => issue.code === "internal_process_leak"), true);
   assert.equal(validation.issues.some((issue) => issue.code === "cross_paper_reference"), true);
 });
 

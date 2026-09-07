@@ -1033,7 +1033,9 @@ Selection 由服务端确定性执行。
 - 生成该论文正文块。
 - 模型的事实输入只包含当前论文带 ref 的原文 Evidence 短摘录；Value Signal 仅保留维度和方向路由，Review/Calibration 仅保留评分与层级元数据。
 - 事实范围不得超出 evidenceCard。
-- 每个正文单元中的精确数字必须由该单元绑定的 evidenceRefs 覆盖；结构化修正重生成完整 paperDraft 后必须复查全部字段，不能把未绑定数字移动到其他字段。
+- 每个正文单元中的精确数字必须由该单元绑定的 evidenceRefs 覆盖；章节阅读指引中的章节号是引用定位信息，可由该单元引用的 Evidence `section` 元数据直接支持，不要求章节号同时逐字出现在 excerpt 中。未出现在所引 Evidence `section` 的章节号仍按未绑定数字阻断。章节号只识别独立的“节”或“章节”表达，不得把“46 节点”等由“节”开头的名词识别成章节引用；其中的事实数字仍按普通 Evidence 数字校验。
+- Paper Section 内容修正采用基于上一版规范化 paperDraft 的路径级补丁。模型只返回本轮 issues 映射出的 `repairPaths` 及完整替换值；每个补丁项必须显式包含 `{ path, value }`，`value` 缺失或为 `undefined` 属于响应 Schema 错误。服务端拒绝未授权、重复、不存在或缺少完整替换值的路径，并在拒绝时保持上一版 paperDraft 不变；此类格式错误进入同一次内容修正内的响应格式纠正。应用合法补丁后重新执行全部 Schema、Evidence、数字、范围和文风校验。未列入 `repairPaths` 的字段逐值保持不变，不能把未绑定数字或其他问题移动到别的字段。
+- 响应格式修正继续使用同一份上一版 paperDraft 和同一组 `repairPaths`，只重新获取合法补丁 JSON，不携带或复述被截断的原始响应。每次补丁的目标路径、前后差异、拒绝原因和完整复检结果写入 Trace。
 - 数字提取必须忽略 `F1`、`V4` 等字母数字标识内部的数字，避免将指标名误报为未绑定数字事实。
 - 时间跨度限定不得扩大：`medium-horizon` 或跨多场任务只允许写为“中期”或具体任务跨度，没有直接证据时不能写成“中长期”“长期”或“长周期”。
 - `single-encounter` 保持为“单场战斗/单次遭遇”，不得缩成“单步/单步骤”。D&D 场景中 `persistent hit points` 写为“跨战斗保留的生命值”，`cleared days/encounter days` 写为“战斗日”或“Day 场景”，不使用“持续生命值”或“日程”。
@@ -1110,12 +1112,13 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - 机构是否来自 Evidence。
 - 精确数字是否能回到 evidenceRefs。
 - 是否有低于入选阈值的论文进入发布稿。
-- 是否泄漏 Agent、artifact、prompt、阈值、旧分数或内部 JSON。
+- 是否出现指向 Paper Insight 自身的 Agent、artifact、prompt、选稿阈值、旧分数或内部 JSON；命中时按 11.4 记录管理员告警，不生成阻断 issue。
 
 输出与路由：
 
 - qaReport 至少包含 status、deterministicIssues、paperIssues、reportIssues、repairAttempted、repairResults、warnings 和底层 validation 结果。
 - 每个 issue 必须包含 code、path、message、severity、scope、paperId（适用时）、repairTarget 和 repairable。
+- 内部流程告警使用 `internal_process_leak`，保留字段路径和 Trace；它不进入 repairTarget，也不改变 deterministic QA 或 semantic QA 的通过结论。
 - 服务端拥有的评分、维度、机构、readingTier、发布元数据和 Markdown 结构问题定向到 assemble，由可信 artifacts 重新拼装，不调用 Writer。
 - 论文事实、数字、局限或跨论文串写问题定向到对应 paper_section；报告标题、导读、趋势、阅读顺序或头尾问题定向到 head_tail。
 - 可修复失败返回 repair_required，记录完整 Trace 和管理员告警，任务继续进入 repair_once；默认最多自动修正 3 次，这不是第三种发布状态。
@@ -1183,7 +1186,7 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 QA 发现可修复问题时默认允许最多 3 次自动修正：
 
 - 格式问题由服务端修正。
-- 单篇内容问题只重写相应 paperDraft。
+- 单篇内容问题只对相应 paperDraft 的问题路径应用补丁。
 - 报告级问题只重写头部或尾部。
 - 不因一个局部问题重写整篇报告。
 - 修正 prompt、原始响应和差异写入 Trace。
@@ -1196,7 +1199,7 @@ QA 发现可修复问题时默认允许最多 3 次自动修正：
 - repair_once 是单轮定向编排阶段，不是新的 Agent；Pipeline 可以最多自动进入 3 轮，它只调用已有 Paper Section Writer 或 Editorial Agent 的 Head/Tail 能力。
 - 汇总并去重 deterministicIssues、paperIssues 和 reportIssues，只接受 assemble、paper_section、head_tail 三类 repairTarget。
 - repairable=false、未知 repairTarget、缺少目标论文 artifacts 或没有任何 issue 时直接 reject，不允许猜测修正范围。
-- 同一论文的多个 issue 合并为一次完整 paperDraft 重写；不同论文可按 paperConcurrency 有限并发，默认 2、范围 1–5。
+- 同一论文的多个 issue 合并为一次路径级 paperDraft 补丁；不同论文可按 paperConcurrency 有限并发，默认 2、范围 1–5。
 - 同时存在 paper_section 和 head_tail 问题时，先修正目标论文，再用修正后的精简 paperDrafts 修正 Head/Tail。
 - 未被点名的 paperDraft 必须原样保留，不因一个局部问题重写其他论文。
 
@@ -1205,14 +1208,14 @@ QA 发现可修复问题时默认允许最多 3 次自动修正：
 - 论文修正 prompt 仅包含当前论文 draft、该论文绑定 Evidence、服务端评分/层级和规范化 QA issues，不包含其他论文、摘要、完整原文或旧分析。
 - Head/Tail 修正 prompt 仅包含当前 Head/Tail、editorialPlan、精简逐篇阅读价值 artifacts 和规范化报告级 issues。
 - 规范化 issue 可以携带 code、path、claim、reason、evidenceRefs 和 supportingPaperIds；不携带 QA 原始响应。
-- 修正必须返回完整 artifact，并继续通过原 Paper Section 或 Head/Tail Schema、Evidence 和边界校验。
+- Paper Section 修正只返回本轮 `repairPaths` 的 JSON 补丁，服务端将其应用到上一版规范化 paperDraft；未授权路径必须拒绝，未提交路径逐值保持不变。Head/Tail 修正返回完整 artifact。两类结果都继续通过原 Schema、Evidence 和边界校验。
 - 修正响应本身 JSON 或 Schema 无效时允许一次响应格式纠正；这仍属于同一次内容修正，不产生第二次 repair_once。
 
 结果与回路：
 
 - 服务端拼装问题记录 method=server_reassemble，不调用 LLM。
 - 每个 repairResult 记录 repairTarget、method、paperId、issueCodes、changed、changedFields 和 responseRepairAttempted。
-- 修正 prompt、原始响应、校验结果、前后差异、耗时和失败原因全部写入 Trace。
+- 修正 prompt、原始响应、授权路径、实际补丁路径、校验结果、实际修改路径的前后差异、耗时和失败原因全部写入 Trace。
 - 修正完成后 qaReport.repairAttempted 固定为 true，保留 repairResults，并返回 assemble 重新生成完整 Markdown。
 - 重新拼装后重跑 deterministic_qa、paper_semantic_qa 和 report_semantic_qa；这些阶段不修改内容，因此确定性门检查的仍是最终修正版 artifacts。
 - 每轮修正后重新执行全部强制质量门；自动修正次数未满 3 次时可以再次进入 repair_once。
@@ -1301,9 +1304,9 @@ Evidence、Review 或 Calibration 的内容校验或结构化修正后仍失败�
 - 清单列保持简洁：论文、一句话介绍、阅读级别、链接。
 - 固定页尾由服务端补齐。
 
-### 11.4 禁止内容
+### 11.4 内部流程信息的发布目标与校验分级
 
-发布 Markdown 不包含：
+发布 Markdown 的目标是不包含：
 
 - Agent Trace。
 - prompt 或模型原始响应。
@@ -1313,6 +1316,12 @@ Evidence、Review 或 Calibration 的内容校验或结构化修正后仍失败�
 - 原推荐旧分数和旧排序。
 - Evidence/Review/Calibration 等内部流程词。
 - API Key 或模型敏感配置。
+
+“内部流程信息”按语义指向判断，不按单个关键词判断：只有文本明确指向 Paper Insight 自身的生成、选稿、评分、修正或运维过程时才命中，例如候选下限、保底补入、内部筛选、selectionReason、横向校准、定向重评，以及带有周报任务上下文的 fallback、Agent stage、prompt、artifact 和 Trace。
+
+论文原文及其方法、实验中具有学术含义的同名术语不属于内部流程信息。例如实验阈值、默认 10 秒阈值、论文自身的 Agent Loop、prompt、artifact 或 stage 均允许正常写入；用户可见的阅读价值分数和推荐理由也不属于内部流程泄漏。
+
+内部流程信息命中后只生成管理员运维告警，并写入对应字段、模型调用和阶段 Trace；不得单独触发自动修正、管理员决策、跳过论文或拒绝发布。事实、Evidence、精确数字、机构、跨论文归因、发布结构和其他语义 QA 问题继续保持阻断。API Key 和模型敏感配置不适用该降级规则，仍必须阻断或脱敏。
 
 ## 12. 强制 QA 与管理员告警
 
@@ -1727,6 +1736,8 @@ runStep 统一负责：
 - Editorial Plan 路径级补丁只改变指定字段，未指定字段逐值保持不变。
 - 单篇和跨篇 Editorial Plan issue 的 paperId/relatedPaperIds 归属。
 - arXiv 编号不触发数字证据校验，真实实验数字仍必须受 Evidence 支持。
+- “节点”等普通名词中的数字不触发章节号例外，仍按当前字段绑定的 Evidence 校验。
+- Paper Section 补丁缺少 `value` 时拒绝补丁、保留旧稿并进入响应格式纠正。
 - 管理员可无限继续局部修正；每轮 Trace 记录补丁路径和前后差异。
 - Trace 脱敏、保留 20 次和 30 天。
 - 全局单任务和取消。
@@ -1941,7 +1952,6 @@ Mock arXiv 和 Mock LLM 走完：
 8. 支持人工覆盖 reject，但必须有原因和审计。
 9. 根据历史人工校对沉淀偏好。
 10. 增加主题聚类和更复杂的编辑规划。
-11. 重新分级发布稿中的“内部流程术语”检查：`Agent loop/stage`、prompt、artifact、内部 JSON，以及内部选文/评分过程（如 fallback、保底补入、内部筛选、候选下限、selection reason、横向校准、定向重评）应在 Trace 中记录为管理员提示，不得单独阻断发布、触发自动修正或要求管理员跳过论文；论文方法中具有学术含义的 threshold/阈值不得被误判为内部流程词。事实、证据、数字、机构、跨论文归因、结构和语义 QA 的阻断等级保持不变，并为真实流程术语和学术阈值分别增加回归用例。
 
 ## 26. 当前结论
 
@@ -1984,6 +1994,6 @@ Mock arXiv 和 Mock LLM 走完：
 - `minSelectedCount` 和 `maxSelectedCount` 均可配置；`minSelectedCount` 只驱动达标候选增补，候选耗尽后按实际达标数量发布，不因只有 1–2 篇而整体拒绝，也不使用低于阈值的论文补足。
 - 周报窗口展示当前 Agent stage；独立管理员 Trace 对话框延迟加载 Timeline、模型调用记录、阶段 artifacts、耗时、修正和决策。
 - Job/Trace 持久化、认证字段脱敏、最近 20 次与 30 天保留、管理员取消和服务重启标记 interrupted 已实现。
-- 当前自动化回归覆盖 392 个用例并全部通过。
+- 当前自动化回归覆盖 449 个用例并全部通过。
 
 真实周报灰度已经启动，运行结论和全部问题防护网记录在 `WEEKLY_REPORT_GRAY_ISSUE_REGISTRY.md`。当前尚未达到最终人工验收标准：下一步继续使用同一批真实论文复跑，只有获得 publish 稿且逐篇人工核验事实、数字、实验 cohort、模型版本、分层、阅读建议和 Trace 可解释性均通过后，才完成旧稿对照验收。

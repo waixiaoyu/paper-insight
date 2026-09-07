@@ -1626,7 +1626,14 @@ test("write_paper_sections generates one isolated paperDraft per selected paper 
   });
   const written = await writeWeeklyReportPaperSections(planned, execution.context, {
     networkRetryDelayMs: 0,
-    callModel: async (prompt) => paperDraftFor(JSON.parse(prompt).paper.paperId)
+    callModel: async (prompt) => {
+      const paperId = JSON.parse(prompt).paper.paperId;
+      const draft = paperDraftFor(paperId);
+      if (paperId === "2607.19501") {
+        draft.coreContribution.text = "该论文因未达到候选下限而作为 fallback 进入本周周报。";
+      }
+      return draft;
+    }
   });
 
   assert.equal(written.nextStage, "write_head_tail");
@@ -1641,6 +1648,13 @@ test("write_paper_sections generates one isolated paperDraft per selected paper 
   const calls = [...execution.sections.keys()]
     .filter((name) => name.startsWith("paper-writer-call-"));
   assert.equal(calls.length, 3);
+  assert.equal(written.warnings.some((warning) => (
+    warning.code === "internal_process_leak"
+    && warning.paperId === "2607.19501"
+  )), true);
+  assert.equal(execution.sections.get(calls[0]).validation.warnings.some((warning) => (
+    warning.code === "internal_process_leak"
+  )), true);
   assert.equal(execution.events.some((event) => (
     event.type === "stage_completed"
     && event.stage === "write_paper_sections"
@@ -1694,6 +1708,14 @@ test("write_paper_sections preserves valid drafts while requesting an administra
   assert.deepEqual(written.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
   assert.equal(execution.sections.get("paper-drafts").succeeded.length, 1);
   assert.equal(execution.sections.get("paper-drafts").failed.length, 1);
+  assert.equal(
+    written.paperDraftResult.failed[0].error.paperDraft.paperId,
+    "2607.19602"
+  );
+  assert.equal(
+    Array.isArray(written.paperDraftResult.failed[0].error.paperDraft.limitationsAndConstraints),
+    true
+  );
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
@@ -1732,6 +1754,7 @@ test("write_paper_sections retries only the failed paper and preserves completed
   const preservedDraft = first.paperDrafts[0];
   const retriedPaperIds = [];
   const retriedTasks = [];
+  const retriedPayloads = [];
   const retried = await writeWeeklyReportPaperSections({
     ...first,
     nextStage: "write_paper_sections",
@@ -1748,13 +1771,23 @@ test("write_paper_sections retries only the failed paper and preserves completed
       const payload = JSON.parse(prompt);
       retriedPaperIds.push(payload.paper.paperId);
       retriedTasks.push(payload.task);
-      return paperDraftFor(payload.paper.paperId);
+      retriedPayloads.push(payload);
+      return {
+        patches: [{
+          path: "limitationsAndConstraints",
+          value: paperDraftFor(payload.paper.paperId).limitationsAndConstraints
+        }]
+      };
     }
   });
 
   assert.equal(retried.nextStage, "write_head_tail");
   assert.deepEqual(retriedPaperIds, ["2607.19612"]);
   assert.deepEqual(retriedTasks, ["weekly_report_write_paper_section_repair"]);
+  assert.deepEqual(retriedPayloads[0].repairPaths, ["limitationsAndConstraints"]);
+  assert.equal(retriedPayloads[0].currentPaperDraft.paperId, "2607.19612");
+  assert.deepEqual(retriedPayloads[0].currentPaperDraft.limitationsAndConstraints, []);
+  assert.equal("publicationMeta" in retriedPayloads[0].currentPaperDraft, false);
   assert.equal(retried.paperDrafts[0], preservedDraft);
   assert.deepEqual(retried.paperDrafts.map((draft) => draft.paperId), ["2607.19611", "2607.19612"]);
   assert.equal(execution.sections.has("paper-drafts-admin-0001"), true);
@@ -2500,7 +2533,12 @@ test("repair_once rewrites only targeted paper sections and Head/Tail, records d
       const parsed = JSON.parse(prompt);
       tasks.push(parsed.task);
       if (parsed.task === "weekly_report_repair_paper_section") {
-        return paperDraftFor(parsed.paper.paperId);
+        return {
+          patches: [{
+            path: "oneSentenceTakeaway",
+            value: paperDraftFor(parsed.paper.paperId).oneSentenceTakeaway
+          }]
+        };
       }
       if (parsed.task === "weekly_report_repair_head_tail") {
         return {

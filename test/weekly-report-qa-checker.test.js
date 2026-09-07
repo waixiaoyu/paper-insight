@@ -47,7 +47,7 @@ test("deterministic QA normalizes a paper score mismatch into a repair target", 
   assert.equal(scoreIssue.severity, "high");
 });
 
-test("deterministic QA identifies internal process leakage without exposing a third publication state", () => {
+test("deterministic QA records internal process leakage without requesting repair", () => {
   const tampered = markdown.replace(
     READING_LIST_FOOTER_NOTE,
     `本段错误泄漏 fallback 和 selectionReason。\n\n${READING_LIST_FOOTER_NOTE}`
@@ -59,12 +59,9 @@ test("deterministic QA identifies internal process leakage without exposing a th
     footerNote: READING_LIST_FOOTER_NOTE
   });
 
-  assert.equal(result.status, "repair_required");
-  assert.equal(result.deterministicIssues.some((issue) => (
-    issue.code === "internal_process_leak"
-    && issue.scope === "report"
-    && issue.repairTarget === "head_tail"
-  )), true);
+  assert.equal(result.status, "passed");
+  assert.deepEqual(result.deterministicIssues, []);
+  assert.match(result.warnings.join("\n"), /内部流程/);
 });
 
 test("deterministic QA rejects instead of granting a second repair", () => {
