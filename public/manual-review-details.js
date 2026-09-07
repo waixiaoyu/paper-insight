@@ -204,6 +204,19 @@ export function describeWeeklyReportManualReview(review = {}) {
   const code = String(issue?.code || "");
   const detail = issueDetail(review);
 
+  if (["deterministic_qa", "paper_semantic_qa"].includes(stage) && Array.isArray(review.evidenceReviews)
+    && review.evidenceReviews.length) {
+    return {
+      title: paperId ? `论文 ${paperId} 的证据需要人工复核` : "周报证据需要人工复核",
+      summary: "请对照周报表述与原文局部证据。确认后只放行当前证据问题，其他质量检查仍会继续执行。",
+      details: [{
+        label: "复核范围",
+        value: paperId ? `仅复核论文 ${paperId} 当前列出的证据问题。` : "仅复核当前列出的证据问题。"
+      }],
+      evidenceReviews: review.evidenceReviews
+    };
+  }
+
   if (review.kind === "execution_failure"
     && stage === "repair_once"
     && code === "READING_LIST_QA_REPAIR_FAILED"

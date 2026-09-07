@@ -321,3 +321,128 @@ test("Pipeline Runner restarts calibration after an administrator skips one pape
   assert.equal(result.state, "publish");
   assert.equal(result.markdown, "# Rebuilt");
 });
+
+test("Pipeline Runner records one evidence approval and rechecks deterministic QA", async () => {
+  const calls = [];
+  let recheckInput;
+  const evidenceReview = {
+    issueKey: "unsupported_exact_number|2608.50004|experimentsAndResults|37.5%",
+    paperId: "2608.50004",
+    fieldPath: "experimentsAndResults",
+    draftExcerpt: "危险动作比例降低了 37.5%。",
+    evidenceSources: [{
+      ref: "results:0",
+      section: "4 Results",
+      anchor: "S4",
+      excerpt: "Unsafe actions are reduced by 37%."
+    }]
+  };
+  const unconfirmedReview = {
+    ...evidenceReview,
+    issueKey: "unsupported_exact_number|2608.50004|experimentsAndResults|88%",
+    draftExcerpt: "另一个结论声称成功率为 88%。"
+  };
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "confirm_evidence",
+      approvedIssueKeys: [evidenceReview.issueKey],
+      evidenceReviews: [evidenceReview],
+      decidedAt: "2026-09-07T03:00:00.000Z"
+    })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", calls, {
+      markdown: "# Inspectable draft",
+      qaReport: { status: "rejected", repairAttempted: true, repairCount: 3 },
+      manualReview: {
+        stage: "deterministic_qa",
+        paperId: "2608.50004",
+        issues: [{ code: "unsupported_exact_number" }],
+        evidenceReviews: [evidenceReview, unconfirmedReview],
+        approvableIssueKeys: [evidenceReview.issueKey, unconfirmedReview.issueKey],
+        repairAttempts: 3,
+        allowedActions: ["confirm_evidence", "continue_repair", "exit_task", "skip_paper"]
+      }
+    }),
+    deterministicQa: async (value) => {
+      calls.push("deterministic_qa");
+      recheckInput = value;
+      return { ...value, nextStage: "paper_semantic_qa", qaReport: { status: "passed" } };
+    },
+    paperSemanticQa: transition("paper_semantic_qa", "report_semantic_qa", calls, { qaReport: { status: "passed" } }),
+    reportSemanticQa: transition("report_semantic_qa", "publish", calls, { qaReport: { status: "passed" } })
+  };
+
+  const result = await runWeeklyReportAgentLoop({}, context, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps
+  });
+
+  assert.deepEqual(calls, ["prepare", "deterministic_qa", "paper_semantic_qa", "report_semantic_qa"]);
+  assert.equal(result.state, "publish");
+  assert.deepEqual(recheckInput.manualEvidenceApprovals, [{
+    issueKey: evidenceReview.issueKey,
+    paperId: evidenceReview.paperId,
+    fieldPath: evidenceReview.fieldPath,
+    draftExcerpt: evidenceReview.draftExcerpt,
+    evidenceSources: evidenceReview.evidenceSources,
+    decidedAt: "2026-09-07T03:00:00.000Z"
+  }]);
+});
+
+test("Pipeline Runner returns a semantic evidence approval to paper semantic QA", async () => {
+  const calls = [];
+  const issueKey = "unsupported_fact|2608.50005|coreContribution|all datasets";
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "confirm_evidence",
+      approvedIssueKeys: [issueKey],
+      evidenceReviews: [{
+        issueKey,
+        paperId: "2608.50005",
+        fieldPath: "coreContribution",
+        draftExcerpt: "该方法在所有数据集上都优于基线。",
+        evidenceSources: [{ ref: "results:0", excerpt: "The method improves one benchmark." }]
+      }],
+      decidedAt: "2026-09-07T03:10:00.000Z"
+    })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", calls, {
+      markdown: "# Inspectable draft",
+      qaReport: { status: "rejected", repairAttempted: true, repairCount: 3 },
+      manualReview: {
+        stage: "paper_semantic_qa",
+        paperId: "2608.50005",
+        issues: [{ code: "unsupported_fact" }],
+        evidenceReviews: [{
+          issueKey,
+          paperId: "2608.50005",
+          fieldPath: "coreContribution",
+          draftExcerpt: "该方法在所有数据集上都优于基线。",
+          evidenceSources: [{ ref: "results:0", excerpt: "The method improves one benchmark." }]
+        }],
+        approvableIssueKeys: [issueKey],
+        repairAttempts: 3,
+        allowedActions: ["confirm_evidence", "continue_repair", "exit_task", "skip_paper"]
+      }
+    }),
+    deterministicQa: async () => {
+      throw new Error("evidence approval returned to the wrong QA stage");
+    },
+    paperSemanticQa: transition("paper_semantic_qa", "report_semantic_qa", calls, { qaReport: { status: "passed" } }),
+    reportSemanticQa: transition("report_semantic_qa", "publish", calls, { qaReport: { status: "passed" } })
+  };
+
+  const result = await runWeeklyReportAgentLoop({}, context, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps
+  });
+
+  assert.deepEqual(calls, ["prepare", "paper_semantic_qa", "report_semantic_qa"]);
+  assert.equal(result.state, "publish");
+});

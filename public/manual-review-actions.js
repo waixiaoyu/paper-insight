@@ -3,7 +3,8 @@ const manualReviewActionLabels = Object.freeze({
   retry_job: "重新执行任务",
   exit_task: "退出任务",
   skip_paper: "跳过这篇论文",
-  ignore_warning: "忽略本次提醒"
+  ignore_warning: "忽略本次提醒",
+  confirm_evidence: "确认证据充分，继续任务"
 });
 
 export const manualReviewDecisionStatusText = (action, job = {}) => {

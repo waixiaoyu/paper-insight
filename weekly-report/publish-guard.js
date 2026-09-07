@@ -172,7 +172,7 @@ const measurementTokens = (value) => {
     .replace(/^.*(?:阅读价值评分|符合维度)[：:].*$/gm, "")
     .replace(/https?:\/\/\S+/g, "");
   const tokens = new Set();
-  const pattern = /\d+(?:\.\d+)?\s*(?:%|倍|个百分点|毫秒|秒|分钟|小时)|\d+(?:\.\d+)?\s*(?:ms|gb|mb|kbps|mbps|gbps|db|s)(?![a-z])/gi;
+  const pattern = /\d+(?:\.\d+)?\s*(?:[-–—]\s*)?(?:%|倍|个百分点|毫秒|秒|分钟|小时|milliseconds?|msecs?|seconds?|secs?|minutes?|mins?|hours?|hrs?|ms|gb|mb|kbps|mbps|gbps|db|s)(?![a-z])/gi;
   let match;
 
   while ((match = pattern.exec(text))) {
@@ -181,6 +181,16 @@ const measurementTokens = (value) => {
 
   return [...tokens];
 };
+
+const measurementTokenKey = (value) => String(value || "")
+  .normalize("NFKC")
+  .toLowerCase()
+  .replace(/\s+/g, "")
+  .replace(/[-–—](?=[a-z])/g, "")
+  .replace(/(?:毫秒|milliseconds?|msecs?|ms)$/u, "ms")
+  .replace(/(?:秒|seconds?|secs?|s)$/u, "s")
+  .replace(/(?:分钟|minutes?|mins?)$/u, "min")
+  .replace(/(?:小时|hours?|hrs?)$/u, "h");
 
 const boldSectionBody = (block, label) => {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -399,9 +409,9 @@ export const validateWeeklyReportMarkdown = ({
       errors.push(`论文「${paper.title || paper.id}」的逐篇正文串入其他入选论文链接：${crossPaperIds.join("、")}。`);
     }
 
-    const evidenceText = paperEvidenceText(paper).replace(/\s+/g, "").toLowerCase();
+    const evidenceMeasurements = new Set(measurementTokens(paperEvidenceText(paper)).map(measurementTokenKey));
     const unsupportedMeasurements = measurementTokens(block)
-      .filter((token) => !evidenceText.includes(token));
+      .filter((token) => !evidenceMeasurements.has(measurementTokenKey(token)));
 
     if (unsupportedMeasurements.length) {
       errors.push(`论文「${paper.title || paper.id}」包含无法从输入证据核对的精确数字：${unsupportedMeasurements.join("、")}。`);

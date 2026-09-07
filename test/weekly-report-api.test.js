@@ -340,6 +340,8 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /data-manual-review-action="exit_task"/);
   assert.match(html, /data-manual-review-action="skip_paper"/);
   assert.match(html, /data-manual-review-action="ignore_warning"/);
+  assert.match(html, /data-manual-review-action="confirm_evidence"/);
+  assert.match(html, /id="weeklyReportManualEvidenceReview"/);
   assert.match(html, /确认范围，抓取原文，排除无法支撑写作的论文。/);
   assert.match(html, /id="readingListMaxSelected"/);
   assert.match(html, /候选目标数/);

@@ -20,6 +20,11 @@ import {
 } from "./rules.js";
 import { normalizeWeeklyReportJobOptions } from "./schema.js";
 import { runDeterministicQa } from "./qa-checker.js";
+import {
+  enrichEvidenceReviewIssues,
+  evidenceReviewsForIssues,
+  removeApprovedEvidenceIssues
+} from "./evidence-review.js";
 import { reviewPaperSemanticsBatch } from "./paper-semantic-qa-agent.js";
 import { reviewReportSemantics } from "./report-semantic-qa-agent.js";
 import {
@@ -2106,14 +2111,29 @@ export const runWeeklyReportDeterministicQa = async (assembled, context = {}) =>
       footerNote: assembled.footerNote,
       repairAttempted: repairCount >= AUTOMATIC_CONTENT_REPAIR_LIMIT
     });
+    const enrichedIssues = enrichEvidenceReviewIssues({
+      issues: qaReport.deterministicIssues,
+      selectedItems: assembled.selectedItems,
+      paperDrafts: assembled.paperDrafts
+    });
+    const deterministicIssues = removeApprovedEvidenceIssues(
+      enrichedIssues,
+      assembled.manualEvidenceApprovals
+    );
     qaReport = {
       ...qaReport,
+      status: deterministicIssues.length
+        ? (repairCount >= AUTOMATIC_CONTENT_REPAIR_LIMIT ? "rejected" : "repair_required")
+        : "passed",
+      deterministicIssues,
+      paperIssues: deterministicIssues.filter((entry) => entry.scope === "paper"),
+      reportIssues: deterministicIssues.filter((entry) => entry.scope === "report"),
       repairAttempted: repairCount > 0,
       repairCount,
       repairResults: Array.isArray(assembled.qaReport?.repairResults)
         ? assembled.qaReport.repairResults
         : [],
-      finalIssues: qaReport.status === "passed" ? [] : qaReport.deterministicIssues
+      finalIssues: deterministicIssues
     };
   } catch (error) {
     const rejected = new WeeklyReportOrchestratorError(
@@ -2213,17 +2233,27 @@ export const runWeeklyReportDeterministicQa = async (assembled, context = {}) =>
     reason: detail,
     decision: "manual_review"
   });
+  const evidenceReviews = evidenceReviewsForIssues(qaReport.deterministicIssues);
+  const paperIds = [...new Set(evidenceReviews.map((review) => review.paperId).filter(Boolean))];
+  const paperId = paperIds.length === 1 ? paperIds[0] : "";
   return {
     ...assembled,
     nextStage: "manual_review",
     qaReport,
     manualReview: {
       stage: "deterministic_qa",
-      paperId: "",
+      paperId,
       summary: "确定性质量检查在三次自动修正后仍未通过。",
       issues: qaReport.deterministicIssues,
+      evidenceReviews,
+      approvableIssueKeys: evidenceReviews.map((review) => review.issueKey),
       repairAttempts: repairCount,
-      allowedActions: ["continue_repair", "exit_task"]
+      allowedActions: [
+        ...(evidenceReviews.length ? ["confirm_evidence"] : []),
+        "continue_repair",
+        "exit_task",
+        ...(paperId ? ["skip_paper"] : [])
+      ]
     }
   };
 };
@@ -2314,7 +2344,15 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
   }
 
   const paperSemanticResults = result.succeeded.map((entry) => entry.qaResult);
-  const paperIssues = paperSemanticResults.flatMap((entry) => entry.issues);
+  const enrichedPaperIssues = enrichEvidenceReviewIssues({
+    issues: paperSemanticResults.flatMap((entry) => entry.issues),
+    selectedItems,
+    paperDrafts
+  });
+  const paperIssues = removeApprovedEvidenceIssues(
+    enrichedPaperIssues,
+    checked.manualEvidenceApprovals
+  );
   const baseArtifact = {
     concurrency: result.concurrency,
     attempted: result.attempted,
@@ -2495,6 +2533,7 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
 
   const paperIds = [...new Set(paperIssues.map((entry) => String(entry.paperId || "")).filter(Boolean))];
   const paperId = paperIds.length === 1 ? paperIds[0] : "";
+  const evidenceReviews = evidenceReviewsForIssues(paperIssues);
   const detail = paperIssues.slice(0, 5).map((entry) => entry.reason).join("；");
   await context.recordTrace({
     type: "stage_failed",
@@ -2516,10 +2555,12 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
       paperId,
       summary: "逐篇语义检查在三次自动修正后仍发现阻断问题。",
       issues: paperIssues,
+      evidenceReviews,
+      approvableIssueKeys: evidenceReviews.map((review) => review.issueKey),
       repairAttempts: repairCount,
       allowedActions: paperId
-        ? ["continue_repair", "exit_task", "skip_paper"]
-        : ["continue_repair", "exit_task"]
+        ? [...(evidenceReviews.length ? ["confirm_evidence"] : []), "continue_repair", "exit_task", "skip_paper"]
+        : [...(evidenceReviews.length ? ["confirm_evidence"] : []), "continue_repair", "exit_task"]
     }
   };
 };

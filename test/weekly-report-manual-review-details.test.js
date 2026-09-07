@@ -226,6 +226,34 @@ test("混合中英文的未归类原因不直接展示给管理员", () => {
   assert.doesNotMatch(result.details[0].value, /问题表述/);
 });
 
+test("确定性证据复核展示稿件字段和原文局部证据", () => {
+  const evidenceReview = {
+    issueKey: "unsupported_exact_number|2608.28194|experimentsAndResults|10秒",
+    paperId: "2608.28194",
+    fieldPath: "experimentsAndResults",
+    fieldLabel: "实验与结果",
+    draftExcerpt: "Adaptive 审计器在默认 10 秒阈值下将平均严重会话比例从 39.01% 降至 9.79%。",
+    evidenceSources: [{
+      ref: "results:2",
+      section: "V-H Sensitivity Analysis",
+      anchor: "S49",
+      excerpt: "The Adaptive auditor reduces the average severe-session ratio from 39.01% to 9.79% at the default 10-s threshold."
+    }]
+  };
+  const result = describeWeeklyReportManualReview({
+    stage: "deterministic_qa",
+    paperId: "2608.28194",
+    allowedActions: ["confirm_evidence", "continue_repair", "exit_task", "skip_paper"],
+    issues: [{ code: "unsupported_exact_number" }],
+    evidenceReviews: [evidenceReview],
+    approvableIssueKeys: [evidenceReview.issueKey]
+  });
+
+  assert.equal(result.title, "论文 2608.28194 的证据需要人工复核");
+  assert.match(result.summary, /只放行当前证据问题/);
+  assert.deepEqual(result.evidenceReviews, [evidenceReview]);
+});
+
 test("编辑计划人工决策使用中文业务说明而不暴露规则码", () => {
   const result = describeWeeklyReportManualReview({
     stage: "editorial_plan",

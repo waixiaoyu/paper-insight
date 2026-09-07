@@ -247,6 +247,7 @@ const elements = {
   weeklyReportManualReviewSummary: $("#weeklyReportManualReviewSummary"),
   weeklyReportManualReviewMeta: $("#weeklyReportManualReviewMeta"),
   weeklyReportManualReviewDetails: $("#weeklyReportManualReviewDetails"),
+  weeklyReportManualEvidenceReview: $("#weeklyReportManualEvidenceReview"),
   weeklyReportManualReviewIssues: $("#weeklyReportManualReviewIssues"),
   weeklyReportManualReviewSkipPaper: $("#weeklyReportManualReviewSkipPaper"),
   weeklyReportManualReviewSkipPaperSelect: $("#weeklyReportManualReviewSkipPaperSelect"),
@@ -2746,7 +2747,8 @@ const weeklyReportManualReviewActionLabels = Object.freeze({
   continue_repair: "继续修正一次",
   exit_task: "退出任务",
   skip_paper: "跳过这篇论文",
-  ignore_warning: "忽略告警并继续"
+  ignore_warning: "忽略告警并继续",
+  confirm_evidence: "确认证据充分，继续任务"
 });
 
 function weeklyReportManualReviewActionLabel(action) {
@@ -2760,6 +2762,51 @@ function weeklyReportManualReviewIssueText(issue) {
   const detail = [issue.reason, issue.message, issue.detail, issue.claim]
     .find((value) => typeof value === "string" && value.trim());
   return detail ? `${code}：${detail}` : code;
+}
+
+function renderWeeklyReportManualEvidenceReviews(evidenceReviews = []) {
+  const container = elements.weeklyReportManualEvidenceReview;
+  if (!container) return;
+  container.textContent = "";
+  const reviews = Array.isArray(evidenceReviews) ? evidenceReviews : [];
+  reviews.forEach((review, reviewIndex) => {
+    const article = document.createElement("article");
+    article.className = "weekly-report-manual-evidence-item";
+    const heading = document.createElement("h4");
+    heading.textContent = `${review.fieldLabel || "逐篇稿件"} · 证据问题 ${reviewIndex + 1}`;
+    const comparison = document.createElement("div");
+    comparison.className = "weekly-report-manual-evidence-comparison";
+
+    const draft = document.createElement("section");
+    const draftLabel = document.createElement("strong");
+    draftLabel.textContent = "周报待核对内容";
+    const draftText = document.createElement("p");
+    draftText.textContent = review.draftExcerpt || "未保存待核对的稿件片段。";
+    draft.append(draftLabel, draftText);
+
+    const evidence = document.createElement("section");
+    const evidenceLabel = document.createElement("strong");
+    evidenceLabel.textContent = "原文局部证据";
+    const sources = Array.isArray(review.evidenceSources) ? review.evidenceSources : [];
+    const sourceList = document.createElement("div");
+    sourceList.className = "weekly-report-manual-evidence-sources";
+    (sources.length ? sources : [{ excerpt: "没有找到可展示的原文局部证据。" }]).forEach((source, sourceIndex) => {
+      const details = document.createElement("details");
+      details.open = sourceIndex === 0;
+      const summary = document.createElement("summary");
+      summary.textContent = [source.section || "原文章节未标注", source.anchor, source.ref]
+        .filter(Boolean).join(" · ");
+      const excerpt = document.createElement("p");
+      excerpt.textContent = source.excerpt || "没有保存该证据摘录。";
+      details.append(summary, excerpt);
+      sourceList.append(details);
+    });
+    evidence.append(evidenceLabel, sourceList);
+    comparison.append(draft, evidence);
+    article.append(heading, comparison);
+    container.append(article);
+  });
+  container.hidden = reviews.length === 0;
 }
 
 function renderWeeklyReportManualReview(job) {
@@ -2793,6 +2840,7 @@ function renderWeeklyReportManualReview(job) {
     elements.weeklyReportManualReviewDetails.append(item);
   });
   elements.weeklyReportManualReviewDetails.hidden = description.details.length === 0;
+  renderWeeklyReportManualEvidenceReviews(description.evidenceReviews);
   elements.weeklyReportManualReviewIssues.textContent = "";
   const issues = Array.isArray(review.issues) ? review.issues : [];
   const issuesAreExplained = description.details.length > 0;
@@ -5428,6 +5476,7 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
   const action = button.dataset.manualReviewAction;
   if (action === "exit_task" && !window.confirm("确认退出当前周报任务？现有草稿和完整 Trace 会保留，但任务不会继续发布。")) return;
   if (action === "skip_paper" && !window.confirm("确认跳过当前论文？系统会移除这篇论文并重新执行横向校准和选稿。")) return;
+  if (action === "confirm_evidence" && !window.confirm("确认当前列出的周报表述有原文证据支持？本次确认只放行这些证据问题，其他质量检查仍会继续，并将决定写入 Trace。")) return;
 
   const selectedPaperId = action === "skip_paper"
     ? String(elements.weeklyReportManualReviewSkipPaperSelect?.value || "").trim()

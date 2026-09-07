@@ -308,6 +308,22 @@ test("精确数字能在对应论文证据中找到时允许发布", () => {
   assert.equal(result.valid, true, result.errors.join("\n"));
 });
 
+test("中英文时间单位表达等价时不误判为无证据数字", () => {
+  const supportedMarkdown = markdown.replace(
+    "验证层降低了危险动作比例，但真实部署证据仍有限。",
+    "验证层在默认 10 秒阈值下降低了危险动作比例，但真实部署证据仍有限。"
+  );
+  const groundedPapers = papers.map((paper, index) => index === 0
+    ? {
+      ...paper,
+      summary: `${paper.summary} The result uses the default 10-s threshold.`
+    }
+    : paper);
+  const result = validate(supportedMarkdown, { papers: groundedPapers });
+
+  assert.equal(result.valid, true, result.errors.join("\n"));
+});
+
 test("每篇论文的局限与适用约束必须至少包含两条", () => {
   const invalid = markdown.replace(
     "- 复杂策略的维护成本和验证延迟尚未被充分量化。",

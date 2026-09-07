@@ -495,6 +495,67 @@ test("manual review keeps the Job running until the administrator decides", asyn
   assert.equal(trace.timeline.some((event) => event.type === "manual_review_decided" && event.action === "exit_task"), true);
 });
 
+test("evidence confirmation records the exact issue and source excerpt in Trace", async () => {
+  const requestingReview = deferred();
+  const issueKey = "unsupported_exact_number|2608.50004|experimentsAndResults|37.5%";
+  const evidenceReviews = [{
+    issueKey,
+    paperId: "2608.50004",
+    fieldPath: "experimentsAndResults",
+    draftExcerpt: "危险动作比例降低了 37.5%。",
+    evidenceSources: [{
+      ref: "results:0",
+      section: "4 Results",
+      anchor: "S4",
+      excerpt: "Unsafe actions are reduced by 37%."
+    }]
+  }];
+  const { manager, traceStore } = await createHarness({
+    execute: async (_input, context) => {
+      requestingReview.resolve();
+      const decision = await context.requestManualReview({
+        stage: "deterministic_qa",
+        paperId: "2608.50004",
+        issues: [{ code: "unsupported_exact_number" }],
+        evidenceReviews,
+        approvableIssueKeys: [issueKey],
+        repairAttempts: 3,
+        allowedActions: ["confirm_evidence", "continue_repair", "exit_task", "skip_paper"]
+      });
+      return decision.action === "confirm_evidence"
+        ? { state: "publish", markdown: "# Confirmed" }
+        : { state: "reject", reason: "unexpected_decision" };
+    }
+  });
+
+  const created = await manager.createOrReuse({ reportKey: "2026-W32-evidence-confirmation" });
+  await requestingReview.promise;
+  try {
+    const waiting = await waitForManualReview(manager, created.jobId);
+    assert.equal(waiting.manualReview.evidenceReviews[0].draftExcerpt, "危险动作比例降低了 37.5%。");
+
+    await manager.decide(created.jobId, { action: "confirm_evidence" });
+    const completed = await manager.waitForCompletion(created.jobId);
+    const trace = await traceStore.readTrace(created.traceId);
+    const decisionEvent = trace.timeline.find((event) => (
+      event.type === "manual_review_decided" && event.action === "confirm_evidence"
+    ));
+
+    assert.equal(completed.state, "publish");
+    assert.deepEqual(decisionEvent.approvedIssueKeys, [issueKey]);
+    assert.equal(
+      decisionEvent.evidenceReviews[0].evidenceSources[0].excerpt,
+      "Unsafe actions are reduced by 37%."
+    );
+  } finally {
+    const active = await manager.getActive();
+    if (active?.jobId === created.jobId && active.manualReview) {
+      await manager.decide(created.jobId, { action: "exit_task" });
+      await manager.waitForCompletion(created.jobId);
+    }
+  }
+});
+
 test("manual review requires skip-paper to select one related paper and records that selection", async () => {
   const requestingReview = deferred();
   const { manager, traceStore } = await createHarness({

@@ -6,6 +6,7 @@ import {
   createWeeklyReportJob,
   finalizeWeeklyReportJob
 } from "./schema.js";
+import { compactEvidenceReviews } from "./evidence-review.js";
 import { redactTraceValue } from "./trace-store.js";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -14,7 +15,8 @@ const MANUAL_REVIEW_ACTIONS = new Set([
   "retry_job",
   "exit_task",
   "skip_paper",
-  "ignore_warning"
+  "ignore_warning",
+  "confirm_evidence"
 ]);
 
 const readJsonIfPresent = async (path, fallback = null) => {
@@ -475,6 +477,12 @@ export class WeeklyReportJobManager {
     const relatedPaperIds = [...new Set((Array.isArray(review.relatedPaperIds) ? review.relatedPaperIds : [])
       .map((paperId) => String(paperId || "").trim())
       .filter(Boolean))];
+    const requestedIssueKeys = new Set((Array.isArray(review.approvableIssueKeys) ? review.approvableIssueKeys : [])
+      .map((issueKey) => String(issueKey || "").trim())
+      .filter(Boolean));
+    const evidenceReviews = compactEvidenceReviews(review.evidenceReviews)
+      .filter((entry) => requestedIssueKeys.has(entry.issueKey));
+    const approvableIssueKeys = evidenceReviews.map((entry) => entry.issueKey);
     const manualReview = redactTraceValue({
       kind: String(review.kind || "quality_repair"),
       stage: String(review.stage || this.activeJob.agentStage || "manual_review"),
@@ -482,6 +490,8 @@ export class WeeklyReportJobManager {
       relatedPaperIds,
       summary: String(review.summary || "Content remains invalid after automatic repairs."),
       issues: Array.isArray(review.issues) ? review.issues.slice(0, 50) : [],
+      evidenceReviews,
+      approvableIssueKeys,
       repairAttempts: Math.max(0, Math.trunc(Number(review.repairAttempts) || 0)),
       allowedActions,
       requestedAt
@@ -576,6 +586,22 @@ export class WeeklyReportJobManager {
     const relatedPaperIds = Array.isArray(this.activeJob.manualReview.relatedPaperIds)
       ? this.activeJob.manualReview.relatedPaperIds
       : [];
+    const approvedIssueKeys = action === "confirm_evidence"
+      ? (Array.isArray(this.activeJob.manualReview.approvableIssueKeys)
+        ? this.activeJob.manualReview.approvableIssueKeys
+        : [])
+      : [];
+    const evidenceReviews = action === "confirm_evidence"
+      ? (Array.isArray(this.activeJob.manualReview.evidenceReviews)
+        ? this.activeJob.manualReview.evidenceReviews.filter((entry) => approvedIssueKeys.includes(entry?.issueKey))
+        : [])
+      : [];
+    if (action === "confirm_evidence" && (!approvedIssueKeys.length || !evidenceReviews.length)) {
+      const error = new Error("Evidence confirmation requires reviewable issues and source excerpts.");
+      error.code = "READING_LIST_MANUAL_REVIEW_ACTION_INVALID";
+      error.statusCode = 409;
+      throw error;
+    }
     let paperId = "";
     if (action === "skip_paper") {
       paperId = requestedPaperId || String(this.activeJob.manualReview.paperId || "").trim();
@@ -610,12 +636,18 @@ export class WeeklyReportJobManager {
       scope: paperId ? "paper" : "job",
       action,
       paperId,
+      ...(action === "confirm_evidence" ? { approvedIssueKeys, evidenceReviews } : {}),
       decidedAt
     });
     await this.persistJob(next, { active: true });
     this.activeJob = next;
     this.jobs.set(jobId, next);
-    pending.resolve({ action, paperId, decidedAt });
+    pending.resolve({
+      action,
+      paperId,
+      ...(action === "confirm_evidence" ? { approvedIssueKeys, evidenceReviews } : {}),
+      decidedAt
+    });
     return publicJob(next);
   }
 

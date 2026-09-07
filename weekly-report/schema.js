@@ -5,7 +5,8 @@ const MANUAL_REVIEW_ACTIONS = new Set([
   "retry_job",
   "exit_task",
   "skip_paper",
-  "ignore_warning"
+  "ignore_warning",
+  "confirm_evidence"
 ]);
 const COUNT_KEYS = [
   "primary",
@@ -311,6 +312,13 @@ export const assertWeeklyReportJob = (job) => {
     if (review.relatedPaperIds !== undefined && (!Array.isArray(review.relatedPaperIds)
       || review.relatedPaperIds.some((paperId) => !normalizedText(paperId, 160)))) {
       throw new TypeError("Weekly report Job manualReview.relatedPaperIds is invalid.");
+    }
+    if (review.approvableIssueKeys !== undefined && (!Array.isArray(review.approvableIssueKeys)
+      || review.approvableIssueKeys.some((issueKey) => !normalizedText(issueKey, 1000)))) {
+      throw new TypeError("Weekly report Job manualReview.approvableIssueKeys is invalid.");
+    }
+    if (review.evidenceReviews !== undefined && !Array.isArray(review.evidenceReviews)) {
+      throw new TypeError("Weekly report Job manualReview.evidenceReviews is invalid.");
     }
   }
 

@@ -221,6 +221,59 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           };
           continue;
         }
+        if (action === "confirm_evidence") {
+          const reviewableIssueKeys = new Set(
+            (Array.isArray(review.approvableIssueKeys) ? review.approvableIssueKeys : [])
+              .map((issueKey) => String(issueKey || "").trim())
+              .filter(Boolean)
+          );
+          const approvedIssueKeys = [...new Set(
+            (Array.isArray(decision?.approvedIssueKeys) ? decision.approvedIssueKeys : [])
+              .map((issueKey) => String(issueKey || "").trim())
+              .filter(Boolean)
+          )];
+          const decisionReviews = new Map(
+            (Array.isArray(decision?.evidenceReviews) ? decision.evidenceReviews : [])
+              .filter((entry) => entry && typeof entry === "object")
+              .map((entry) => [String(entry?.issueKey || "").trim(), entry])
+              .filter(([issueKey]) => issueKey)
+          );
+          const approvalIsValid = approvedIssueKeys.length > 0
+            && approvedIssueKeys.every((issueKey) => (
+              reviewableIssueKeys.has(issueKey) && decisionReviews.has(issueKey)
+            ))
+            && [...decisionReviews.keys()].every((issueKey) => approvedIssueKeys.includes(issueKey));
+          if (!approvalIsValid) {
+            throw new WeeklyReportPipelineError(
+              "Evidence confirmation requires at least one reviewable issue.",
+              {
+                code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                stage: String(review.stage || "manual_review"),
+                traceId: context.traceId
+              }
+            );
+          }
+          const approvals = approvedIssueKeys.map((issueKey) => ({
+            ...decisionReviews.get(issueKey),
+            issueKey,
+            decidedAt: String(decision?.decidedAt || new Date().toISOString())
+          }));
+          const approvalByKey = new Map(
+            (Array.isArray(current?.manualEvidenceApprovals) ? current.manualEvidenceApprovals : [])
+              .map((entry) => [String(entry?.issueKey || ""), entry])
+          );
+          approvals.forEach((entry) => approvalByKey.set(entry.issueKey, entry));
+          current = {
+            ...current,
+            nextStage: ["deterministic_qa", "paper_semantic_qa", "report_semantic_qa"]
+              .includes(String(review.stage || ""))
+              ? String(review.stage)
+              : "deterministic_qa",
+            manualReview: null,
+            manualEvidenceApprovals: [...approvalByKey.values()]
+          };
+          continue;
+        }
         if (action === "ignore_warning" && review.allowIgnore && review.continueStage) {
           current = {
             ...current,

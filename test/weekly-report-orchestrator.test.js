@@ -2050,6 +2050,84 @@ test("deterministic_qa routes failures to repair and requests manual review afte
   assert.equal(secondExecution.events.some((event) => event.type === "reject_requested"), false);
 });
 
+test("deterministic_qa presents cited local evidence and honors only the approved issue", async () => {
+  const selectedItems = [
+    calibratedItemFor("2608.50021", 88, "must_read"),
+    calibratedItemFor("2608.50022", 78, "worth_reading")
+  ].map((entry, index) => ({
+    ...entry,
+    paper: { ...entry.paper, title: `Evidence review paper ${index + 1}` },
+    selection: {
+      selected: true,
+      selectionReason: "threshold",
+      finalScore: entry.reviewResult.rawScore,
+      readingTier: entry.calibrationResult.readingTier,
+      rank: index + 1
+    }
+  }));
+  const editorialPlan = editorialPlanFor(selectedItems);
+  const paperDrafts = selectedItems.map((entry) => paperDraftFor(entry.paper.id));
+  paperDrafts[0] = {
+    ...paperDrafts[0],
+    experimentsAndResults: {
+      text: "In simulated failure scenarios, unsafe actions are reduced by 37.5%.",
+      evidenceRefs: ["experiments:0", "results:0"]
+    }
+  };
+  const execution = fakeExecutionContext();
+  const assembled = await assembleWeeklyReport({
+    nextStage: "assemble",
+    reportMeta: { date: "2026-08-03", month: "2026-08", weekOfMonth: 1 },
+    selectedItems,
+    editorialPlan,
+    paperDrafts,
+    headTailDraft: {
+      ...headTailFor(editorialPlan, selectedItems),
+      trendJudgments: [],
+      singlePaperObservations: []
+    },
+    counts: {
+      primary: 2,
+      reserve: 0,
+      fullTextEligible: 2,
+      reviewed: 2,
+      calibrated: 2,
+      selected: 2,
+      excluded: 0
+    },
+    warnings: []
+  }, execution.context);
+  const stillInvalid = {
+    ...assembled,
+    qaReport: { repairAttempted: true, repairCount: 3 }
+  };
+
+  const manual = await runWeeklyReportDeterministicQa(stillInvalid, execution.context);
+  const evidenceReview = manual.manualReview.evidenceReviews[0];
+
+  assert.equal(manual.nextStage, "manual_review");
+  assert.equal(manual.manualReview.paperId, "2608.50021");
+  assert.equal(manual.manualReview.allowedActions.includes("confirm_evidence"), true);
+  assert.equal(manual.manualReview.allowedActions.includes("skip_paper"), true);
+  assert.equal(manual.qaReport.deterministicIssues[0].path, "experimentsAndResults");
+  assert.equal(evidenceReview.fieldPath, "experimentsAndResults");
+  assert.match(evidenceReview.draftExcerpt, /37\.5%/);
+  assert.equal(evidenceReview.evidenceSources.some((source) => (
+    source.ref === "results:0"
+    && source.section === "4 Results"
+    && source.excerpt === "Unsafe actions are reduced by 37%."
+  )), true);
+
+  const approved = await runWeeklyReportDeterministicQa({
+    ...stillInvalid,
+    manualEvidenceApprovals: [{ issueKey: evidenceReview.issueKey }]
+  }, execution.context);
+
+  assert.equal(approved.nextStage, "paper_semantic_qa");
+  assert.equal(approved.qaReport.status, "passed");
+  assert.equal(approved.qaReport.deterministicIssues.length, 0);
+});
+
 test("paper_semantic_qa reviews one paper per call, persists Trace, and continues only when all pass", async () => {
   const execution = fakeExecutionContext();
   const selectedItems = [
@@ -2217,6 +2295,83 @@ test("paper_semantic_qa allows three repairs and requests manual review after ex
   assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-3-call-0000"), true);
   assert.equal(firstExecution.sections.has("paper-semantic-qa"), true);
   assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-3"), true);
+});
+
+test("paper_semantic_qa exposes cited excerpts and accepts a scoped evidence approval", async () => {
+  const paperId = "2608.19935";
+  const item = calibratedItemFor(paperId, 88, "must_read");
+  item.paper.title = "Paper semantic evidence review";
+  item.selection = {
+    selected: true,
+    selectionReason: "threshold",
+    finalScore: 88,
+    readingTier: "must_read",
+    rank: 1
+  };
+  const draft = paperDraftFor(paperId);
+  const makeInput = (manualEvidenceApprovals = []) => ({
+    nextStage: "paper_semantic_qa",
+    selectedItems: [item],
+    paperDrafts: [draft],
+    manualEvidenceApprovals,
+    counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
+    options: { paperConcurrency: 1 },
+    warnings: [],
+    qaReport: {
+      status: "passed",
+      deterministicIssues: [],
+      paperIssues: [],
+      reportIssues: [],
+      repairAttempted: true,
+      repairCount: 3
+    }
+  });
+  const response = {
+    ...paperSemanticPassFor(paperId),
+    verdict: "repair_required",
+    checks: {
+      ...paperSemanticPassFor(paperId).checks,
+      factsGrounded: false
+    },
+    issues: [{
+      code: "unsupported_fact",
+      severity: "high",
+      field: "coreContribution",
+      claim: "该机制适用于所有生产网络。",
+      reason: "The cited method excerpt does not support production deployment.",
+      evidenceRefs: ["method:0"]
+    }]
+  };
+  const execution = fakeExecutionContext();
+  const manual = await runWeeklyReportPaperSemanticQa(makeInput(), execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async () => response
+  });
+  const evidenceReview = manual.manualReview.evidenceReviews[0];
+
+  assert.equal(manual.nextStage, "manual_review");
+  assert.equal(manual.manualReview.allowedActions.includes("confirm_evidence"), true);
+  assert.equal(evidenceReview.fieldPath, "coreContribution");
+  assert.equal(evidenceReview.evidenceSources[0].ref, "method:0");
+  assert.match(evidenceReview.evidenceSources[0].excerpt, /validates every action/);
+
+  const approved = await runWeeklyReportPaperSemanticQa(
+    makeInput([{ issueKey: evidenceReview.issueKey }]),
+    execution.context,
+    {
+      networkRetryDelayMs: 0,
+      callModel: async () => ({
+        ...response,
+        issues: [{
+          ...response.issues[0],
+          claim: "文中表述暗示该机制已经覆盖生产环境。",
+          reason: "The model restated the same unsupported production-deployment concern."
+        }]
+      })
+    }
+  );
+  assert.equal(approved.nextStage, "report_semantic_qa");
+  assert.equal(approved.qaReport.status, "passed");
 });
 
 test("paper_semantic_qa artifact mismatch waits for an administrator instead of rejecting the whole report", async () => {
