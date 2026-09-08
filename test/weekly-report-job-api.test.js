@@ -103,15 +103,32 @@ test("异步周报 Job API 支持创建、复用、查询、Trace、结果和取
     assert.equal(hiddenResponse.status, 202);
     assert.equal(hiddenCreated.state, "running");
     const hiddenWaiting = await waitForManualReview(baseUrl, hiddenCreated.jobId, fetch);
-    assert.equal(hiddenWaiting.manualReview.kind, "execution_failure");
+    assert.equal(hiddenWaiting.manualReview.kind, "processing_failure");
     assert.deepEqual(hiddenWaiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
 
+    const hiddenDecision = {
+      decisionId: "7ec4c7f7-bbc8-4a30-b761-7f7933e0d642",
+      itemId: hiddenWaiting.manualReview.activeItemId,
+      action: "exit_task"
+    };
     const hiddenDecisionResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${hiddenCreated.jobId}/decision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "exit_task" })
+      body: JSON.stringify(hiddenDecision)
     });
     assert.equal(hiddenDecisionResponse.status, 200);
+    const repeatedHiddenDecisionResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${hiddenCreated.jobId}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(hiddenDecision)
+    });
+    assert.equal(repeatedHiddenDecisionResponse.status, 200);
+    const conflictingHiddenDecisionResponse = await fetch(`${baseUrl}/api/reading-list/jobs/${hiddenCreated.jobId}/decision`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...hiddenDecision, action: "retry_job" })
+    });
+    assert.equal(conflictingHiddenDecisionResponse.status, 409);
 
     const hiddenFinal = await waitForFinalJob(baseUrl, hiddenCreated.jobId, fetch);
     assert.equal(hiddenFinal.state, "reject");

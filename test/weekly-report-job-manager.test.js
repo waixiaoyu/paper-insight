@@ -495,6 +495,106 @@ test("manual review keeps the Job running until the administrator decides", asyn
   assert.equal(trace.timeline.some((event) => event.type === "manual_review_decided" && event.action === "exit_task"), true);
 });
 
+test("manual-review decisions are scoped to the selected queue item", async () => {
+  const requested = deferred();
+  let resolvedDecision = null;
+  const { manager } = await createHarness({
+    execute: async (_input, context) => {
+      requested.resolve();
+      resolvedDecision = await context.requestManualReview({
+        stage: "select",
+        resumeStage: "select",
+        items: [{
+          itemId: "retry-2609.02514",
+          paperId: "2609.02514",
+          kind: "processing_failure",
+          scope: "paper",
+          sourceStage: "extract_evidence",
+          summary: "Evidence 请求没有完成。",
+          allowedActions: ["retry_paper", "exit_task"]
+        }, {
+          itemId: "selection-2609.02516",
+          paperId: "2609.02516",
+          kind: "quality_below_threshold",
+          scope: "paper",
+          sourceStage: "select",
+          summary: "横向校准后为 67 分。",
+          scoreSnapshot: { finalScore: 67, threshold: 70 },
+          gateStatus: { fullText: "passed", identity: "passed", evidence: "passed", crossPaper: "passed" },
+          allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+        }]
+      });
+      return { state: "publish", markdown: "# Item scoped" };
+    }
+  });
+  const created = await manager.createOrReuse({ reportKey: "2026-W37-item-scoped" });
+  await requested.promise;
+  const waiting = await waitForManualReview(manager, created.jobId);
+
+  assert.equal(waiting.manualReview.items.length, 2);
+  await assert.rejects(
+    () => manager.decide(created.jobId, {
+      decisionId: "83e63aee-83f9-4e58-8f8a-dae4d5342cf8",
+      itemId: "selection-2609.02516",
+      action: "include_below_threshold"
+    }),
+    (error) => error?.code === "READING_LIST_MANUAL_REVIEW_ACTION_INVALID"
+  );
+  await manager.decide(created.jobId, {
+    decisionId: "a4b2c284-c199-4aae-a89e-99e1f6829779",
+    itemId: "selection-2609.02516",
+    action: "include_below_threshold",
+    reason: "该论文证据门已通过，且与本期主题直接相关。"
+  });
+  await manager.waitForCompletion(created.jobId);
+
+  assert.equal(resolvedDecision.itemId, "selection-2609.02516");
+  assert.equal(resolvedDecision.action, "include_below_threshold");
+  assert.equal(resolvedDecision.reason, "该论文证据门已通过，且与本期主题直接相关。");
+});
+
+test("manual-review decisions are idempotent by decisionId", async () => {
+  const requested = deferred();
+  let decisionCount = 0;
+  const { manager, traceStore } = await createHarness({
+    execute: async (_input, context) => {
+      requested.resolve();
+      await context.requestManualReview({
+        stage: "extract_evidence",
+        paperId: "2609.02518",
+        summary: "Evidence 请求没有完成。",
+        repairAttempts: 0,
+        allowedActions: ["retry_job", "exit_task"]
+      });
+      decisionCount += 1;
+      return { state: "publish", markdown: "# Idempotent" };
+    }
+  });
+  const created = await manager.createOrReuse({ reportKey: "2026-W37-idempotent" });
+  await requested.promise;
+  const waiting = await waitForManualReview(manager, created.jobId);
+  const decision = {
+    decisionId: "dcbe718f-c2d0-4c6e-ac69-5079d3884b7c",
+    itemId: waiting.manualReview.activeItemId,
+    action: "retry_job"
+  };
+
+  await manager.decide(created.jobId, decision);
+  const repeat = await manager.decide(created.jobId, decision);
+  await assert.rejects(
+    () => manager.decide(created.jobId, { ...decision, action: "exit_task" }),
+    (error) => error?.statusCode === 409
+  );
+  await manager.waitForCompletion(created.jobId);
+  const trace = await traceStore.readTrace(created.traceId);
+
+  assert.equal(repeat.jobId, created.jobId);
+  assert.equal(decisionCount, 1);
+  assert.equal(trace.timeline.filter((event) => (
+    event.type === "manual_review_decided" && event.decisionId === decision.decisionId
+  )).length, 1);
+});
+
 test("evidence confirmation records the exact issue and source excerpt in Trace", async () => {
   const requestingReview = deferred();
   const issueKey = "unsupported_exact_number|2608.50004|experimentsAndResults|37.5%";

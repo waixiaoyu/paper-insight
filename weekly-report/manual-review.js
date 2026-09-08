@@ -58,8 +58,8 @@ const normalizedIssues = (values) => (Array.isArray(values) ? values : [])
   .map((value) => ({
     code: text(value.code, 160),
     path: text(value.path, 300),
-    detail: text(value.detail || value.message || value.reason, 1600),
-    reason: text(value.reason, 1600)
+    detail: text(value.detail, 1600),
+    reason: text(value.reason || value.message, 1600)
   }));
 
 const normalizedScoreSnapshot = (value) => {
@@ -94,11 +94,23 @@ const normalizedGateStatus = (value) => {
     .filter(([key, state]) => key && GATE_STATES.has(state)));
 };
 
+const legacyReviewKind = (value) => {
+  const kind = text(value, 80);
+  if (REVIEW_KINDS.has(kind)) return kind;
+  if (["execution_failure", "agent_interrupted", "processing_failed"].includes(kind)) {
+    return "processing_failure";
+  }
+  if (["selection_below_threshold", "quality_below_line"].includes(kind)) {
+    return "quality_below_threshold";
+  }
+  return "evidence_dispute";
+};
+
 const legacyItem = (review) => ({
   itemId: text(review.itemId, 160) || `${text(review.stage, 120) || "manual_review"}:${text(review.paperId, 160) || "job"}:0`,
   paperId: review.paperId,
   relatedPaperIds: review.relatedPaperIds,
-  kind: REVIEW_KINDS.has(review.kind) ? review.kind : "evidence_dispute",
+  kind: legacyReviewKind(review.kind),
   scope: review.paperId ? "paper" : "job",
   sourceStage: review.stage,
   summary: review.summary,
