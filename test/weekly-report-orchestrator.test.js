@@ -573,7 +573,7 @@ test("Orchestrator 整体拒绝原因会成为 Job 的直接结果，而不是�
 
   assert.equal(waiting.state, "running");
   assert.equal(waiting.agentStage, "prepare_context");
-  assert.equal(waiting.manualReview.kind, "execution_failure");
+  assert.equal(waiting.manualReview.kind, "processing_failure");
   assert.deepEqual(waiting.manualReview.allowedActions, ["retry_job", "exit_task"]);
 
   await manager.decide(created.jobId, { action: "exit_task" });
@@ -658,14 +658,15 @@ test("Evidence failure refills from reserve through context gate and Evidence", 
     extracted.evidenceItems.map((item) => item.paper.id),
     ["2607.11001", "2607.11003"]
   );
-  assert.deepEqual(extracted.evidenceResult.excluded.map((item) => item.paper.id), ["2607.11002"]);
+  assert.deepEqual(extracted.evidenceResult.excluded, []);
+  assert.deepEqual(extracted.evidenceResult.evidenceDisputes.map((item) => item.paper.id), ["2607.11002"]);
   assert.equal(extracted.refill.contextEligible.length, 1);
   assert.equal(extracted.counts.fullTextEligible, 3);
-  assert.equal(extracted.counts.excluded, 1);
+  assert.equal(extracted.counts.excluded, 0);
   assert.equal(execution.events.some((event) => event.type === "refill_requested"), true);
 });
 
-test("Evidence rejects only after all primary and reserve papers fail", async () => {
+test("Evidence failures without a successful paper enter manual review instead of rejecting", async () => {
   const execution = fakeExecutionContext();
   const prepared = await prepareWeeklyReportJob({
     ...inputRange,
@@ -676,29 +677,25 @@ test("Evidence rejects only after all primary and reserve papers fail", async ()
     buildContext: async (paper) => evidencePacketFor(paper.id)
   });
 
-  await assert.rejects(
-    () => extractWeeklyReportEvidence(prepared, execution.context, {
-      buildContext: async (paper) => evidencePacketFor(paper.id),
-      networkRetryDelayMs: 0,
-      callModel: async (prompt) => evidenceResponseFor(
-        JSON.parse(prompt).paper.paperId,
-        { valid: false }
-      )
-    }),
-    (error) => (
-      error instanceof Error
-      && error.code === "READING_LIST_NO_EVIDENCE_PAPERS"
-      && error.stage === "extract_evidence"
-      && error.rejectJob === true
+  const extracted = await extractWeeklyReportEvidence(prepared, execution.context, {
+    buildContext: async (paper) => evidencePacketFor(paper.id),
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => evidenceResponseFor(
+      JSON.parse(prompt).paper.paperId,
+      { valid: false }
     )
-  );
+  });
 
-  assert.equal(execution.sections.get("evidence-artifacts").succeeded.length, 0);
-  assert.equal(execution.sections.get("evidence-artifacts").excluded.length, 2);
-  assert.equal(execution.events.some((event) => (
-    event.type === "reject_requested"
-    && event.stage === "extract_evidence"
-  )), true);
+  assert.equal(extracted.nextStage, "manual_review");
+  assert.equal(extracted.evidenceItems.length, 0);
+  assert.equal(extracted.evidenceResult.excluded.length, 0);
+  assert.equal(extracted.evidenceResult.evidenceDisputes.length, 2);
+  assert.equal(extracted.counts.excluded, 0);
+  assert.deepEqual(extracted.manualReviewBacklog.map((item) => item.kind), [
+    "evidence_dispute",
+    "evidence_dispute"
+  ]);
+  assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
 test("Evidence below target continues when at least one paper succeeds", async () => {
@@ -723,6 +720,8 @@ test("Evidence below target continues when at least one paper succeeds", async (
   });
 
   assert.equal(partial.evidenceItems.length, 1);
+  assert.equal(partial.evidenceResult.evidenceDisputes.length, 1);
+  assert.equal(partial.counts.excluded, 0);
   assert.equal(partial.warnings.some((warning) => (
     warning.code === "READING_LIST_EVIDENCE_BELOW_TARGET"
   )), true);
@@ -763,6 +762,7 @@ test("Evidence model transport failures preserve other papers and record process
   assert.equal(partial.evidenceResult.excluded.length, 0);
   assert.equal(partial.evidenceResult.processingFailed.length, 1);
   assert.equal(partial.evidenceResult.processingFailed[0].paper.id, "2607.12005");
+  assert.equal(partial.manualReviewBacklog[0].kind, "processing_failure");
   assert.equal(partial.counts.excluded, 0);
   assert.equal(partial.warnings.some((warning) => (
     warning.code === "READING_LIST_EVIDENCE_PROCESSING_FAILED"
@@ -849,10 +849,14 @@ test("Review failure refills through context, Evidence, and Review in order", as
 
   assert.deepEqual(contextAttempts, ["2607.14001", "2607.14002", "2607.14003"]);
   assert.deepEqual(reviewed.reviewItems.map((item) => item.paper.id), ["2607.14001", "2607.14003"]);
-  assert.deepEqual(reviewed.reviewResult.excluded.map((item) => item.paper.id), ["2607.14002"]);
+  assert.deepEqual(reviewed.reviewResult.excluded, []);
+  assert.deepEqual(reviewed.reviewResult.reviewDisputes.map((item) => item.paper.id), ["2607.14002"]);
   assert.equal(reviewed.counts.fullTextEligible, 3);
   assert.equal(reviewed.counts.reviewed, 2);
-  assert.equal(reviewed.counts.excluded, 1);
+  assert.equal(reviewed.counts.excluded, 0);
+  assert.equal(reviewed.manualReviewBacklog.some((item) => (
+    item.paperId === "2607.14002" && item.kind === "evidence_dispute"
+  )), true);
   assert.equal(modelTasks.some((entry) => (
     entry.paperId === "2607.14003"
     && entry.task === "weekly_report_extract_evidence"
@@ -867,7 +871,7 @@ test("Review failure refills through context, Evidence, and Review in order", as
   )), true);
 });
 
-test("Review exhausts reserve before rejecting a zero-paper result", async () => {
+test("Review exhausts reserve before returning a zero-paper review backlog", async () => {
   const execution = fakeExecutionContext();
   const buildContext = async (paper) => evidencePacketFor(paper.id);
   const callModel = async (prompt) => {
@@ -890,25 +894,21 @@ test("Review exhausts reserve before rejecting a zero-paper result", async () =>
     networkRetryDelayMs: 0
   });
 
-  await assert.rejects(
-    () => reviewWeeklyReportPapers(evidenced, execution.context, {
-      buildContext,
-      callModel,
-      networkRetryDelayMs: 0
-    }),
-    (error) => (
-      error.code === "READING_LIST_NO_REVIEWED_PAPERS"
-      && error.stage === "review"
-      && error.rejectJob === true
-    )
-  );
+  const reviewed = await reviewWeeklyReportPapers(evidenced, execution.context, {
+    buildContext,
+    callModel,
+    networkRetryDelayMs: 0
+  });
+  assert.equal(reviewed.nextStage, "manual_review");
+  assert.equal(reviewed.reviewItems.length, 0);
+  assert.equal(reviewed.reviewResult.excluded.length, 0);
+  assert.equal(reviewed.reviewResult.reviewDisputes.length, 2);
+  assert.equal(reviewed.counts.excluded, 0);
+  assert.equal(reviewed.manualReviewBacklog.filter((item) => item.kind === "evidence_dispute").length, 2);
 
   assert.equal(execution.sections.get("review-artifacts").succeeded.length, 0);
-  assert.equal(execution.sections.get("review-artifacts").excluded.length, 2);
-  assert.equal(execution.events.some((event) => (
-    event.type === "reject_requested"
-    && event.stage === "review"
-  )), true);
+  assert.equal(execution.sections.get("review-artifacts").excluded.length, 0);
+  assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
 test("Review Evidence challenge remains an administrator warning after successful repair", async () => {
@@ -994,6 +994,50 @@ test("calibrate stage persists compact cross-paper calls and calibrated artifact
     .map(([, value]) => value);
   assert.equal(calibrationCalls.length, 1);
   assert.doesNotMatch(calibrationCalls[0].prompt, /LONG_ORIGINAL_TEXT|BOUND_EXCERPT/);
+});
+
+test("Calibration transport failure preserves the reviewed cohort for a stage retry", async () => {
+  const execution = fakeExecutionContext();
+  const reviewed = {
+    nextStage: "calibrate",
+    options: { paperConcurrency: 2, calibrationMaxPapers: 30, minSelectedCount: 2 },
+    candidatePool: { reserveCandidates: [] },
+    evidenceResult: { reserveAttempted: 0 },
+    reviewResult: { reserveAttempted: 0, targetReviewedCount: 2 },
+    reviewItems: [
+      calibratedItemFor("2607.16901", 76, "must_read"),
+      calibratedItemFor("2607.16902", 74, "worth_reading")
+    ],
+    counts: {
+      primary: 2,
+      reserve: 0,
+      fullTextEligible: 2,
+      reviewed: 2,
+      calibrated: 0,
+      selected: 0,
+      excluded: 0
+    },
+    warnings: []
+  };
+
+  const calibrated = await calibrateWeeklyReportPapers(reviewed, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      const error = new Error("calibration transport unavailable");
+      error.code = "READING_LIST_AGENT_CALL_FAILED";
+      error.modelCallFailed = true;
+      throw error;
+    }
+  });
+
+  assert.equal(calibrated.nextStage, "manual_review");
+  assert.deepEqual(calibrated.calibrationResult.excluded, []);
+  assert.deepEqual(calibrated.calibrationResult.retryInput.reviewedPaperIds, ["2607.16901", "2607.16902"]);
+  assert.equal(calibrated.counts.excluded, 0);
+  assert.equal(calibrated.manualReviewBacklog.length, 1);
+  assert.equal(calibrated.manualReviewBacklog[0].kind, "processing_failure");
+  assert.equal(calibrated.manualReviewBacklog[0].scope, "job");
+  assert.equal(calibrated.manualReviewBacklog[0].allowedActions.includes("retry_stage"), true);
 });
 
 test("calibrate stage refills reserves until the threshold-qualified target is met", async () => {
