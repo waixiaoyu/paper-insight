@@ -334,6 +334,10 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /id="weeklyReportTraceReconnect"/);
   assert.match(html, /id="weeklyReportTraceRawList"/);
   assert.match(html, /id="weeklyReportManualReview"/);
+  assert.match(html, /id="weeklyReportManualReviewQueue"/);
+  assert.match(html, /id="weeklyReportManualReviewDetail"/);
+  assert.match(html, /id="weeklyReportManualReviewGates"/);
+  assert.match(html, /id="weeklyReportManualReviewReason"/);
   assert.match(html, /GLM-5\.3 \(Anthropic\)/);
   assert.match(html, /data-manual-review-action="continue_repair"/);
   assert.match(html, /data-manual-review-action="retry_job"/);
@@ -341,6 +345,10 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /data-manual-review-action="skip_paper"/);
   assert.match(html, /data-manual-review-action="ignore_warning"/);
   assert.match(html, /data-manual-review-action="confirm_evidence"/);
+  assert.match(html, /data-manual-review-action="retry_paper"/);
+  assert.match(html, /data-manual-review-action="retry_stage"/);
+  assert.match(html, /data-manual-review-action="include_below_threshold"/);
+  assert.match(html, /data-manual-review-action="keep_excluded"/);
   assert.match(html, /id="weeklyReportManualEvidenceReview"/);
   assert.match(html, /确认范围，抓取原文，排除无法支撑写作的论文。/);
   assert.match(html, /id="readingListMaxSelected"/);
@@ -371,6 +379,8 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(source, /\/decision/);
   assert.match(source, /renderWeeklyReportManualReview/);
   assert.match(source, /submitWeeklyReportManualReviewDecision/);
+  assert.match(source, /weeklyReportManualReviewView/);
+  assert.match(source, /manualReviewDecisionId/);
   assert.match(source, /if \(!report\)\s*\{[\s\S]*?renderWeeklyReportJobProgress\(job\);/);
   const styles = await fetch(`${baseUrl}/styles.css`);
   assert.equal(styles.status, 200);
@@ -420,6 +430,20 @@ test("周报弹窗不会为 Markdown 预览压缩进度步骤", async () => {
   assert.match(stylesheet, /\.reading-list-progress\s*\{[^}]*flex:\s*0\s+0\s+auto/s);
   assert.match(stylesheet, /\.reading-list-preview\s*\{[^}]*flex:\s*1\s+0\s+240px/s);
   assert.match(stylesheet, /@media\s*\(max-height:\s*700px\)[\s\S]*?\.reading-list-preview\s*\{[^}]*flex-basis:\s*160px/s);
+});
+
+test("完成态长 Markdown 预览参与外层文档流，不会覆盖页脚", async () => {
+  const styles = await fetch(`${baseUrl}/styles.css`);
+  assert.equal(styles.status, 200);
+  const stylesheet = await styles.text();
+  assert.match(
+    stylesheet,
+    /\.reading-list-dialog\.ready \.reading-list-preview\s*\{[^}]*flex:\s*0\s+0\s+auto[^}]*grid-template-rows:\s*auto\s+auto/s
+  );
+  assert.match(
+    stylesheet,
+    /\.reading-list-dialog\.ready \.reading-list-output\s*\{[^}]*min-height:\s*240px[^}]*height:\s*auto/s
+  );
 });
 
 test("周报未开始和等待管理员处理时不显示旋转动画", async () => {

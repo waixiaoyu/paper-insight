@@ -349,6 +349,43 @@ const evidenceStageWarnings = ({ attempted, excluded, accepted, target }) => {
   return warnings;
 };
 
+const manualReviewPaperId = (item = {}) => String(
+  item?.error?.paperId
+  || item?.contextPacket?.paperId
+  || item?.paper?.id
+  || ""
+).trim().replace(/v\d+$/i, "");
+
+const reviewBacklogItem = (item, {
+  kind,
+  sourceStage,
+  index = 0
+} = {}) => {
+  const paperId = manualReviewPaperId(item);
+  const error = item?.error && typeof item.error === "object" ? item.error : {};
+  const processingFailure = kind === "processing_failure";
+  return {
+    itemId: `${sourceStage}:${paperId || "job"}:${kind}:${index}`,
+    paperId,
+    relatedPaperIds: paperId ? [paperId] : [],
+    kind,
+    scope: paperId ? "paper" : "job",
+    sourceStage,
+    summary: processingFailure
+      ? `论文 ${paperId || "当前任务"} 的${sourceStage}处理未完成，系统未将其视为论文质量不足。`
+      : `论文 ${paperId || "当前任务"} 的证据校验尚未收敛，需要管理员复核。`,
+    details: [{
+      code: String(error.code || ""),
+      text: String(error.detail || error.message || "")
+    }],
+    issues: Array.isArray(error.issues) ? error.issues : [],
+    repairAttempts: Math.max(0, Math.trunc(Number(item?.repairAttempts) || 0)),
+    allowedActions: processingFailure
+      ? (paperId ? ["retry_paper", "skip_paper", "exit_task"] : ["retry_stage", "exit_task"])
+      : ["continue_repair", "skip_paper", "exit_task"]
+  };
+};
+
 export const extractWeeklyReportEvidence = async (prepared, context = {}, {
   callModel,
   buildContext = (paper) => buildContextPacketFromLegacyPaper(paper),
@@ -376,7 +413,7 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
   let callSequence = 0;
   let counts = { ...prepared.counts };
   const evidenceItems = [];
-  const evidenceExcluded = [];
+  const evidenceDisputes = [];
   const evidenceProcessingFailed = [];
   const refillContextEligible = [];
   const refillContextExcluded = [];
@@ -425,12 +462,8 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
       onEvent: (event) => context.recordTrace(event)
     });
     evidenceItems.push(...result.succeeded);
-    evidenceExcluded.push(...result.excluded);
+    evidenceDisputes.push(...result.excluded);
     evidenceProcessingFailed.push(...result.processingFailed);
-    counts = {
-      ...counts,
-      excluded: counts.excluded + result.excluded.length
-    };
   };
 
   try {
@@ -497,8 +530,8 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
   const warnings = [
     ...(Array.isArray(prepared.warnings) ? prepared.warnings : []),
     ...evidenceStageWarnings({
-      attempted: evidenceItems.length + evidenceExcluded.length + evidenceProcessingFailed.length,
-      excluded: evidenceExcluded.length,
+      attempted: evidenceItems.length + evidenceDisputes.length + evidenceProcessingFailed.length,
+      excluded: evidenceDisputes.length,
       accepted: evidenceItems.length,
       target
     }),
@@ -509,23 +542,37 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
         stage: "extract_evidence",
         paperId: String(item?.contextPacket?.paperId || item?.paper?.id || ""),
         message: responseInvalid
-          ? "该论文连续两次未返回完整的 Evidence 结构化结果，已作为模型处理失败跳过，并继续处理其它论文。"
-          : "该论文的 Evidence 模型调用在自动重试后仍未完成，已作为模型处理失败跳过，并继续处理其它论文。",
+          ? "该论文连续两次未返回完整的 Evidence 结构化结果，已记录为系统处理失败并继续处理其它论文。"
+          : "该论文的 Evidence 模型调用在自动重试后仍未完成，已记录为系统处理失败并继续处理其它论文。",
         severity: "warning"
       };
     })
   ];
   const evidenceResult = {
     targetEligibleCount: target,
-    attempted: evidenceItems.length + evidenceExcluded.length + evidenceProcessingFailed.length,
+    attempted: evidenceItems.length + evidenceDisputes.length + evidenceProcessingFailed.length,
     concurrency,
     reserveAttempted: reserveCursor,
     reserveRemaining: Math.max(0, reserveCandidates.length - reserveCursor),
     underTarget: evidenceItems.length < target,
     succeeded: evidenceItems,
-    excluded: evidenceExcluded,
+    excluded: [],
+    evidenceDisputes,
     processingFailed: evidenceProcessingFailed
   };
+  const manualReviewBacklog = [
+    ...(Array.isArray(prepared.manualReviewBacklog) ? prepared.manualReviewBacklog : []),
+    ...evidenceProcessingFailed.map((item, index) => reviewBacklogItem(item, {
+      kind: "processing_failure",
+      sourceStage: "extract_evidence",
+      index
+    })),
+    ...evidenceDisputes.map((item, index) => reviewBacklogItem(item, {
+      kind: "evidence_dispute",
+      sourceStage: "extract_evidence",
+      index
+    }))
+  ];
   const refill = {
     contextEligible: refillContextEligible,
     contextExcluded: refillContextExcluded
@@ -544,10 +591,10 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
     durationMs: elapsed(stageStartedAt),
     counts,
     warnings,
-    decision: evidenceItems.length ? "continue" : "reject"
+    decision: evidenceItems.length ? "continue" : (manualReviewBacklog.length ? "manual_review" : "reject")
   });
 
-  if (!evidenceItems.length) {
+  if (!evidenceItems.length && !manualReviewBacklog.length) {
     const error = new WeeklyReportOrchestratorError(
       "没有任何论文生成可验证的 Evidence，本次周报任务已拒绝。",
       {
@@ -571,12 +618,13 @@ export const extractWeeklyReportEvidence = async (prepared, context = {}, {
 
   return {
     ...prepared,
-    nextStage: "review",
+    nextStage: evidenceItems.length ? "review" : "manual_review",
     evidenceItems,
     evidenceResult,
     refill,
     counts,
-    warnings
+    warnings,
+    manualReviewBacklog
   };
 };
 
@@ -631,6 +679,7 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
   let counts = { ...evidenced.counts };
   const reviewItems = [];
   const excluded = [];
+  const reviewDisputes = [];
   const processingFailed = [];
   const refillContextEligible = [];
   const refillContextExcluded = [];
@@ -695,12 +744,11 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
       onEvent: recordAgentEvent
     });
     reviewItems.push(...result.succeeded);
-    excluded.push(...result.excluded.map((item) => ({ ...item, failedStage: "review" })));
+    reviewDisputes.push(...result.excluded.map((item) => ({ ...item, failedStage: "review" })));
     processingFailed.push(...result.processingFailed.map((item) => ({ ...item, failedStage: "review" })));
     counts = {
       ...counts,
-      reviewed: reviewItems.length,
-      excluded: counts.excluded + result.excluded.length
+      reviewed: reviewItems.length
     };
   };
 
@@ -776,11 +824,7 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
         failedStage: "extract_evidence"
       }));
       refillEvidenceExcluded.push(...evidenceFailures);
-      excluded.push(...evidenceFailures);
-      counts = {
-        ...counts,
-        excluded: counts.excluded + evidenceFailures.length
-      };
+      reviewDisputes.push(...evidenceFailures);
       await context.updateStage("review", { counts });
       await runReview(evidenceResult.succeeded);
     }
@@ -801,8 +845,8 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
     ...(Array.isArray(evidenced.warnings) ? evidenced.warnings : []),
     ...administratorWarnings,
     ...reviewStageWarnings({
-      attempted: reviewItems.length + excluded.length + processingFailed.length,
-      excluded: excluded.length,
+      attempted: reviewItems.length + excluded.length + reviewDisputes.length + processingFailed.length,
+      excluded: reviewDisputes.length,
       accepted: reviewItems.length,
       target
     }),
@@ -816,15 +860,29 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
   ];
   const reviewResult = {
     targetReviewedCount: target,
-    attempted: reviewItems.length + excluded.length + processingFailed.length,
+    attempted: reviewItems.length + excluded.length + reviewDisputes.length + processingFailed.length,
     concurrency,
     reserveAttempted: reserveCursor,
     reserveRemaining: Math.max(0, reserveCandidates.length - reserveCursor),
     underTarget: reviewItems.length < target,
     succeeded: reviewItems,
     excluded,
+    reviewDisputes,
     processingFailed
   };
+  const manualReviewBacklog = [
+    ...(Array.isArray(evidenced.manualReviewBacklog) ? evidenced.manualReviewBacklog : []),
+    ...processingFailed.map((item, index) => reviewBacklogItem(item, {
+      kind: "processing_failure",
+      sourceStage: String(item.failedStage || "review"),
+      index
+    })),
+    ...reviewDisputes.map((item, index) => reviewBacklogItem(item, {
+      kind: "evidence_dispute",
+      sourceStage: String(item.failedStage || "review"),
+      index
+    }))
+  ];
   const refill = {
     contextEligible: refillContextEligible,
     contextExcluded: refillContextExcluded,
@@ -845,10 +903,10 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
     durationMs: elapsed(stageStartedAt),
     counts,
     warnings,
-    decision: reviewItems.length ? "continue" : "reject"
+    decision: reviewItems.length ? "continue" : (manualReviewBacklog.length ? "manual_review" : "reject")
   });
 
-  if (!reviewItems.length) {
+  if (!reviewItems.length && !manualReviewBacklog.length) {
     const error = new WeeklyReportOrchestratorError(
       "没有任何论文通过 Evidence 复核与 Review，本次周报任务已拒绝。",
       {
@@ -872,12 +930,13 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
 
   return {
     ...evidenced,
-    nextStage: "calibrate",
+    nextStage: reviewItems.length ? "calibrate" : "manual_review",
     reviewItems,
     reviewResult,
     refill,
     counts,
-    warnings
+    warnings,
+    manualReviewBacklog
   };
 };
 
@@ -947,6 +1006,7 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
   let counts = { ...reviewed.counts };
   let rereviewedPaperIds = [];
   const allExcluded = [];
+  const calibrationProcessingFailures = [];
   const cycles = [];
   const administratorWarnings = manualExcludedPaperIds.map((paperId) => ({
     code: "READING_LIST_ADMIN_SKIPPED_PAPER",
@@ -1184,28 +1244,26 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
           if (error?.name === "AbortError" || context.signal?.aborted) {
             throw error;
           }
-          const failed = calibrationPool.map((item) => ({
-            ...item,
-            failedStage: "calibrate",
-            error: calibrationErrorRecord(error, paperIdForStage(item))
-          }));
-          allExcluded.push(...failed);
-          counts = {
-            ...counts,
-            excluded: counts.excluded + failed.length
-          };
+          const retryItems = [...calibrationPool];
+          const failure = calibrationErrorRecord(error);
+          calibrationProcessingFailures.push({
+            error: failure,
+            reviewedItems: retryItems,
+            paperIds: retryItems.map(paperIdForStage)
+          });
           cycles.push({
             inputPaperIds: calibrationPool.map(paperIdForStage),
             succeeded: [],
-            excluded: failed,
-            error: calibrationErrorRecord(error)
+            excluded: [],
+            processingFailed: true,
+            error: failure
           });
           calibrationPool = [];
           await context.recordTrace({
-            type: "calibration_batch_excluded",
+            type: "calibration_batch_processing_failed",
             stage: "calibrate",
             code: error?.code || "READING_LIST_CALIBRATION_FAILED",
-            paperIds: failed.map(paperIdForStage)
+            paperIds: retryItems.map(paperIdForStage)
           });
         }
 
@@ -1276,6 +1334,26 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
     ...administratorWarnings,
     ...stageWarnings
   ]);
+  const manualReviewBacklog = [
+    ...(Array.isArray(reviewed.manualReviewBacklog) ? reviewed.manualReviewBacklog : []),
+    ...calibrationProcessingFailures.map((failure, index) => ({
+      itemId: `calibrate:job:processing_failure:${index}`,
+      paperId: "",
+      relatedPaperIds: failure.paperIds,
+      kind: "processing_failure",
+      scope: "job",
+      sourceStage: "calibrate",
+      summary: "横向校准调用未完成，已保留本批逐篇 Review 产物，未将论文视为不合格。",
+      details: [{
+        code: failure.error.code,
+        text: failure.error.message
+      }],
+      issues: failure.error.issues,
+      repairAttempts: 0,
+      allowedActions: ["retry_stage", "exit_task"],
+      retryInput: { reviewedItems: failure.reviewedItems, reviewedPaperIds: failure.paperIds }
+    }))
+  ];
   const calibrationResult = {
     targetCalibratedCount: target,
     threshold,
@@ -1287,6 +1365,16 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
     underTarget: thresholdQualifiedCount < target,
     succeeded: calibrationPool,
     excluded: allExcluded,
+    processingFailed: calibrationProcessingFailures.map((failure) => ({
+      paperIds: failure.paperIds,
+      error: failure.error
+    })),
+    retryInput: calibrationProcessingFailures.length
+      ? {
+        reviewedItems: calibrationProcessingFailures[0].reviewedItems,
+        reviewedPaperIds: calibrationProcessingFailures[0].paperIds
+      }
+      : null,
     deferred,
     cycles,
     rereviewedPaperIds
@@ -1313,10 +1401,10 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
     durationMs: elapsed(stageStartedAt),
     counts,
     warnings,
-    decision: calibrationPool.length ? "continue" : "reject"
+    decision: calibrationPool.length ? "continue" : (manualReviewBacklog.length ? "manual_review" : "reject")
   });
 
-  if (!calibrationPool.length) {
+  if (!calibrationPool.length && !manualReviewBacklog.length) {
     const error = new WeeklyReportOrchestratorError(
       "没有任何论文完成横向校准，本次周报任务已拒绝。",
       {
@@ -1340,13 +1428,14 @@ export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
 
   return {
     ...reviewed,
-    nextStage: "select",
+    nextStage: calibrationPool.length ? "select" : "manual_review",
     calibratedItems: calibrationPool,
     calibrationResult,
     deferred,
     refill,
     counts,
-    warnings
+    warnings,
+    manualReviewBacklog
   };
 };
 
@@ -1376,15 +1465,61 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
   const selection = selectCalibratedPapers(calibrated.calibratedItems, {
     threshold,
     minSelectedCount: calibrated.options?.minSelectedCount,
-    maxSelectedCount: calibrated.options?.maxSelectedCount
+    maxSelectedCount: calibrated.options?.maxSelectedCount,
+    adminSelectionOverrides: calibrated.adminSelectionOverrides
   });
   const counts = {
     ...calibrated.counts,
     selected: selection.selected.length,
-    excluded: calibrated.counts.excluded
-      + selection.notSelected.length
-      + selection.ineligible.length
+    excluded: calibrated.counts.excluded + selection.ineligible.length
   };
+  const neededForMinimum = Math.max(0, selection.requestedMinSelectedCount - selection.selected.length);
+  const manualReviewBacklog = [
+    ...(Array.isArray(calibrated.manualReviewBacklog) ? calibrated.manualReviewBacklog : []),
+    ...selection.notSelected
+      .filter((item) => item.selection?.selectionReason === "below_threshold")
+      .slice(0, neededForMinimum)
+      .map((item, index) => {
+        const paperId = paperIdForStage(item);
+        const scores = item.reviewResult?.scores || {};
+        return {
+          itemId: `select:${paperId}:quality_below_threshold:${index}`,
+          paperId,
+          relatedPaperIds: [paperId],
+          kind: "quality_below_threshold",
+          scope: "paper",
+          sourceStage: "select",
+          summary: `横向校准后为 ${item.selection.finalScore} 分，低于 ${threshold} 分默认入选线。`,
+          details: [{
+            title: "默认入选结果",
+            requirement: `默认入选线为 ${threshold} 分。`,
+            actual: `该论文实际为 ${item.selection.finalScore} 分。`
+          }],
+          issues: [],
+          scoreSnapshot: {
+            finalScore: item.selection.finalScore,
+            threshold,
+            dimensions: {
+              scenarioProblemValue: Number(scores.scenarioProblemValue),
+              methodNovelty: Number(scores.methodNovelty),
+              practicalValue: Number(scores.practicalValue),
+              evidence: Number(scores.evidence)
+            },
+            calibrationStatus: item.calibrationResult?.status || "",
+            comparisonReason: item.calibrationResult?.calibrationReason || "",
+            defaultSelection: "below_threshold"
+          },
+          gateStatus: {
+            fullText: "passed",
+            identity: "passed",
+            evidence: "passed",
+            crossPaper: "passed"
+          },
+          repairAttempts: 0,
+          allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+        };
+      })
+  ];
   const selectionWarnings = [];
 
   if (selection.selected.length > 0 && selection.selected.length < selection.requestedMinSelectedCount) {
@@ -1403,7 +1538,11 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
     ...selection,
     selectedPaperIds: selection.selected.map(paperIdForStage),
     notSelectedPaperIds: selection.notSelected.map(paperIdForStage),
-    ineligiblePaperIds: selection.ineligible.map(paperIdForStage)
+    ineligiblePaperIds: selection.ineligible.map(paperIdForStage),
+    adminOverrideCount: selection.selected.filter((item) => (
+      item.selection?.selectionSource === "admin_override"
+    )).length,
+    manualReviewBacklog
   };
 
   await context.writeTrace("selection-artifacts", selectionResult);
@@ -1419,10 +1558,10 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
     thresholdQualifiedCount: selection.thresholdSelectedCount,
     thresholdSelectedCount: selection.thresholdSelectedCount,
     fallbackCount: selection.fallbackCount,
-    decision: selection.selected.length ? "continue" : "reject"
+    decision: manualReviewBacklog.length ? "manual_review" : (selection.selected.length ? "continue" : "reject")
   });
 
-  if (!selection.selected.length) {
+  if (!selection.selected.length && !manualReviewBacklog.length) {
     const error = new WeeklyReportOrchestratorError(
       `候选池处理结束后，没有论文达到 ${threshold} 分入选线，本次周报无法生成。`,
       {
@@ -1446,11 +1585,12 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
 
   return {
     ...calibrated,
-    nextStage: "editorial_plan",
+    nextStage: manualReviewBacklog.length ? "manual_review" : "editorial_plan",
     selectedItems: selection.selected,
     selectionResult,
     counts,
-    warnings
+    warnings,
+    manualReviewBacklog
   };
 };
 

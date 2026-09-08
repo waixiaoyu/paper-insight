@@ -6,18 +6,36 @@ import {
   createWeeklyReportJob,
   finalizeWeeklyReportJob
 } from "./schema.js";
-import { compactEvidenceReviews } from "./evidence-review.js";
+import {
+  manualReviewItem,
+  normalizeManualReviewRequest
+} from "./manual-review.js";
 import { redactTraceValue } from "./trace-store.js";
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
-const MANUAL_REVIEW_ACTIONS = new Set([
-  "continue_repair",
-  "retry_job",
-  "exit_task",
-  "skip_paper",
-  "ignore_warning",
-  "confirm_evidence"
-]);
+
+const manualReviewWithActiveItem = (review) => {
+  const activeItem = manualReviewItem(review, review.activeItemId);
+  return {
+    ...review,
+    kind: activeItem?.kind || "",
+    paperId: activeItem?.paperId || "",
+    relatedPaperIds: activeItem?.relatedPaperIds || [],
+    summary: activeItem?.summary || "",
+    issues: activeItem?.issues || [],
+    evidenceReviews: activeItem?.evidenceReviews || [],
+    approvableIssueKeys: activeItem?.approvableIssueKeys || [],
+    repairAttempts: activeItem?.repairAttempts || 0,
+    allowedActions: activeItem?.allowedActions || []
+  };
+};
+
+const manualDecisionError = (message, code = "READING_LIST_MANUAL_REVIEW_ACTION_INVALID") => {
+  const error = new Error(message);
+  error.code = code;
+  error.statusCode = 409;
+  return error;
+};
 
 const readJsonIfPresent = async (path, fallback = null) => {
   try {
@@ -467,35 +485,14 @@ export class WeeklyReportJobManager {
       throw new Error("The weekly report Job is already waiting for an administrator decision.");
     }
 
-    const allowedActions = [...new Set((Array.isArray(review.allowedActions) ? review.allowedActions : [])
-      .map((action) => String(action || "").trim())
-      .filter((action) => MANUAL_REVIEW_ACTIONS.has(action)))];
-    if (!allowedActions.length) {
-      throw new TypeError("Manual review requires at least one allowed administrator action.");
-    }
     const requestedAt = new Date().toISOString();
-    const relatedPaperIds = [...new Set((Array.isArray(review.relatedPaperIds) ? review.relatedPaperIds : [])
-      .map((paperId) => String(paperId || "").trim())
-      .filter(Boolean))];
-    const requestedIssueKeys = new Set((Array.isArray(review.approvableIssueKeys) ? review.approvableIssueKeys : [])
-      .map((issueKey) => String(issueKey || "").trim())
-      .filter(Boolean));
-    const evidenceReviews = compactEvidenceReviews(review.evidenceReviews)
-      .filter((entry) => requestedIssueKeys.has(entry.issueKey));
-    const approvableIssueKeys = evidenceReviews.map((entry) => entry.issueKey);
-    const manualReview = redactTraceValue({
-      kind: String(review.kind || "quality_repair"),
-      stage: String(review.stage || this.activeJob.agentStage || "manual_review"),
-      paperId: String(review.paperId || ""),
-      relatedPaperIds,
-      summary: String(review.summary || "Content remains invalid after automatic repairs."),
-      issues: Array.isArray(review.issues) ? review.issues.slice(0, 50) : [],
-      evidenceReviews,
-      approvableIssueKeys,
-      repairAttempts: Math.max(0, Math.trunc(Number(review.repairAttempts) || 0)),
-      allowedActions,
-      requestedAt
-    });
+    const normalizedReview = normalizeManualReviewRequest({
+      ...review,
+      stage: review.stage || this.activeJob.agentStage || "manual_review",
+      resumeStage: review.resumeStage || review.stage || this.activeJob.agentStage || "manual_review"
+    }, { requestedAt });
+    const manualReview = manualReviewWithActiveItem(redactTraceValue(normalizedReview));
+    const activeItem = manualReviewItem(manualReview, manualReview.activeItemId);
     const waiting = {
       ...this.activeJob,
       agentStage: manualReview.stage,
@@ -539,13 +536,14 @@ export class WeeklyReportJobManager {
         type: "manual_review_requested",
         kind: manualReview.kind,
         stage: manualReview.stage,
-        scope: manualReview.paperId ? "paper" : "job",
+        scope: activeItem.scope,
         paperId: manualReview.paperId,
         relatedPaperIds: manualReview.relatedPaperIds,
         summary: manualReview.summary,
         issues: manualReview.issues,
         repairAttempts: manualReview.repairAttempts,
-        allowedActions
+        allowedActions: manualReview.allowedActions,
+        items: manualReview.items
       });
     } catch (error) {
       this.manualReviews.get(jobId)?.cleanup?.();
@@ -562,65 +560,85 @@ export class WeeklyReportJobManager {
   }
 
   async decide(jobId, decision = {}) {
+    const suppliedDecisionId = String(decision.decisionId || "").trim();
+    const suppliedItemId = String(decision.itemId || "").trim();
+    const suppliedAction = String(decision.action || "").trim();
+    const existing = this.jobs.get(jobId) || await this.getJob(jobId);
+    const previousReceipt = suppliedDecisionId
+      ? (Array.isArray(existing?.adminDecisionReceipts) ? existing.adminDecisionReceipts : [])
+        .find((receipt) => receipt?.decisionId === suppliedDecisionId)
+      : null;
+    if (previousReceipt) {
+      if (previousReceipt.itemId === suppliedItemId && previousReceipt.action === suppliedAction) {
+        return publicJob(existing);
+      }
+      throw manualDecisionError("The administrator decision ID was already used for another action.", "READING_LIST_MANUAL_REVIEW_DECISION_CONFLICT");
+    }
     if (!this.isActiveRunning(jobId) || !this.activeJob.manualReview) {
-      const error = new Error("The weekly report Job is not waiting for an administrator decision.");
-      error.code = "READING_LIST_MANUAL_REVIEW_NOT_PENDING";
-      error.statusCode = 409;
-      throw error;
+      throw manualDecisionError(
+        "The weekly report Job is not waiting for an administrator decision.",
+        "READING_LIST_MANUAL_REVIEW_NOT_PENDING"
+      );
     }
     const pending = this.manualReviews.get(jobId);
     if (!pending) {
-      const error = new Error("The in-memory administrator decision request is unavailable.");
-      error.code = "READING_LIST_MANUAL_REVIEW_UNAVAILABLE";
-      error.statusCode = 409;
-      throw error;
+      throw manualDecisionError(
+        "The in-memory administrator decision request is unavailable.",
+        "READING_LIST_MANUAL_REVIEW_UNAVAILABLE"
+      );
     }
-    const action = String(decision.action || "").trim();
-    if (!this.activeJob.manualReview.allowedActions.includes(action)) {
-      const error = new Error("The requested administrator action is not allowed for this issue.");
-      error.code = "READING_LIST_MANUAL_REVIEW_ACTION_INVALID";
-      error.statusCode = 409;
-      throw error;
+    const review = this.activeJob.manualReview;
+    const itemId = suppliedItemId || review.activeItemId;
+    const selectedItem = manualReviewItem(review, itemId);
+    if (!selectedItem) {
+      throw manualDecisionError("The requested administrator review item is not pending.");
+    }
+    const action = suppliedAction;
+    if (!selectedItem.allowedActions.includes(action)) {
+      throw manualDecisionError("The requested administrator action is not allowed for this issue.");
+    }
+    const decisionId = suppliedDecisionId || randomUUID();
+    const reason = String(decision.reason || "").trim();
+    if (action === "include_below_threshold" && reason.length < 8) {
+      throw manualDecisionError("Manual inclusion requires an administrator reason of at least eight characters.");
+    }
+    if (action === "include_below_threshold" && ["fullText", "identity", "evidence", "crossPaper"]
+      .some((gate) => selectedItem.gateStatus?.[gate] !== "passed")) {
+      throw manualDecisionError("Manual inclusion cannot bypass a failed credibility gate.");
     }
     const requestedPaperId = String(decision.paperId || "").trim();
-    const relatedPaperIds = Array.isArray(this.activeJob.manualReview.relatedPaperIds)
-      ? this.activeJob.manualReview.relatedPaperIds
-      : [];
+    const relatedPaperIds = selectedItem.relatedPaperIds || [];
     const approvedIssueKeys = action === "confirm_evidence"
-      ? (Array.isArray(this.activeJob.manualReview.approvableIssueKeys)
-        ? this.activeJob.manualReview.approvableIssueKeys
+      ? (Array.isArray(selectedItem.approvableIssueKeys)
+        ? selectedItem.approvableIssueKeys
         : [])
       : [];
     const evidenceReviews = action === "confirm_evidence"
-      ? (Array.isArray(this.activeJob.manualReview.evidenceReviews)
-        ? this.activeJob.manualReview.evidenceReviews.filter((entry) => approvedIssueKeys.includes(entry?.issueKey))
+      ? (Array.isArray(selectedItem.evidenceReviews)
+        ? selectedItem.evidenceReviews.filter((entry) => approvedIssueKeys.includes(entry?.issueKey))
         : [])
       : [];
     if (action === "confirm_evidence" && (!approvedIssueKeys.length || !evidenceReviews.length)) {
-      const error = new Error("Evidence confirmation requires reviewable issues and source excerpts.");
-      error.code = "READING_LIST_MANUAL_REVIEW_ACTION_INVALID";
-      error.statusCode = 409;
-      throw error;
+      throw manualDecisionError("Evidence confirmation requires reviewable issues and source excerpts.");
     }
     let paperId = "";
     if (action === "skip_paper") {
-      paperId = requestedPaperId || String(this.activeJob.manualReview.paperId || "").trim();
+      paperId = requestedPaperId || String(selectedItem.paperId || "").trim();
       const allowedPaperIds = new Set([
         ...relatedPaperIds,
-        String(this.activeJob.manualReview.paperId || "").trim()
+        String(selectedItem.paperId || "").trim()
       ].filter(Boolean));
       if (!paperId || !allowedPaperIds.has(paperId)) {
-        const error = new Error("Skip-paper requires the administrator to select one related paper.");
-        error.code = "READING_LIST_MANUAL_REVIEW_ACTION_INVALID";
-        error.statusCode = 409;
-        throw error;
+        throw manualDecisionError("Skip-paper requires the administrator to select one related paper.");
       }
     }
 
     const decidedAt = new Date().toISOString();
+    const receipt = { decisionId, itemId, action, decidedAt };
     const next = {
       ...this.activeJob,
       manualReview: null,
+      adminDecisionReceipts: [...(this.activeJob.adminDecisionReceipts || []), receipt].slice(-50),
       updatedAt: decidedAt,
       progress: {
         ...this.activeJob.progress,
@@ -635,7 +653,10 @@ export class WeeklyReportJobManager {
       stage: next.agentStage,
       scope: paperId ? "paper" : "job",
       action,
+      decisionId,
+      itemId,
       paperId,
+      reason,
       ...(action === "confirm_evidence" ? { approvedIssueKeys, evidenceReviews } : {}),
       decidedAt
     });
@@ -644,7 +665,10 @@ export class WeeklyReportJobManager {
     this.jobs.set(jobId, next);
     pending.resolve({
       action,
+      decisionId,
+      itemId,
       paperId,
+      reason,
       ...(action === "confirm_evidence" ? { approvedIssueKeys, evidenceReviews } : {}),
       decidedAt
     });

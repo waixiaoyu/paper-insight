@@ -2,6 +2,38 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { describeWeeklyReportManualReview } from "../public/manual-review-details.js";
 
+test("系统处理失败明确说明不是论文质量结论，并说明最小重试范围", () => {
+  const result = describeWeeklyReportManualReview({
+    kind: "processing_failure",
+    sourceStage: "extract_evidence",
+    paperId: "2609.04001",
+    summary: "Evidence 调用未完成，未将该论文视为质量不足。",
+    details: [{ title: "实际失败", text: "模型响应超时。" }],
+    allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+  });
+
+  assert.equal(result.title, "论文 2609.04001 的系统处理未完成");
+  assert.match(result.summary, /不代表论文质量不足/);
+  assert.deepEqual(result.details, [
+    { label: "已完成内容", value: "其他论文的处理结果已保留，不会因本论文失败而重做。" },
+    { label: "实际失败", value: "模型响应超时。" },
+    { label: "重试范围", value: "只重试论文 2609.04001 的证据提取，不会重新处理其他论文。" }
+  ]);
+});
+
+test("低于默认入选线的论文展示真实分数和人工纳入约束", () => {
+  const result = describeWeeklyReportManualReview({
+    kind: "quality_below_threshold",
+    paperId: "2609.04003",
+    scoreSnapshot: { finalScore: 67, threshold: 70 },
+    allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+  });
+
+  assert.equal(result.title, "论文 2609.04003 默认未入选");
+  assert.match(result.summary, /67 分/);
+  assert.match(result.summary, /不会修改真实分数/);
+});
+
 test("QA 定向修正缺少逐篇稿件时说明目标、要求和实际失败", () => {
   const result = describeWeeklyReportManualReview({
     kind: "execution_failure",

@@ -301,23 +301,37 @@
           </div>
         </section>
         <section id="weeklyReportManualReview" class="weekly-report-manual-review" aria-live="assertive" hidden>
-          <div class="weekly-report-manual-review-copy">
+          <header class="weekly-report-manual-review-header">
             <p class="eyebrow">等待管理员决策</p>
-            <h3 id="weeklyReportManualReviewTitle">自动修正后仍未通过质量门</h3>
-            <p id="weeklyReportManualReviewSummary"></p>
             <p id="weeklyReportManualReviewMeta" class="weekly-report-manual-review-meta"></p>
-            <ul id="weeklyReportManualReviewDetails" class="weekly-report-manual-review-details"></ul>
-            <div id="weeklyReportManualEvidenceReview" class="weekly-report-manual-evidence-review" hidden></div>
-            <ul id="weeklyReportManualReviewIssues" class="weekly-report-manual-review-issues"></ul>
-            <label id="weeklyReportManualReviewSkipPaper" hidden>
-              选择要跳过的论文
-              <select id="weeklyReportManualReviewSkipPaperSelect"></select>
-            </label>
+          </header>
+          <nav id="weeklyReportManualReviewQueue" class="weekly-report-manual-review-queue" aria-label="待复核论文"></nav>
+          <div class="weekly-report-manual-review-workspace">
+            <section id="weeklyReportManualReviewDetail" class="weekly-report-manual-review-copy" aria-live="polite">
+              <h3 id="weeklyReportManualReviewTitle">自动修正后仍未通过质量门</h3>
+              <p id="weeklyReportManualReviewSummary"></p>
+              <ul id="weeklyReportManualReviewDetails" class="weekly-report-manual-review-details"></ul>
+              <div id="weeklyReportManualEvidenceReview" class="weekly-report-manual-evidence-review" hidden></div>
+              <ul id="weeklyReportManualReviewIssues" class="weekly-report-manual-review-issues"></ul>
+            </section>
+            <aside id="weeklyReportManualReviewGates" class="weekly-report-manual-review-gates" aria-label="发布可信度检查">
+              <h4>发布可信度检查</h4>
+              <ul id="weeklyReportManualReviewGateList"></ul>
+            </aside>
           </div>
+          <label id="weeklyReportManualReviewReasonField" class="weekly-report-manual-review-reason" hidden>
+            人工纳入理由
+            <textarea id="weeklyReportManualReviewReason" maxlength="500" placeholder="说明该论文为何值得在保留真实分数的前提下纳入本期。"></textarea>
+            <small>至少填写 8 个字符；这条理由会写入本任务的管理员记录。</small>
+          </label>
           <div class="weekly-report-manual-review-actions" aria-label="管理员决策">
             <button class="primary-action" data-manual-review-action="confirm_evidence" type="button">确认证据充分，继续任务</button>
             <button class="primary-action" data-manual-review-action="retry_job" type="button">重新执行任务</button>
+            <button class="primary-action" data-manual-review-action="retry_paper" type="button">重试本论文</button>
+            <button class="primary-action" data-manual-review-action="retry_stage" type="button">重试当前阶段</button>
             <button class="primary-action" data-manual-review-action="continue_repair" type="button">继续修正一次</button>
+            <button class="primary-action" data-manual-review-action="include_below_threshold" type="button">人工纳入本期</button>
+            <button class="secondary-action" data-manual-review-action="keep_excluded" type="button">保持不入选</button>
             <button class="secondary-action" data-manual-review-action="skip_paper" type="button">跳过这篇论文</button>
             <button class="secondary-action" data-manual-review-action="ignore_warning" type="button">忽略告警并继续</button>
             <button class="ghost-button warning-action" data-manual-review-action="exit_task" type="button">退出任务</button>

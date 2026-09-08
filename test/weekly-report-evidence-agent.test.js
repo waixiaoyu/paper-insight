@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   EvidenceAgentError,
+  extractEvidenceNumericTokens,
   extractEvidenceBatch,
+  normalizeEvidenceResponseShape,
   runEvidenceAgent,
   validateEvidenceArtifacts
 } from "../weekly-report/evidence-agent.js";
@@ -553,6 +556,31 @@ test("F1 等字母数字指标名不会被拆成独立数字事实", () => {
   assert.equal(validation.issues.some((issue) => (
     issue.code === "numeric_claim_not_in_excerpt" && /token 1\b/.test(issue.detail)
   )), false);
+});
+
+test("Evidence numeric claims ignore alphanumeric identifiers", () => {
+  assert.deepEqual(extractEvidenceNumericTokens("6G、3D、1B 与 F1"), []);
+  assert.deepEqual(
+    extractEvidenceNumericTokens("10 秒内降低 37.5%，覆盖 120 samples"),
+    ["10", "37.5%", "120"]
+  );
+});
+
+test("flat Evidence envelope is wrapped before Schema validation", () => {
+  const flatResponse = JSON.parse(readFileSync(
+    new URL("./fixtures/weekly-report/gray-124-flat-evidence-response.json", import.meta.url),
+    "utf8"
+  ));
+
+  const normalized = normalizeEvidenceResponseShape(flatResponse);
+  assert.equal(normalized.normalized, true);
+  assert.equal(normalized.value.evidenceCard.paperId, "2607.11111");
+
+  const validation = validateEvidenceArtifacts(normalized.value, {
+    contextPacket: contextPacketFor(),
+    expectedPaperId: "2607.11111"
+  });
+  assert.equal(validation.valid, true);
 });
 
 test("Evidence section heading is deterministically rebound from a valid server anchor", () => {

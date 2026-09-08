@@ -129,7 +129,7 @@ Job 的 `manualReview` 使用统一队列，而不是只保存一个笼统问题
       "evidencePackage": {},
       "scoreSnapshot": null,
       "gateStatus": {},
-      "allowedActions": ["repair_issue", "confirm_evidence", "skip_paper"]
+      "allowedActions": ["continue_repair", "confirm_evidence", "skip_paper"]
     }
   ]
 }
@@ -148,7 +148,7 @@ Job 的 `manualReview` 使用统一队列，而不是只保存一个笼统问题
 
 - `retry_paper`：从该论文失败的最小阶段重跑，成功后继续原流水线。
 - `retry_stage`：只重跑失败的 Calibration 或报告级阶段，保留已经通过的单篇产物；批次失败不得清空或排除整批论文。
-- `repair_issue`：只修改问题映射出的路径，完整复检该 artifact，并继续对应 QA。
+- `continue_repair`：只修改问题映射出的路径，完整复检该 artifact，并继续对应 QA。
 - `confirm_evidence`：只登记当前问题键的证据确认，从产生问题的 QA 阶段重新检查。
 - `include_below_threshold`：将论文标记为 `selectionSource=admin_override`，保留真实分数，重新执行 Selection 之后的全部阶段。
 - `keep_excluded` 或 `skip_paper`：记录管理员原因，移出候选集合；如论文集合发生变化，重新校准其余候选并尝试 reserveCandidates。

@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runWeeklyReportAgentLoop } from "../weekly-report/pipeline-runner.js";
 
 const fixtureUrl = (name) => new URL(`./fixtures/weekly-report/${name}`, import.meta.url);
 const papers = JSON.parse(await readFile(fixtureUrl("papers.json"), "utf8"));
@@ -66,6 +67,113 @@ const reviewByPaperId = {
 
 const closeServer = (server) => new Promise((resolve, reject) => {
   server.close((error) => error ? reject(error) : resolve());
+});
+
+test("Agent Loop 在单篇恢复和人工纳入后保留真实分数并完成发布", async () => {
+  const reviewedPaper = (paperId, rawScore) => ({
+    paper: { id: paperId },
+    contextPacket: { paperId },
+    evidenceCard: { paperId },
+    reviewResult: { paperId, rawScore, evidenceValidation: { status: "pass" } },
+    calibrationResult: { paperId, status: "consistent", readingTier: "worth_reading" }
+  });
+  const failedPaper = { paper: { id: "2609.05004" }, contextPacket: { paperId: "2609.05004" } };
+  const recovered = reviewedPaper("2609.05004", 73);
+  const highOne = reviewedPaper("2609.05001", 82);
+  const highTwo = reviewedPaper("2609.05002", 76);
+  const lowScore = reviewedPaper("2609.05003", 67);
+  const manualDecisions = [
+    { action: "retry_paper", itemId: "evidence-2609.05004" },
+    {
+      action: "include_below_threshold",
+      itemId: "selection-2609.05003",
+      decisionId: "0a4e58e0-c1d9-4c8a-bf0f-c1b266ea7dc7",
+      reason: "论文的原文证据完整，且可补足本期网络自治主题。",
+      decidedAt: "2026-09-08T02:00:00.000Z"
+    }
+  ];
+  const calls = [];
+  let selectionOverride = null;
+  const manualReview = (items) => ({
+    nextStage: "manual_review",
+    manualReviewBacklog: items,
+    counts: { selected: 0 }
+  });
+  const qualityItem = {
+    itemId: "selection-2609.05003",
+    paperId: "2609.05003",
+    kind: "quality_below_threshold",
+    scope: "paper",
+    sourceStage: "select",
+    summary: "横向校准后为 67 分，低于 70 分默认入选线。",
+    scoreSnapshot: { finalScore: 67, threshold: 70 },
+    gateStatus: { fullText: "passed", identity: "passed", evidence: "passed", crossPaper: "passed" },
+    allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+  };
+  const result = await runWeeklyReportAgentLoop({ reportKey: "2026-W37-full-flow" }, {
+    traceId: "trace-full-flow",
+    requestManualReview: async () => manualDecisions.shift()
+  }, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps: {
+      prepare: async () => ({
+        ...manualReview([{
+          itemId: "evidence-2609.05004",
+          paperId: "2609.05004",
+          kind: "processing_failure",
+          scope: "paper",
+          sourceStage: "extract_evidence",
+          summary: "Evidence 调用未完成，未将该论文视为质量不足。",
+          allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+        }, qualityItem]),
+        contextResult: { eligible: [failedPaper] },
+        evidenceResult: { processingFailed: [failedPaper] },
+        reviewItems: [highOne, highTwo, lowScore]
+      }),
+      evidence: async (value) => {
+        calls.push(`evidence:${value.contextResult.eligible.map((item) => item.contextPacket.paperId).join(",")}`);
+        return { ...value, nextStage: "review", evidenceItems: [recovered] };
+      },
+      review: async (value) => {
+        calls.push(`review:${value.evidenceItems.map((item) => item.contextPacket.paperId).join(",")}`);
+        return { ...value, nextStage: "calibrate", reviewItems: [recovered] };
+      },
+      calibrate: async (value) => ({
+        ...value,
+        nextStage: "select",
+        calibratedItems: value.reviewItems
+      }),
+      select: async (value) => {
+        selectionOverride = value.adminSelectionOverrides || [];
+        if (!selectionOverride.length) return { ...value, ...manualReview(value.manualReviewBacklog) };
+        return {
+          ...value,
+          nextStage: "editorial_plan",
+          selectedItems: [highOne, highTwo, lowScore],
+          counts: { ...value.counts, selected: 3 }
+        };
+      },
+      editorialPlan: async (value) => ({ ...value, nextStage: "write_paper_sections" }),
+      paperSections: async (value) => ({ ...value, nextStage: "write_head_tail" }),
+      headTail: async (value) => ({ ...value, nextStage: "assemble" }),
+      assemble: async (value) => ({ ...value, nextStage: "deterministic_qa", markdown: "# 发布稿\n\n三篇论文。" }),
+      deterministicQa: async (value) => ({ ...value, nextStage: "paper_semantic_qa", qaReport: { status: "passed" } }),
+      paperSemanticQa: async (value) => ({ ...value, nextStage: "report_semantic_qa", qaReport: { status: "passed" } }),
+      reportSemanticQa: async (value) => ({ ...value, nextStage: "publish", qaReport: { status: "passed" } })
+    }
+  });
+
+  assert.deepEqual(calls, ["evidence:2609.05004", "review:2609.05004"]);
+  assert.deepEqual(selectionOverride, [{
+    paperId: "2609.05003",
+    reason: "论文的原文证据完整，且可补足本期网络自治主题。",
+    decisionId: "0a4e58e0-c1d9-4c8a-bf0f-c1b266ea7dc7",
+    decidedAt: "2026-09-08T02:00:00.000Z"
+  }]);
+  assert.equal(result.state, "publish");
+  assert.equal(result.paperCount, 3);
+  assert.doesNotMatch(result.markdown, /admin_override|67 分|人工纳入/);
 });
 
 test("完整主流程经过原文、复评、选文、生成、质量门和语义评审", async () => {

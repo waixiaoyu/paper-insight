@@ -1,13 +1,10 @@
+import {
+  MANUAL_REVIEW_ACTIONS,
+  normalizeManualReviewRequest
+} from "./manual-review.js";
+
 const JOB_STATES = new Set(["running", "publish", "reject"]);
 const FINAL_JOB_STATES = new Set(["publish", "reject"]);
-const MANUAL_REVIEW_ACTIONS = new Set([
-  "continue_repair",
-  "retry_job",
-  "exit_task",
-  "skip_paper",
-  "ignore_warning",
-  "confirm_evidence"
-]);
 const COUNT_KEYS = [
   "primary",
   "reserve",
@@ -235,6 +232,7 @@ export const createWeeklyReportJob = ({
     counts: Object.fromEntries(COUNT_KEYS.map((key) => [key, 0])),
     warnings: [],
     manualReview: null,
+    adminDecisionReceipts: [],
     result: null,
     error: null
   };
@@ -295,6 +293,9 @@ export const assertWeeklyReportJob = (job) => {
     if (job.state !== "running") {
       throw new TypeError("Only a running weekly report Job can wait for manual review.");
     }
+    if (Array.isArray(review.items)) {
+      normalizeManualReviewRequest(review, { requestedAt: review.requestedAt });
+    } else {
     if (!normalizedText(review.stage, 120) || !normalizedText(review.requestedAt, 80)) {
       throw new TypeError("Weekly report Job manualReview requires stage and requestedAt.");
     }
@@ -303,7 +304,7 @@ export const assertWeeklyReportJob = (job) => {
       throw new TypeError("Weekly report Job manualReview.repairAttempts must be a non-negative integer.");
     }
     if (!Array.isArray(review.allowedActions) || !review.allowedActions.length
-      || review.allowedActions.some((action) => !MANUAL_REVIEW_ACTIONS.has(action))) {
+      || review.allowedActions.some((action) => !MANUAL_REVIEW_ACTIONS.includes(action))) {
       throw new TypeError("Weekly report Job manualReview.allowedActions is invalid.");
     }
     if (!Array.isArray(review.issues)) {
@@ -320,6 +321,22 @@ export const assertWeeklyReportJob = (job) => {
     if (review.evidenceReviews !== undefined && !Array.isArray(review.evidenceReviews)) {
       throw new TypeError("Weekly report Job manualReview.evidenceReviews is invalid.");
     }
+    }
+  }
+
+  if (job.adminDecisionReceipts !== undefined && (!Array.isArray(job.adminDecisionReceipts)
+    || job.adminDecisionReceipts.length > 50)) {
+    throw new TypeError("Weekly report Job adminDecisionReceipts is invalid.");
+  }
+  for (const receipt of (job.adminDecisionReceipts || [])) {
+    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)
+      || !normalizedText(receipt.decisionId, 160)
+      || !normalizedText(receipt.itemId, 160)
+      || !MANUAL_REVIEW_ACTIONS.includes(receipt.action)
+      || !normalizedText(receipt.decidedAt, 80)) {
+      throw new TypeError("Weekly report Job adminDecisionReceipts entry is invalid.");
+    }
+    isoTime(receipt.decidedAt);
   }
 
   const normalizedOptions = normalizeWeeklyReportJobOptions(job.options);

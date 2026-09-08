@@ -1,7 +1,11 @@
 const manualReviewActionLabels = Object.freeze({
   continue_repair: "继续定向修正",
   retry_job: "重新执行任务",
+  retry_paper: "重试本论文",
+  retry_stage: "重试当前阶段",
   exit_task: "退出任务",
+  include_below_threshold: "人工纳入本期",
+  keep_excluded: "保持不入选",
   skip_paper: "跳过这篇论文",
   ignore_warning: "忽略本次提醒",
   confirm_evidence: "确认证据充分，继续任务"
