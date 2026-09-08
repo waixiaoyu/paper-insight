@@ -1,0 +1,54 @@
+{
+  "paperId": "2607.11111",
+  "problem": {
+    "summary": "Autonomous network agents can issue unsafe configuration actions.",
+    "status": "supported",
+    "sources": [{ "anchor": "S1", "section": "1 Introduction", "excerpt": "Autonomous network agents can issue unsafe configuration actions without pre-deployment validation." }]
+  },
+  "method": {
+    "summary": "The method checks candidate actions against topology constraints before execution.",
+    "status": "supported",
+    "sources": [{ "anchor": "S2", "section": "2 Method and System Architecture", "excerpt": "The guardrail checks every candidate action against topology constraints before execution." }]
+  },
+  "systemDesign": { "summary": "A separate system decomposition is not present in the supplied source.", "status": "not_present", "sources": [] },
+  "experiments": {
+    "summary": "The evaluation contains 120 simulated failure scenarios.",
+    "status": "supported",
+    "sources": [{ "anchor": "S3", "section": "3 Experimental Evaluation", "excerpt": "We evaluate 120 failure scenarios against an unguarded agent baseline." }]
+  },
+  "results": {
+    "summary": "Unsafe actions are reduced by 37% while task completion is preserved.",
+    "status": "supported",
+    "sources": [{ "anchor": "S4", "section": "4 Results and Discussion", "excerpt": "The guardrail reduces unsafe actions by 37% while preserving task completion." }]
+  },
+  "limitations": {
+    "summary": "The evidence is limited to simulated topologies without production traffic.",
+    "status": "supported",
+    "sources": [{ "anchor": "S5", "section": "5 Limitations", "excerpt": "The evaluation uses simulated topologies and does not cover production traffic." }]
+  },
+  "affiliations": {
+    "summary": "The authors are affiliated with Example University.",
+    "status": "supported",
+    "sources": [{ "anchor": "S0", "section": "Traceable Network Agent", "excerpt": "Alice Example, Example University" }]
+  },
+  "evidenceInsufficient": false,
+  "warnings": [],
+  "valueSignals": {
+    "paperId": "2607.11111",
+    "signals": [{
+      "dimension": "methodNovelty",
+      "claim": "Pre-execution topology validation is the central reusable method signal.",
+      "evidenceRefs": ["method:0"],
+      "readerImplication": "Read the guardrail mechanism before the evaluation.",
+      "adnImplication": { "relevance": "direct", "angle": "safety", "insight": "The mechanism can constrain closed-loop network actions.", "limit": "The current evidence is simulation-only." },
+      "caveat": "The paper does not isolate every guardrail component."
+    }, {
+      "dimension": "evidence",
+      "claim": "The reported unsafe-action reduction is 37%.",
+      "evidenceRefs": ["results:0"],
+      "readerImplication": "Check the result together with the simulated-topology limitation.",
+      "adnImplication": { "relevance": "transferable", "angle": "evaluation", "insight": "The metric can inform network-agent safety evaluation.", "limit": "No production traffic is evaluated." },
+      "caveat": "The result is not yet production evidence."
+    }]
+  }
+}

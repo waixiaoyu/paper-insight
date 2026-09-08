@@ -33,9 +33,32 @@ const normalizedPaperId = (value) => {
   return match?.[1] || text.replace(/v\d+$/i, "");
 };
 
-const numericTokens = (value) => {
-  const matches = normalizeText(value).match(/(?<![A-Za-z0-9_])\d+(?:,\d{3})*(?:\.\d+)?\s*%?/g) || [];
+export const extractEvidenceNumericTokens = (value) => {
+  const matches = normalizeText(value).match(/(?<![A-Za-z0-9_])\d+(?:,\d{3})*(?:\.\d+)?\s*%?(?![A-Za-z0-9_])/g) || [];
   return [...new Set(matches.map((token) => token.replace(/[\s,]/g, "").toLowerCase()))];
+};
+
+export const normalizeEvidenceResponseShape = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { value, normalized: false, reason: "" };
+  }
+  if (value.evidenceCard && value.valueSignals) {
+    return { value, normalized: false, reason: "" };
+  }
+  const hasCardFields = EVIDENCE_FIELDS.every((field) => Object.hasOwn(value, field));
+  const hasPaperId = typeof value.paperId === "string" && value.paperId.trim();
+  const hasValueSignals = value.valueSignals
+    && typeof value.valueSignals === "object"
+    && !Array.isArray(value.valueSignals);
+  if (!hasCardFields || !hasPaperId || !hasValueSignals) {
+    return { value, normalized: false, reason: "" };
+  }
+  const { valueSignals, ...evidenceCard } = value;
+  return {
+    value: { evidenceCard, valueSignals },
+    normalized: true,
+    reason: "flat_evidence_envelope"
+  };
 };
 
 const UNRESOLVED_LEADING_ANAPHORA_PATTERN = /^(?:it|they)\s+also\b/iu;
@@ -136,12 +159,16 @@ const mergeEvidenceRepairArtifacts = ({
   repairedValue,
   repairScope
 }) => {
-  const repairedArtifacts = normalizeEvidenceArtifacts(repairedValue);
+  const repairedArtifacts = normalizeEvidenceArtifacts(
+    normalizeEvidenceResponseShape(repairedValue).value
+  );
   if (repairScope?.mode !== "field_scoped_merge") {
     return repairedArtifacts;
   }
 
-  const retainedArtifacts = normalizeEvidenceArtifacts(baseArtifacts);
+  const retainedArtifacts = normalizeEvidenceArtifacts(
+    normalizeEvidenceResponseShape(baseArtifacts).value
+  );
   const merged = structuredClone(retainedArtifacts);
   (Array.isArray(repairScope.evidenceFields) ? repairScope.evidenceFields : [])
     .forEach((field) => {
@@ -195,18 +222,18 @@ const numericSummarySentences = (value) => {
 };
 
 const removeUnsupportedNumericSentences = (fieldValue) => {
-  const availableNumbers = new Set(numericTokens(
+  const availableNumbers = new Set(extractEvidenceNumericTokens(
     fieldValue.sources.map((sourceValue) => sourceValue.excerpt).join(" ")
   ));
   const unsupportedNumbers = new Set(
-    numericTokens(fieldValue.summary).filter((token) => !availableNumbers.has(token))
+    extractEvidenceNumericTokens(fieldValue.summary).filter((token) => !availableNumbers.has(token))
   );
   if (!unsupportedNumbers.size) {
     return fieldValue.summary;
   }
 
   return numericSummarySentences(fieldValue.summary)
-    .filter((sentence) => !numericTokens(sentence).some((token) => unsupportedNumbers.has(token)))
+    .filter((sentence) => !extractEvidenceNumericTokens(sentence).some((token) => unsupportedNumbers.has(token)))
     .join(" ")
     .trim();
 };
@@ -263,7 +290,7 @@ export const validateEvidenceArtifacts = (value, {
   let artifacts;
 
   try {
-    artifacts = normalizeEvidenceArtifacts(value);
+    artifacts = normalizeEvidenceArtifacts(normalizeEvidenceResponseShape(value).value);
   } catch (error) {
     return {
       valid: false,
@@ -342,8 +369,8 @@ export const validateEvidenceArtifacts = (value, {
       ));
     }
 
-    const availableNumbers = new Set(numericTokens(excerpts.join(" ")));
-    numericTokens(fieldValue.summary).forEach((token) => {
+    const availableNumbers = new Set(extractEvidenceNumericTokens(excerpts.join(" ")));
+    extractEvidenceNumericTokens(fieldValue.summary).forEach((token) => {
       if (!availableNumbers.has(token)) {
         issues.push(issue(
           "numeric_claim_not_in_excerpt",
@@ -378,8 +405,8 @@ export const validateEvidenceArtifacts = (value, {
       boundExcerpts.push(evidenceRefs.get(reference));
     });
 
-    const availableNumbers = new Set(numericTokens(boundExcerpts.join(" ")));
-    numericTokens(signal.claim).forEach((token) => {
+    const availableNumbers = new Set(extractEvidenceNumericTokens(boundExcerpts.join(" ")));
+    extractEvidenceNumericTokens(signal.claim).forEach((token) => {
       if (!availableNumbers.has(token)) {
         issues.push(issue(
           "numeric_claim_not_in_excerpt",
