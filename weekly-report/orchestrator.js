@@ -1465,15 +1465,61 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
   const selection = selectCalibratedPapers(calibrated.calibratedItems, {
     threshold,
     minSelectedCount: calibrated.options?.minSelectedCount,
-    maxSelectedCount: calibrated.options?.maxSelectedCount
+    maxSelectedCount: calibrated.options?.maxSelectedCount,
+    adminSelectionOverrides: calibrated.adminSelectionOverrides
   });
   const counts = {
     ...calibrated.counts,
     selected: selection.selected.length,
-    excluded: calibrated.counts.excluded
-      + selection.notSelected.length
-      + selection.ineligible.length
+    excluded: calibrated.counts.excluded + selection.ineligible.length
   };
+  const neededForMinimum = Math.max(0, selection.requestedMinSelectedCount - selection.selected.length);
+  const manualReviewBacklog = [
+    ...(Array.isArray(calibrated.manualReviewBacklog) ? calibrated.manualReviewBacklog : []),
+    ...selection.notSelected
+      .filter((item) => item.selection?.selectionReason === "below_threshold")
+      .slice(0, neededForMinimum)
+      .map((item, index) => {
+        const paperId = paperIdForStage(item);
+        const scores = item.reviewResult?.scores || {};
+        return {
+          itemId: `select:${paperId}:quality_below_threshold:${index}`,
+          paperId,
+          relatedPaperIds: [paperId],
+          kind: "quality_below_threshold",
+          scope: "paper",
+          sourceStage: "select",
+          summary: `横向校准后为 ${item.selection.finalScore} 分，低于 ${threshold} 分默认入选线。`,
+          details: [{
+            title: "默认入选结果",
+            requirement: `默认入选线为 ${threshold} 分。`,
+            actual: `该论文实际为 ${item.selection.finalScore} 分。`
+          }],
+          issues: [],
+          scoreSnapshot: {
+            finalScore: item.selection.finalScore,
+            threshold,
+            dimensions: {
+              scenarioProblemValue: Number(scores.scenarioProblemValue),
+              methodNovelty: Number(scores.methodNovelty),
+              practicalValue: Number(scores.practicalValue),
+              evidence: Number(scores.evidence)
+            },
+            calibrationStatus: item.calibrationResult?.status || "",
+            comparisonReason: item.calibrationResult?.calibrationReason || "",
+            defaultSelection: "below_threshold"
+          },
+          gateStatus: {
+            fullText: "passed",
+            identity: "passed",
+            evidence: "passed",
+            crossPaper: "passed"
+          },
+          repairAttempts: 0,
+          allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+        };
+      })
+  ];
   const selectionWarnings = [];
 
   if (selection.selected.length > 0 && selection.selected.length < selection.requestedMinSelectedCount) {
@@ -1492,7 +1538,11 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
     ...selection,
     selectedPaperIds: selection.selected.map(paperIdForStage),
     notSelectedPaperIds: selection.notSelected.map(paperIdForStage),
-    ineligiblePaperIds: selection.ineligible.map(paperIdForStage)
+    ineligiblePaperIds: selection.ineligible.map(paperIdForStage),
+    adminOverrideCount: selection.selected.filter((item) => (
+      item.selection?.selectionSource === "admin_override"
+    )).length,
+    manualReviewBacklog
   };
 
   await context.writeTrace("selection-artifacts", selectionResult);
@@ -1508,10 +1558,10 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
     thresholdQualifiedCount: selection.thresholdSelectedCount,
     thresholdSelectedCount: selection.thresholdSelectedCount,
     fallbackCount: selection.fallbackCount,
-    decision: selection.selected.length ? "continue" : "reject"
+    decision: manualReviewBacklog.length ? "manual_review" : (selection.selected.length ? "continue" : "reject")
   });
 
-  if (!selection.selected.length) {
+  if (!selection.selected.length && !manualReviewBacklog.length) {
     const error = new WeeklyReportOrchestratorError(
       `候选池处理结束后，没有论文达到 ${threshold} 分入选线，本次周报无法生成。`,
       {
@@ -1535,11 +1585,12 @@ export const selectWeeklyReportPapers = async (calibrated, context = {}) => {
 
   return {
     ...calibrated,
-    nextStage: "editorial_plan",
+    nextStage: manualReviewBacklog.length ? "manual_review" : "editorial_plan",
     selectedItems: selection.selected,
     selectionResult,
     counts,
-    warnings
+    warnings,
+    manualReviewBacklog
   };
 };
 

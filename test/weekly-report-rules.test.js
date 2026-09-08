@@ -324,6 +324,65 @@ test("new Selection publishes two threshold-qualified papers without filling the
   assert.equal(result.notSelected[0].selection.selectionReason, "below_threshold");
 });
 
+test("new Selection includes an audited eligible below-threshold paper without changing its score", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("paper-74", 74, "must_read"),
+    calibratedItem("paper-72", 72, "worth_reading"),
+    calibratedItem("paper-67", 67, "worth_reading"),
+    calibratedItem("paper-65", 65, "skim")
+  ], {
+    threshold: 70,
+    minSelectedCount: 3,
+    maxSelectedCount: 10,
+    adminSelectionOverrides: [{
+      paperId: "paper-67",
+      decisionId: "e9146645-b124-48bc-ae44-6a1be22fb0fc",
+      decidedAt: "2026-09-08T00:00:00.000Z",
+      reason: "论文证据门已通过，并直接补足本期网络自治主题。"
+    }]
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["paper-74", "paper-72", "paper-67"]);
+  assert.deepEqual(result.selected.map((item) => item.selection.selectionReason), [
+    "threshold",
+    "threshold",
+    "admin_override"
+  ]);
+  assert.equal(result.selected[2].selection.selectionSource, "admin_override");
+  assert.equal(result.selected[2].selection.finalScore, 67);
+  assert.equal(result.selected[2].selection.thresholdMet, false);
+  assert.equal(result.selected[2].selection.adminReason, "论文证据门已通过，并直接补足本期网络自治主题。");
+  assert.deepEqual(result.notSelected.map((item) => item.paper.id), ["paper-65"]);
+  assert.deepEqual(result.rejectedOverridePaperIds, []);
+});
+
+test("manual Selection overrides cannot bypass an explicit failed credibility gate", () => {
+  const gateBlocked = calibratedItem("paper-gate-blocked", 68, "worth_reading");
+  gateBlocked.gateStatus = {
+    fullText: "passed",
+    identity: "passed",
+    evidence: "failed",
+    crossPaper: "passed"
+  };
+  const result = selectCalibratedPapers([
+    calibratedItem("paper-74", 74, "must_read"),
+    gateBlocked
+  ], {
+    threshold: 70,
+    minSelectedCount: 2,
+    maxSelectedCount: 10,
+    adminSelectionOverrides: [{
+      paperId: "paper-gate-blocked",
+      decisionId: "a32ee5ae-1ce1-4cde-8c78-e3aeceb675c0",
+      decidedAt: "2026-09-08T00:00:00.000Z",
+      reason: "不能绕过明确失败的证据可信度门。"
+    }]
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["paper-74"]);
+  assert.deepEqual(result.rejectedOverridePaperIds, ["paper-gate-blocked"]);
+});
+
 test("new Selection leaves every below-threshold paper out of the selected cohort", () => {
   const result = selectCalibratedPapers([
     calibratedItem("threshold", 82, "must_read"),

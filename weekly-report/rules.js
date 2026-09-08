@@ -221,7 +221,8 @@ const finalSelectionTier = (item, selectionReason) => {
 export const selectCalibratedPapers = (items, {
   threshold = 70,
   minSelectedCount = 3,
-  maxSelectedCount = 10
+  maxSelectedCount = 10,
+  adminSelectionOverrides = []
 } = {}) => {
   const candidates = Array.isArray(items) ? items : [];
   const requestedThreshold = Number(threshold);
@@ -246,12 +247,20 @@ export const selectCalibratedPapers = (items, {
     const rawScore = Number(item?.reviewResult?.rawScore);
     const paperIdsMatch = normalizePaperKey({ id: item?.reviewResult?.paperId })
       === normalizePaperKey({ id: item?.calibrationResult?.paperId });
+    const explicitGateStatus = item?.gateStatus && typeof item.gateStatus === "object"
+      ? item.gateStatus
+      : null;
+    const credibilityGatesPass = !explicitGateStatus || !Object.keys(explicitGateStatus).length
+      || ["fullText", "identity", "evidence", "crossPaper"].every((gate) => (
+        explicitGateStatus[gate] === "passed"
+      ));
     const converged = ["consistent", "repaired"].includes(calibrationStatus)
       && item?.reviewResult?.evidenceValidation?.status === "pass"
       && Number.isFinite(rawScore)
       && rawScore >= 0
       && rawScore <= 100
       && paperIdsMatch
+      && credibilityGatesPass
       && key
       && !seen.has(key);
 
@@ -287,10 +296,26 @@ export const selectCalibratedPapers = (items, {
   const thresholdCandidates = eligible.filter((item) => (
     Number(item.reviewResult.rawScore) >= normalizedThreshold
   ));
+  const overridesByPaperId = new Map();
+  const rejectedOverridePaperIds = [];
+  (Array.isArray(adminSelectionOverrides) ? adminSelectionOverrides : []).forEach((entry) => {
+    const paperId = normalizePaperKey({ id: entry?.paperId });
+    const reason = String(entry?.reason || "").trim();
+    if (!paperId || !String(entry?.decisionId || "").trim() || reason.length < 8 || overridesByPaperId.has(paperId)) {
+      if (paperId) rejectedOverridePaperIds.push(paperId);
+      return;
+    }
+    overridesByPaperId.set(paperId, {
+      paperId,
+      decisionId: String(entry.decisionId).trim(),
+      decidedAt: String(entry.decidedAt || "").trim(),
+      reason
+    });
+  });
   const selectedKeys = new Set();
   const selected = [];
 
-  const addSelected = (item, selectionReason) => {
+  const addSelected = (item, selectionReason, override = null) => {
     const key = calibratedPaperKey(item);
     selectedKeys.add(key);
     selected.push({
@@ -298,16 +323,37 @@ export const selectCalibratedPapers = (items, {
       selection: {
         selected: true,
         selectionReason,
+        selectionSource: selectionReason === "admin_override" ? "admin_override" : "threshold",
         finalScore: Number(item.reviewResult.rawScore),
         readingTier: finalSelectionTier(item, selectionReason),
         originalCalibrationReadingTier: String(item.calibrationResult.readingTier || ""),
         thresholdMet: Number(item.reviewResult.rawScore) >= normalizedThreshold,
-        rank: selected.length + 1
+        rank: selected.length + 1,
+        ...(override ? {
+          adminReason: override.reason,
+          adminDecisionId: override.decisionId,
+          adminDecidedAt: override.decidedAt
+        } : {})
       }
     });
   };
 
   thresholdCandidates.slice(0, maximum).forEach((item) => addSelected(item, "threshold"));
+  eligible
+    .filter((item) => Number(item.reviewResult.rawScore) < normalizedThreshold)
+    .filter((item) => !selectedKeys.has(calibratedPaperKey(item)))
+    .filter((item) => overridesByPaperId.has(calibratedPaperKey(item)))
+    .slice(0, Math.max(0, maximum - selected.length))
+    .forEach((item) => addSelected(
+      item,
+      "admin_override",
+      overridesByPaperId.get(calibratedPaperKey(item))
+    ));
+  overridesByPaperId.forEach((_override, paperId) => {
+    if (!selectedKeys.has(paperId)) {
+      rejectedOverridePaperIds.push(paperId);
+    }
+  });
   const notSelected = eligible
     .filter((item) => !selectedKeys.has(calibratedPaperKey(item)))
     .map((item) => ({
@@ -340,6 +386,7 @@ export const selectCalibratedPapers = (items, {
     requestedMinSelectedCount: normalizedMinimum,
     minSelectedCount: minimum,
     maxSelectedCount: maximum,
-    availableCount: eligible.length
+    availableCount: eligible.length,
+    rejectedOverridePaperIds: [...new Set(rejectedOverridePaperIds)]
   };
 };

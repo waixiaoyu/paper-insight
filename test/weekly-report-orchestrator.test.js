@@ -1374,7 +1374,7 @@ test("Calibration replaces the lowest paper when a full cohort is below target a
   assert.equal(execution.events.some((event) => event.type === "calibration_pool_rebalanced"), true);
 });
 
-test("select stage publishes only threshold-qualified papers and persists Trace", async () => {
+test("select stage keeps only threshold-qualified papers and persists the quality review queue", async () => {
   const execution = fakeExecutionContext();
   const calibratedItems = [
     calibratedItemFor("2607.19001", 82, "must_read", { oldScore: 1 }),
@@ -1405,18 +1405,58 @@ test("select stage publishes only threshold-qualified papers and persists Trace"
   };
   const selected = await selectWeeklyReportPapers(calibrated, execution.context);
 
-  assert.equal(selected.nextStage, "editorial_plan");
+  assert.equal(selected.nextStage, "manual_review");
   assert.deepEqual(selected.selectedItems.map((item) => item.paper.id), ["2607.19001"]);
   assert.deepEqual(selected.selectedItems.map((item) => item.selection.readingTier), ["must_read"]);
   assert.equal(selected.selectionResult.thresholdSelectedCount, 1);
   assert.equal(selected.selectionResult.fallbackCount, 0);
   assert.equal(selected.counts.selected, 1);
+  assert.equal(selected.manualReviewBacklog.length, 2);
   assert.equal(execution.updates.at(-1).stage, "select");
   assert.equal(execution.sections.get("selection-artifacts").selected.length, 1);
   assert.equal(execution.events.some((event) => (
     event.type === "stage_completed"
     && event.stage === "select"
   )), true);
+});
+
+test("select stage creates quality review items before publishing below the requested minimum", async () => {
+  const execution = fakeExecutionContext();
+  const calibrated = {
+    nextStage: "select",
+    reviewScoreThreshold: 70,
+    options: { minSelectedCount: 3, maxSelectedCount: 10 },
+    calibratedItems: [
+      calibratedItemFor("2607.19011", 74, "must_read"),
+      calibratedItemFor("2607.19012", 72, "worth_reading"),
+      calibratedItemFor("2607.19013", 67, "worth_reading")
+    ],
+    counts: {
+      primary: 3,
+      reserve: 0,
+      fullTextEligible: 3,
+      reviewed: 3,
+      calibrated: 3,
+      selected: 0,
+      excluded: 0
+    },
+    warnings: []
+  };
+
+  const selected = await selectWeeklyReportPapers(calibrated, execution.context);
+
+  assert.equal(selected.nextStage, "manual_review");
+  assert.deepEqual(selected.selectedItems.map((item) => item.paper.id), ["2607.19011", "2607.19012"]);
+  assert.equal(selected.manualReviewBacklog.length, 1);
+  assert.equal(selected.manualReviewBacklog[0].kind, "quality_below_threshold");
+  assert.equal(selected.manualReviewBacklog[0].paperId, "2607.19013");
+  assert.equal(selected.manualReviewBacklog[0].scoreSnapshot.finalScore, 67);
+  assert.deepEqual(selected.manualReviewBacklog[0].allowedActions, [
+    "include_below_threshold",
+    "keep_excluded",
+    "exit_task"
+  ]);
+  assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
 test("prepare normalizes and carries reviewScoreThreshold to deterministic Selection", async () => {
