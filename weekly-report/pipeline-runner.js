@@ -13,6 +13,11 @@ import {
   writeWeeklyReportHeadTail,
   writeWeeklyReportPaperSections
 } from "./orchestrator.js";
+import {
+  manualReviewItem,
+  normalizeManualReviewRequest,
+  withoutManualReviewItem
+} from "./manual-review.js";
 
 const DEFAULT_STEPS = Object.freeze({
   prepare: prepareWeeklyReportJob,
@@ -67,6 +72,94 @@ const assertCallableSteps = (steps) => {
   }
 };
 
+const manualReviewQueueForCurrent = (current = {}) => {
+  if (current?.manualReview && typeof current.manualReview === "object") {
+    return current.manualReview;
+  }
+  const items = Array.isArray(current?.manualReviewBacklog)
+    ? current.manualReviewBacklog
+    : [];
+  if (!items.length) return {};
+  const stage = String(items[0]?.sourceStage || "manual_review");
+  return normalizeManualReviewRequest({
+    stage,
+    resumeStage: stage,
+    activeItemId: items[0]?.itemId,
+    items
+  });
+};
+
+const selectedManualReviewItem = (review, decision = {}) => (
+  Array.isArray(review?.items)
+    ? manualReviewItem(review, decision?.itemId || review.activeItemId) || {}
+    : review || {}
+);
+
+const consumeManualReviewItem = (current = {}, review = {}, selectedReview = {}) => {
+  const itemId = String(selectedReview?.itemId || "").trim();
+  if (!itemId) return { ...current, manualReview: null };
+  if (Array.isArray(current?.manualReviewBacklog)) {
+    return {
+      ...current,
+      manualReview: null,
+      manualReviewBacklog: current.manualReviewBacklog.filter((item) => (
+        String(item?.itemId || "").trim() !== itemId
+      ))
+    };
+  }
+  if (Array.isArray(review?.items)) {
+    return {
+      ...current,
+      manualReview: withoutManualReviewItem(review, itemId)
+    };
+  }
+  return { ...current, manualReview: null };
+};
+
+const appendSelectionOverride = (overrides, override) => {
+  const paperId = String(override?.paperId || "").trim();
+  const existing = Array.isArray(overrides) ? overrides : [];
+  if (!paperId) return existing;
+  return [
+    ...existing.filter((item) => String(item?.paperId || "").trim() !== paperId),
+    override
+  ];
+};
+
+const paperIdForRetry = (item = {}) => String(
+  item?.paperId
+  || item?.contextPacket?.paperId
+  || item?.paper?.id
+  || item?.reviewResult?.paperId
+  || ""
+).trim().replace(/v\d+$/i, "");
+
+const retryFailureForPaper = (current = {}, sourceStage, paperId) => {
+  const normalizedPaperId = String(paperId || "").trim().replace(/v\d+$/i, "");
+  const source = sourceStage === "extract_evidence"
+    ? current?.evidenceResult
+    : current?.reviewResult;
+  const failures = [
+    ...(Array.isArray(source?.processingFailed) ? source.processingFailed : []),
+    ...(Array.isArray(source?.evidenceDisputes) ? source.evidenceDisputes : []),
+    ...(Array.isArray(source?.reviewDisputes) ? source.reviewDisputes : [])
+  ];
+  return failures.find((item) => paperIdForRetry(item) === normalizedPaperId) || null;
+};
+
+const mergePaperItems = (existing, recovered) => {
+  const merged = new Map();
+  (Array.isArray(existing) ? existing : []).forEach((item) => {
+    const paperId = paperIdForRetry(item);
+    if (paperId) merged.set(paperId, item);
+  });
+  (Array.isArray(recovered) ? recovered : []).forEach((item) => {
+    const paperId = paperIdForRetry(item);
+    if (paperId) merged.set(paperId, item);
+  });
+  return [...merged.values()];
+};
+
 export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
   buildContext,
   callModel,
@@ -101,6 +194,16 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
       } else if (nextStage === "review") {
         current = await steps.review(current, context, modelOptions);
       } else if (nextStage === "calibrate") {
+        if (current?.manualRetry?.mergeReviewItems) {
+          current = {
+            ...current,
+            reviewItems: mergePaperItems(
+              current.manualRetry.mergeReviewItems,
+              current.reviewItems
+            ),
+            manualRetry: null
+          };
+        }
         current = await steps.calibrate(current, context, modelOptions);
       } else if (nextStage === "select") {
         current = await steps.select(current, context);
@@ -131,11 +234,23 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
             }
           );
         }
-        const review = current?.manualReview && typeof current.manualReview === "object"
-          ? current.manualReview
-          : {};
+        const review = manualReviewQueueForCurrent(current);
         const decision = await context.requestManualReview(review);
         const action = String(decision?.action || "");
+        const selectedReview = selectedManualReviewItem(review, decision);
+        const allowedActions = new Set(Array.isArray(selectedReview?.allowedActions)
+          ? selectedReview.allowedActions
+          : []);
+        if (action !== "exit_task" && !allowedActions.has(action)) {
+          throw new WeeklyReportPipelineError(
+            "Weekly report Pipeline received an invalid administrator decision.",
+            {
+              code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+              stage: String(selectedReview.sourceStage || review.stage || "manual_review"),
+              traceId: context.traceId
+            }
+          );
+        }
         if (action === "exit_task") {
           return {
             state: "reject",
@@ -146,9 +261,129 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
             warnings: current?.warnings || []
           };
         }
+        if (action === "include_below_threshold") {
+          const paperId = String(selectedReview.paperId || "").trim();
+          const reason = String(decision?.reason || "").trim();
+          const decisionId = String(decision?.decisionId || "").trim();
+          if (selectedReview.kind !== "quality_below_threshold" || !paperId
+            || !decisionId || reason.length < 8) {
+            throw new WeeklyReportPipelineError(
+              "Administrator inclusion requires a reviewable below-threshold paper and a concrete reason.",
+              {
+                code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                stage: "select",
+                traceId: context.traceId
+              }
+            );
+          }
+          current = {
+            ...consumeManualReviewItem(current, review, selectedReview),
+            nextStage: "select",
+            counts: current?.counts ? { ...current.counts, selected: 0 } : current?.counts,
+            adminSelectionOverrides: appendSelectionOverride(current?.adminSelectionOverrides, {
+              paperId,
+              reason,
+              decisionId,
+              decidedAt: String(decision?.decidedAt || new Date().toISOString())
+            })
+          };
+          continue;
+        }
+        if (action === "keep_excluded") {
+          const paperId = String(selectedReview.paperId || "").trim();
+          if (selectedReview.kind !== "quality_below_threshold" || !paperId) {
+            throw new WeeklyReportPipelineError(
+              "Administrator exclusion requires a reviewable paper.",
+              {
+                code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                stage: "select",
+                traceId: context.traceId
+              }
+            );
+          }
+          current = {
+            ...consumeManualReviewItem(current, review, selectedReview),
+            nextStage: "calibrate",
+            counts: current?.counts ? { ...current.counts, selected: 0 } : current?.counts,
+            manualExcludedPaperIds: [...new Set([
+              ...(Array.isArray(current?.manualExcludedPaperIds) ? current.manualExcludedPaperIds : []),
+              paperId
+            ])]
+          };
+          continue;
+        }
+        if (action === "retry_paper") {
+          const paperId = String(selectedReview.paperId || "").trim();
+          const sourceStage = String(selectedReview.sourceStage || "").trim();
+          const failedItem = retryFailureForPaper(current, sourceStage, paperId);
+          if (!paperId || !failedItem || !["extract_evidence", "review"].includes(sourceStage)) {
+            throw new WeeklyReportPipelineError(
+              "Paper retry requires the retained artifact for the selected failed paper.",
+              {
+                code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                stage: sourceStage || "manual_review",
+                traceId: context.traceId
+              }
+            );
+          }
+          if (sourceStage === "extract_evidence") {
+            current = {
+              ...consumeManualReviewItem(current, review, selectedReview),
+              nextStage: "extract_evidence",
+              contextResult: {
+                ...(current?.contextResult || {}),
+                eligible: [failedItem],
+                targetEligibleCount: 1
+              },
+              candidatePool: {
+                ...(current?.candidatePool || {}),
+                reserveCandidates: []
+              },
+              manualRetry: {
+                sourceStage,
+                paperId,
+                mergeReviewItems: current?.reviewItems || []
+              }
+            };
+            continue;
+          }
+          current = {
+            ...consumeManualReviewItem(current, review, selectedReview),
+            nextStage: "review",
+            evidenceItems: [failedItem],
+            manualRetry: {
+              sourceStage,
+              paperId,
+              mergeReviewItems: current?.reviewItems || []
+            }
+          };
+          continue;
+        }
+        if (action === "retry_stage") {
+          const sourceStage = String(selectedReview.sourceStage || "").trim();
+          if (sourceStage !== "calibrate" || !Array.isArray(current?.reviewItems)) {
+            throw new WeeklyReportPipelineError(
+              "Stage retry requires retained Review artifacts for calibration.",
+              {
+                code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                stage: sourceStage || "manual_review",
+                traceId: context.traceId
+              }
+            );
+          }
+          current = {
+            ...consumeManualReviewItem(current, review, selectedReview),
+            nextStage: "calibrate"
+          };
+          continue;
+        }
+        if (action === "retry_job") {
+          current = await steps.prepare(input, context, { buildContext });
+          continue;
+        }
         if (action === "continue_repair") {
-          if (String(review.stage || "") === "write_paper_sections") {
-            const paperId = String(review.paperId || "").trim();
+          if (String(selectedReview.sourceStage || review.stage || "") === "write_paper_sections") {
+            const paperId = String(selectedReview.paperId || "").trim();
             if (!paperId) {
               throw new WeeklyReportPipelineError(
                 "Paper Section administrator repair requires one concrete paperId.",
@@ -159,7 +394,7 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
                 }
               );
             }
-            const repairIssues = (Array.isArray(review.issues) ? review.issues : []).flatMap((itemIssue) => (
+            const repairIssues = (Array.isArray(selectedReview.issues) ? selectedReview.issues : []).flatMap((itemIssue) => (
               Array.isArray(itemIssue?.details) && itemIssue.details.length
                 ? itemIssue.details
                 : [itemIssue]
@@ -167,12 +402,11 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
             const previousAttempts = Math.max(
               1,
               Math.trunc(Number(current?.paperSectionRepairAttempts?.[paperId]) || 0),
-              Math.trunc(Number(review.repairAttempts) || 0)
+              Math.trunc(Number(selectedReview.repairAttempts) || 0)
             );
             current = {
-              ...current,
+              ...consumeManualReviewItem(current, review, selectedReview),
               nextStage: "write_paper_sections",
-              manualReview: null,
               paperSectionRetry: {
                 paperId,
                 issues: repairIssues,
@@ -186,9 +420,8 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
             continue;
           }
           current = {
-            ...current,
+            ...consumeManualReviewItem(current, review, selectedReview),
             nextStage: "repair_once",
-            manualReview: null,
             qaReport: {
               ...current?.qaReport,
               status: "repair_required",
@@ -198,21 +431,20 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           continue;
         }
         if (action === "skip_paper") {
-          const paperId = String(decision?.paperId || review.paperId || "").trim();
+          const paperId = String(decision?.paperId || selectedReview.paperId || "").trim();
           if (!paperId) {
             throw new WeeklyReportPipelineError(
               "Administrator skip-paper decision requires one concrete paperId.",
               {
                 code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
-                stage: String(review.stage || "manual_review"),
+                stage: String(selectedReview.sourceStage || review.stage || "manual_review"),
                 traceId: context.traceId
               }
             );
           }
           current = {
-            ...current,
+            ...consumeManualReviewItem(current, review, selectedReview),
             nextStage: "calibrate",
-            manualReview: null,
             counts: current?.counts ? { ...current.counts, selected: 0 } : current?.counts,
             manualExcludedPaperIds: [...new Set([
               ...(Array.isArray(current?.manualExcludedPaperIds) ? current.manualExcludedPaperIds : []),
@@ -223,7 +455,7 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
         }
         if (action === "confirm_evidence") {
           const reviewableIssueKeys = new Set(
-            (Array.isArray(review.approvableIssueKeys) ? review.approvableIssueKeys : [])
+            (Array.isArray(selectedReview.approvableIssueKeys) ? selectedReview.approvableIssueKeys : [])
               .map((issueKey) => String(issueKey || "").trim())
               .filter(Boolean)
           );
@@ -248,7 +480,7 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
               "Evidence confirmation requires at least one reviewable issue.",
               {
                 code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
-                stage: String(review.stage || "manual_review"),
+                stage: String(selectedReview.sourceStage || review.stage || "manual_review"),
                 traceId: context.traceId
               }
             );
@@ -264,12 +496,11 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           );
           approvals.forEach((entry) => approvalByKey.set(entry.issueKey, entry));
           current = {
-            ...current,
+            ...consumeManualReviewItem(current, review, selectedReview),
             nextStage: ["deterministic_qa", "paper_semantic_qa", "report_semantic_qa"]
-              .includes(String(review.stage || ""))
-              ? String(review.stage)
+              .includes(String(selectedReview.sourceStage || review.stage || ""))
+              ? String(selectedReview.sourceStage || review.stage)
               : "deterministic_qa",
-            manualReview: null,
             manualEvidenceApprovals: [...approvalByKey.values()]
           };
           continue;
@@ -286,7 +517,7 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           "Weekly report Pipeline received an invalid administrator decision.",
           {
             code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
-            stage: String(review.stage || "manual_review"),
+            stage: String(selectedReview.sourceStage || review.stage || "manual_review"),
             traceId: context.traceId
           }
         );

@@ -230,6 +230,269 @@ test("Pipeline Runner waits for an administrator after repair exhaustion and gra
   assert.equal(result.markdown, "# Inspectable draft");
 });
 
+test("Pipeline Runner forwards every pending manual-review backlog item as one queue", async () => {
+  let requestedReview = null;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async (review) => {
+      requestedReview = review;
+      return { action: "exit_task", itemId: "evidence-2609.03001" };
+    }
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      manualReviewBacklog: [{
+        itemId: "evidence-2609.03001",
+        paperId: "2609.03001",
+        kind: "processing_failure",
+        scope: "paper",
+        sourceStage: "extract_evidence",
+        summary: "Evidence 调用未完成。",
+        allowedActions: ["retry_paper", "exit_task"]
+      }, {
+        itemId: "selection-2609.03002",
+        paperId: "2609.03002",
+        kind: "quality_below_threshold",
+        scope: "paper",
+        sourceStage: "select",
+        summary: "实际 67 分，低于 70 分。",
+        scoreSnapshot: { finalScore: 67, threshold: 70 },
+        gateStatus: { fullText: "passed", identity: "passed", evidence: "passed", crossPaper: "passed" },
+        allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+      }]
+    })
+  };
+
+  const result = await runWeeklyReportAgentLoop(
+    { reportKey: "2026-W37" },
+    context,
+    { buildContext: async () => ({}), callModel: async () => ({}), steps }
+  );
+
+  assert.equal(result.state, "reject");
+  assert.equal(requestedReview.items.length, 2);
+  assert.equal(requestedReview.activeItemId, "evidence-2609.03001");
+});
+
+test("Pipeline Runner returns an audited manual inclusion to Selection", async () => {
+  let selectionInput = null;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "include_below_threshold",
+      itemId: "selection-2609.03002",
+      reason: "论文证据门已通过，并直接补足本期主题。",
+      decisionId: "154ff336-5cc4-4c6e-ac0d-a7802ca711ec",
+      decidedAt: "2026-09-08T01:00:00.000Z"
+    })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      manualReviewBacklog: [{
+        itemId: "selection-2609.03002",
+        paperId: "2609.03002",
+        kind: "quality_below_threshold",
+        scope: "paper",
+        sourceStage: "select",
+        summary: "实际 67 分，低于 70 分。",
+        scoreSnapshot: { finalScore: 67, threshold: 70 },
+        gateStatus: { fullText: "passed", identity: "passed", evidence: "passed", crossPaper: "passed" },
+        allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+      }]
+    }),
+    select: async (value) => {
+      selectionInput = value;
+      return {
+        ...value,
+        nextStage: "publish",
+        markdown: "# Included",
+        qaReport: { status: "passed" }
+      };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop(
+    { reportKey: "2026-W37" },
+    context,
+    { buildContext: async () => ({}), callModel: async () => ({}), steps }
+  );
+
+  assert.equal(result.state, "publish");
+  assert.deepEqual(selectionInput.adminSelectionOverrides, [{
+    paperId: "2609.03002",
+    reason: "论文证据门已通过，并直接补足本期主题。",
+    decisionId: "154ff336-5cc4-4c6e-ac0d-a7802ca711ec",
+    decidedAt: "2026-09-08T01:00:00.000Z"
+  }]);
+  assert.deepEqual(selectionInput.manualReviewBacklog, []);
+});
+
+test("Pipeline Runner retries only the failed paper before continuing calibration", async () => {
+  let evidenceInput = null;
+  let reviewInput = null;
+  let calibrationInput = null;
+  const failedPaper = {
+    contextPacket: { paperId: "2609.03003" },
+    paper: { id: "2609.03003" }
+  };
+  const recoveredEvidence = {
+    ...failedPaper,
+    evidenceCard: { paperId: "2609.03003" }
+  };
+  const recoveredReview = {
+    ...recoveredEvidence,
+    reviewResult: { paperId: "2609.03003", rawScore: 76 }
+  };
+  const alreadyReviewed = {
+    contextPacket: { paperId: "2609.03004" },
+    paper: { id: "2609.03004" },
+    evidenceCard: { paperId: "2609.03004" },
+    reviewResult: { paperId: "2609.03004", rawScore: 82 }
+  };
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "retry_paper",
+      itemId: "evidence-2609.03003"
+    })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      evidenceItems: [{
+        contextPacket: { paperId: "2609.03004" },
+        paper: { id: "2609.03004" },
+        evidenceCard: { paperId: "2609.03004" }
+      }],
+      reviewItems: [alreadyReviewed],
+      evidenceResult: { processingFailed: [failedPaper] },
+      manualReviewBacklog: [{
+        itemId: "evidence-2609.03003",
+        paperId: "2609.03003",
+        kind: "processing_failure",
+        scope: "paper",
+        sourceStage: "extract_evidence",
+        summary: "Evidence 调用未完成。",
+        allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+      }]
+    }),
+    evidence: async (value) => {
+      evidenceInput = value;
+      return { ...value, nextStage: "review", evidenceItems: [recoveredEvidence] };
+    },
+    review: async (value) => {
+      reviewInput = value;
+      return { ...value, nextStage: "calibrate", reviewItems: [recoveredReview] };
+    },
+    calibrate: async (value) => {
+      calibrationInput = value;
+      return { ...value, nextStage: "publish", markdown: "# Recovered", qaReport: { status: "passed" } };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop(
+    { reportKey: "2026-W37" },
+    context,
+    { buildContext: async () => ({}), callModel: async () => ({}), steps }
+  );
+
+  assert.deepEqual(evidenceInput.contextResult.eligible, [failedPaper]);
+  assert.deepEqual(reviewInput.evidenceItems, [recoveredEvidence]);
+  assert.deepEqual(calibrationInput.reviewItems, [alreadyReviewed, recoveredReview]);
+  assert.equal(result.state, "publish");
+});
+
+test("Pipeline Runner retries calibration from preserved Review artifacts", async () => {
+  let calibrationInput = null;
+  const reviewedItem = {
+    contextPacket: { paperId: "2609.03005" },
+    paper: { id: "2609.03005" },
+    reviewResult: { paperId: "2609.03005", rawScore: 81 }
+  };
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "retry_stage",
+      itemId: "calibrate-job-failure"
+    })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      reviewItems: [reviewedItem],
+      manualReviewBacklog: [{
+        itemId: "calibrate-job-failure",
+        paperId: "",
+        kind: "processing_failure",
+        scope: "job",
+        sourceStage: "calibrate",
+        summary: "横向校准调用未完成。",
+        allowedActions: ["retry_stage", "exit_task"]
+      }]
+    }),
+    calibrate: async (value) => {
+      calibrationInput = value;
+      return { ...value, nextStage: "publish", markdown: "# Calibrated", qaReport: { status: "passed" } };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop(
+    { reportKey: "2026-W37" }, context,
+    { buildContext: async () => ({}), callModel: async () => ({}), steps }
+  );
+
+  assert.deepEqual(calibrationInput.reviewItems, [reviewedItem]);
+  assert.deepEqual(calibrationInput.manualReviewBacklog, []);
+  assert.equal(result.state, "publish");
+});
+
+test("Pipeline Runner keeps a selected low-score paper excluded without removing other items", async () => {
+  let calibrationInput = null;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "keep_excluded",
+      itemId: "selection-2609.03006"
+    })
+  };
+  const remainingItem = {
+    itemId: "evidence-2609.03007",
+    paperId: "2609.03007",
+    kind: "processing_failure",
+    scope: "paper",
+    sourceStage: "review",
+    summary: "Review 调用未完成。",
+    allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      reviewItems: [],
+      manualReviewBacklog: [{
+        itemId: "selection-2609.03006",
+        paperId: "2609.03006",
+        kind: "quality_below_threshold",
+        scope: "paper",
+        sourceStage: "select",
+        summary: "实际 67 分，低于 70 分。",
+        scoreSnapshot: { finalScore: 67, threshold: 70 },
+        gateStatus: { fullText: "passed", identity: "passed", evidence: "passed", crossPaper: "passed" },
+        allowedActions: ["include_below_threshold", "keep_excluded", "exit_task"]
+      }, remainingItem]
+    }),
+    calibrate: async (value) => {
+      calibrationInput = value;
+      return { ...value, nextStage: "publish", markdown: "# Excluded", qaReport: { status: "passed" } };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop(
+    { reportKey: "2026-W37" }, context,
+    { buildContext: async () => ({}), callModel: async () => ({}), steps }
+  );
+
+  assert.deepEqual(calibrationInput.manualExcludedPaperIds, ["2609.03006"]);
+  assert.deepEqual(calibrationInput.manualReviewBacklog, [remainingItem]);
+  assert.equal(result.state, "publish");
+});
+
 test("Pipeline Runner routes a paper writer decision back to the failed paper", async () => {
   let retryInput;
   const context = {
