@@ -1,6 +1,7 @@
 ﻿import { describeWeeklyReportManualReview } from "./manual-review-details.js";
 
 import { manualReviewDecisionStatusText, submitWeeklyReportManualReviewDecision } from "./manual-review-actions.js";
+import { weeklyReportManualReviewView } from "./manual-review-view.js";
 import {
   candidateExpansionNotice,
   expandCandidateBatches
@@ -249,8 +250,10 @@ const elements = {
   weeklyReportManualReviewDetails: $("#weeklyReportManualReviewDetails"),
   weeklyReportManualEvidenceReview: $("#weeklyReportManualEvidenceReview"),
   weeklyReportManualReviewIssues: $("#weeklyReportManualReviewIssues"),
-  weeklyReportManualReviewSkipPaper: $("#weeklyReportManualReviewSkipPaper"),
-  weeklyReportManualReviewSkipPaperSelect: $("#weeklyReportManualReviewSkipPaperSelect"),
+  weeklyReportManualReviewQueue: $("#weeklyReportManualReviewQueue"),
+  weeklyReportManualReviewGateList: $("#weeklyReportManualReviewGateList"),
+  weeklyReportManualReviewReasonField: $("#weeklyReportManualReviewReasonField"),
+  weeklyReportManualReviewReason: $("#weeklyReportManualReviewReason"),
   generateReadingList: $("#generateReadingList"),
   breadcrumb: $("#breadcrumb"),
   pageEyebrow: $("#pageEyebrow"),
@@ -373,6 +376,8 @@ const state = {
   readingListJobMonitor: null,
   readingListLatestJob: null,
   readingListTrace: null,
+  manualReviewSelectedItemId: "",
+  manualReviewRetryDecision: null,
   readingListLiveStatus: null,
   readingListSourceExpanded: false,
   progressState: null,
@@ -2822,60 +2827,84 @@ function renderWeeklyReportManualReview(job) {
 
   const newlyShown = panel.hidden;
   panel.hidden = false;
-  const description = describeWeeklyReportManualReview(review);
-  elements.weeklyReportManualReviewTitle.textContent = description.title;
-  elements.weeklyReportManualReviewSummary.textContent = description.summary;
+  const knownItemIds = new Set((Array.isArray(review.items) ? review.items : [review])
+    .map((item) => String(item?.itemId || "").trim()).filter(Boolean));
+  if (!knownItemIds.has(state.manualReviewSelectedItemId)) {
+    state.manualReviewSelectedItemId = String(review.activeItemId || "").trim();
+  }
+  const view = weeklyReportManualReviewView(review, state.manualReviewSelectedItemId);
+  state.manualReviewSelectedItemId = String(view.activeItem?.itemId || "");
+  elements.weeklyReportManualReviewTitle.textContent = view.title;
+  elements.weeklyReportManualReviewSummary.textContent = view.summary;
   elements.weeklyReportManualReviewMeta.textContent = [
-    review.paperId ? `论文：${review.paperId}` : "范围：整份周报",
-    review.kind === "execution_failure"
-      ? "可重新执行任务"
-      : `已修正 ${Number(review.repairAttempts) || 0} 次`
+    view.activeItem?.paperId ? `论文：${view.activeItem.paperId}` : "范围：整份周报",
+    `待处理 ${view.items.length} 项`,
+    Number(view.activeItem?.repairAttempts) > 0 ? `已自动修正 ${Number(view.activeItem.repairAttempts)} 次` : "等待管理员处理"
   ].join(" · ");
+  if (elements.weeklyReportManualReviewQueue) {
+    elements.weeklyReportManualReviewQueue.textContent = "";
+    view.items.forEach((queueItem) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "weekly-report-manual-review-queue-item";
+      button.dataset.manualReviewItem = queueItem.itemId;
+      button.setAttribute("aria-pressed", String(queueItem.itemId === view.activeItem.itemId));
+      const title = document.createElement("strong");
+      title.textContent = queueItem.paperId ? `论文 ${queueItem.paperId}` : "本次任务";
+      const type = document.createElement("span");
+      type.textContent = queueItem.typeLabel;
+      const summary = document.createElement("small");
+      summary.textContent = queueItem.summary;
+      button.append(title, type, summary);
+      elements.weeklyReportManualReviewQueue.append(button);
+    });
+  }
   elements.weeklyReportManualReviewDetails.textContent = "";
-  description.details.forEach(({ label, value }) => {
+  view.details.forEach(({ label, value }) => {
     const item = document.createElement("li");
     const name = document.createElement("strong");
     name.textContent = `${label}：`;
     item.append(name, document.createTextNode(value));
     elements.weeklyReportManualReviewDetails.append(item);
   });
-  elements.weeklyReportManualReviewDetails.hidden = description.details.length === 0;
-  renderWeeklyReportManualEvidenceReviews(description.evidenceReviews);
+  elements.weeklyReportManualReviewDetails.hidden = view.details.length === 0;
+  renderWeeklyReportManualEvidenceReviews(view.evidenceReviews);
   elements.weeklyReportManualReviewIssues.textContent = "";
-  const issues = Array.isArray(review.issues) ? review.issues : [];
-  const issuesAreExplained = description.details.length > 0;
-  if (review.stage !== "editorial_plan" && !issuesAreExplained) {
+  const issues = Array.isArray(view.activeItem?.issues) ? view.activeItem.issues : [];
+  const issuesAreExplained = view.details.length > 0;
+  if (view.activeItem?.sourceStage !== "editorial_plan" && !issuesAreExplained) {
     (issues.length ? issues : ["没有提供结构化问题详情，请在下方 Trace 中查看阶段记录。"]).forEach((issue) => {
       const item = document.createElement("li");
       item.textContent = weeklyReportManualReviewIssueText(issue);
       elements.weeklyReportManualReviewIssues.append(item);
     });
   }
-  elements.weeklyReportManualReviewIssues.hidden = review.stage === "editorial_plan" || issuesAreExplained;
-
-  const relatedPaperIds = [...new Set([
-    ...(Array.isArray(review.relatedPaperIds) ? review.relatedPaperIds : []),
-    review.paperId || ""
-  ].filter(Boolean))];
-  const skipSelect = elements.weeklyReportManualReviewSkipPaperSelect;
-  if (elements.weeklyReportManualReviewSkipPaper && skipSelect) {
-    elements.weeklyReportManualReviewSkipPaper.hidden = relatedPaperIds.length === 0;
-    skipSelect.textContent = "";
-    relatedPaperIds.forEach((paperId) => {
-      const option = document.createElement("option");
-      option.value = paperId;
-      option.textContent = paperId;
-      skipSelect.append(option);
+  elements.weeklyReportManualReviewIssues.hidden = view.activeItem?.sourceStage === "editorial_plan" || issuesAreExplained;
+  if (elements.weeklyReportManualReviewGateList) {
+    elements.weeklyReportManualReviewGateList.textContent = "";
+    [...view.scoreRows, ...view.gateRows.map((row) => ({ label: row.label, value: row.status }))].forEach(({ label, value }) => {
+      const item = document.createElement("li");
+      const name = document.createElement("strong");
+      name.textContent = `${label}：`;
+      item.append(name, document.createTextNode(value));
+      elements.weeklyReportManualReviewGateList.append(item);
     });
   }
-
-  const allowed = new Set(Array.isArray(review.allowedActions) ? review.allowedActions : []);
+  if (elements.weeklyReportManualReviewReasonField) {
+    elements.weeklyReportManualReviewReasonField.hidden = !view.requiresReason;
+    if (!view.requiresReason && elements.weeklyReportManualReviewReason) {
+      elements.weeklyReportManualReviewReason.value = "";
+    }
+  }
+  const actions = new Map(view.actions.map((action) => [action.action, action]));
+  const reason = String(elements.weeklyReportManualReviewReason?.value || "").trim();
   panel.querySelectorAll("[data-manual-review-action]").forEach((button) => {
     const action = button.dataset.manualReviewAction;
-    button.disabled = !allowed.has(action);
-    button.title = allowed.has(action)
-      ? weeklyReportManualReviewActionLabel(action)
-      : "当前问题不允许执行此操作";
+    const actionView = actions.get(action);
+    button.hidden = !actionView;
+    button.disabled = !actionView || (action === "include_below_threshold" && reason.length < 8);
+    button.textContent = actionView?.label || "";
+    button.title = actionView?.effect || "";
   });
   return newlyShown;
 }
@@ -5470,24 +5499,60 @@ if (elements.weeklyReportTraceReconnect) {
   });
 }
 
+const manualReviewDecisionId = () => (
+  typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : `manual-${Date.now()}-${Math.random().toString(16).slice(2)}`
+);
+
+elements.weeklyReportManualReview?.addEventListener("input", (event) => {
+  if (event.target !== elements.weeklyReportManualReviewReason || !state.readingListLatestJob) return;
+  renderWeeklyReportManualReview(state.readingListLatestJob);
+});
+
 elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
+  const itemButton = event.target.closest("[data-manual-review-item]");
+  if (itemButton && state.readingListLatestJob) {
+    state.manualReviewSelectedItemId = String(itemButton.dataset.manualReviewItem || "");
+    state.manualReviewRetryDecision = null;
+    renderWeeklyReportManualReview(state.readingListLatestJob);
+    return;
+  }
   const button = event.target.closest("[data-manual-review-action]");
   if (!button || button.disabled || !state.readingListJobId) return;
   const action = button.dataset.manualReviewAction;
   if (action === "exit_task" && !window.confirm("确认退出当前周报任务？现有草稿和完整 Trace 会保留，但任务不会继续发布。")) return;
   if (action === "skip_paper" && !window.confirm("确认跳过当前论文？系统会移除这篇论文并重新执行横向校准和选稿。")) return;
   if (action === "confirm_evidence" && !window.confirm("确认当前列出的周报表述有原文证据支持？本次确认只放行这些证据问题，其他质量检查仍会继续，并将决定写入 Trace。")) return;
-
-  const selectedPaperId = action === "skip_paper"
-    ? String(elements.weeklyReportManualReviewSkipPaperSelect?.value || "").trim()
-    : "";
+  const review = state.readingListLatestJob?.manualReview;
+  const view = weeklyReportManualReviewView(review, state.manualReviewSelectedItemId);
+  const selectedItem = view.activeItem || {};
+  const reason = String(elements.weeklyReportManualReviewReason?.value || "").trim();
+  if (action === "include_below_threshold" && reason.length < 8) {
+    showStatus("人工纳入需要至少填写 8 个字符的具体理由。", "warning");
+    return;
+  }
+  const existingDecision = state.manualReviewRetryDecision;
+  const decisionId = existingDecision
+    && existingDecision.jobId === state.readingListJobId
+    && existingDecision.itemId === selectedItem.itemId
+    && existingDecision.action === action
+    ? existingDecision.decisionId
+    : manualReviewDecisionId();
+  const decision = {
+    decisionId,
+    itemId: String(selectedItem.itemId || ""),
+    action,
+    ...(selectedItem.paperId ? { paperId: String(selectedItem.paperId) } : {}),
+    ...(action === "include_below_threshold" ? { reason } : {})
+  };
 
   const buttons = [...elements.weeklyReportManualReview.querySelectorAll("[data-manual-review-action]")];
   const result = await submitWeeklyReportManualReviewDecision({
     requestDecision: () => readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}/decision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, ...(selectedPaperId ? { paperId: selectedPaperId } : {}) })
+      body: JSON.stringify(decision)
     }),
     refreshJob: () => readWeeklyReportJobResponse(`/api/reading-list/jobs/${encodeURIComponent(state.readingListJobId)}`),
     onAccepted: (job) => {
@@ -5500,10 +5565,12 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
     }
   });
   if (result.error) {
+    state.manualReviewRetryDecision = { ...decision, jobId: state.readingListJobId };
     showStatus(`提交管理员决策失败：${result.error.message}。本次选择未提交；恢复连接后可再次操作。`, "error");
     if (result.job) renderWeeklyReportJobProgress(result.job);
     return;
   }
+  state.manualReviewRetryDecision = null;
   try {
     const job = result.job;
     renderWeeklyReportJobProgress(job);

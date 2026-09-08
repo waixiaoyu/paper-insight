@@ -198,11 +198,53 @@ const paperIssueDetails = (review = {}) => {
 };
 
 export function describeWeeklyReportManualReview(review = {}) {
-  const stage = String(review.stage || "当前阶段");
+  const stage = String(review.stage || review.sourceStage || "当前阶段");
   const paperId = String(review.paperId || "");
   const issue = Array.isArray(review.issues) ? review.issues[0] : null;
   const code = String(issue?.code || "");
   const detail = issueDetail(review);
+  const allowedActions = new Set(Array.isArray(review.allowedActions) ? review.allowedActions : []);
+
+  if (review.kind === "processing_failure") {
+    const detailEntry = (Array.isArray(review.details) ? review.details : [])
+      .find((entry) => entry && typeof entry === "object" && String(entry.text || entry.detail || "").trim());
+    const actual = String(detailEntry?.text || detailEntry?.detail || detail || fallbackDetail).trim();
+    const stageLabel = ({
+      extract_evidence: "证据提取",
+      review: "逐篇复评",
+      calibrate: "横向校准"
+    })[stage] || "当前阶段";
+    const retryScope = allowedActions.has("retry_paper")
+      ? `只重试论文 ${paperId || "当前论文"} 的${stageLabel}，不会重新处理其他论文。`
+      : allowedActions.has("retry_stage")
+        ? `只重试${stageLabel}，已通过的逐篇产物会保留。`
+        : "当前问题不能自动重试，请选择其他可用操作。";
+    return {
+      title: paperId ? `论文 ${paperId} 的系统处理未完成` : "系统处理未完成",
+      summary: "这表示 PaperInsight 的本次处理未完成，不代表论文质量不足，也不会降低其真实分数。",
+      details: [
+        { label: "已完成内容", value: "其他论文的处理结果已保留，不会因本论文失败而重做。" },
+        { label: "实际失败", value: actual },
+        { label: "重试范围", value: retryScope }
+      ]
+    };
+  }
+
+  if (review.kind === "quality_below_threshold") {
+    const finalScore = Number(review?.scoreSnapshot?.finalScore);
+    const threshold = Number(review?.scoreSnapshot?.threshold);
+    const scoreText = Number.isFinite(finalScore) && Number.isFinite(threshold)
+      ? `该论文横向校准后为 ${finalScore} 分，默认入选线为 ${threshold} 分。`
+      : "该论文未达到本期默认入选线。";
+    return {
+      title: paperId ? `论文 ${paperId} 默认未入选` : "论文默认未入选",
+      summary: `${scoreText} 如人工纳入，不会修改真实分数，且仍必须通过后续全部质量门。`,
+      details: [
+        { label: "默认结果", value: scoreText },
+        { label: "人工纳入要求", value: "需要填写具体理由；全文、身份、证据和跨论文隔离门均不能由人工纳入覆盖。" }
+      ]
+    };
+  }
 
   if (["deterministic_qa", "paper_semantic_qa"].includes(stage) && Array.isArray(review.evidenceReviews)
     && review.evidenceReviews.length) {
@@ -266,7 +308,6 @@ export function describeWeeklyReportManualReview(review = {}) {
 
   if (stage === "write_paper_sections" || stage === "paper_semantic_qa") {
     const details = paperIssueDetails(review);
-    const allowedActions = new Set(Array.isArray(review.allowedActions) ? review.allowedActions : []);
     return {
       title: paperId ? `论文 ${paperId} 的逐篇稿件未通过校验` : "逐篇稿件未通过校验",
       summary: paperManualReviewSummary(allowedActions),
