@@ -32,6 +32,14 @@ const FORBIDDEN_SCORE_KEYS = new Set([
   "scoredelta",
   "newscore"
 ]);
+const CALIBRATION_ENVELOPE_KEYS = new Set([
+  "answer",
+  "id",
+  "model",
+  "requestId",
+  "request_id",
+  "usage"
+]);
 
 const normalizeText = (value, maximum = 2400) => String(value || "")
   .replace(/\s+/g, " ")
@@ -117,13 +125,33 @@ export const validateCalibrationResponse = (value, {
   items = [],
   phase = "initial"
 } = {}) => {
+  const rawValue = value;
   const candidates = Array.isArray(items) ? items : [];
   const expectedOrder = candidates.map((item) => normalizedPaperId(
     item?.reviewResult?.paperId || item?.contextPacket?.paperId || item?.paper?.id
   ));
   const expectedIds = new Set(expectedOrder);
-  const issues = findForbiddenScoreKeys(value);
+  const issues = findForbiddenScoreKeys(rawValue);
   const normalizations = [];
+  const topLevelResults = rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)
+    && Array.isArray(rawValue.results);
+  const wrappedResults = rawValue?.answer && typeof rawValue.answer === "object"
+    && !Array.isArray(rawValue.answer) && Array.isArray(rawValue.answer.results);
+  if (topLevelResults && wrappedResults) {
+    issues.push(issue(
+      "calibration_result_envelope_conflict",
+      "response.answer.results",
+      "Calibration returned both top-level and wrapped results."
+    ));
+  } else if (!topLevelResults && wrappedResults && Object.keys(rawValue).every((key) => (
+    CALIBRATION_ENVELOPE_KEYS.has(key)
+  ))) {
+    value = rawValue.answer;
+    normalizations.push({
+      code: "calibration_answer_envelope_unwrapped",
+      path: "response.answer.results"
+    });
+  }
 
   if (!value || typeof value !== "object" || Array.isArray(value) || !Array.isArray(value.results)) {
     return {

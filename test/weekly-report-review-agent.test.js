@@ -11,6 +11,7 @@ import {
   buildReviewPrompt,
   buildReviewRepairPrompt
 } from "../weekly-report/prompts.js";
+import { buildEvidenceSourceRegistry } from "../weekly-report/evidence-source-registry.js";
 
 const paperId = "2607.21001";
 
@@ -144,6 +145,22 @@ const evidenceArtifactsFor = (id = paperId, { overstated = false } = {}) => ({
   }
 });
 
+const evidenceArtifactsWithSourceIdsFor = (id = paperId, options = {}) => {
+  const artifacts = structuredClone(evidenceArtifactsFor(id, options));
+  const registry = buildEvidenceSourceRegistry(contextPacketFor(id));
+  const idByAnchor = new Map(registry.sections.map((section) => [
+    section.anchor,
+    section.units[0]?.sourceId
+  ]));
+  for (const field of Object.values(artifacts.evidenceCard)) {
+    if (!field || !Array.isArray(field.sources)) continue;
+    field.sources = field.sources.map((sourceEntry) => ({
+      sourceId: idByAnchor.get(sourceEntry.anchor)
+    }));
+  }
+  return artifacts;
+};
+
 const reviewResponseFor = (id = paperId, {
   status = "pass",
   issues = [],
@@ -186,11 +203,14 @@ test("Review prompt only carries one paper's verified artifacts and bound excerp
 
   assert.equal(payload.task, "weekly_report_review");
   assert.equal(payload.paper.paperId, paperId);
+  assert.match(payload.outputSchema.responseModes.repair_required, /complete Review response/i);
+  assert.match(payload.outputSchema.scores.scenarioProblemValue, /always required/i);
   assert.equal(payload.evidence.evidenceCard.paperId, paperId);
   assert.equal(Array.isArray(payload.sourceExcerpts), true);
   assert.equal(payload.outputSchema.rawScore, undefined);
   assert.match(payload.rules.join(" "), /primary problem domain.*communication networks/i);
   assert.match(payload.rules.join(" "), /Value Signal claim.*ADN implication/i);
+  assert.match(payload.rules.join(" "), /unit.*direction.*comparison subject.*scope/i);
   assert.doesNotMatch(prompt, /ABSTRACT_MUST_NOT_ENTER_PROMPT|OLD_TITLE_MUST_NOT_ENTER_PROMPT|"score":99|"score":98/);
   assert.doesNotMatch(prompt, /2607\.29999/);
 });
@@ -231,7 +251,43 @@ test("Review accepts a Value Signal challenge as a targeted Evidence repair requ
   assert.equal(validation.reviewResult.evidenceValidation.issues[0].field, "valueSignals");
 });
 
-test("Review challenges Evidence, triggers one Evidence repair, then reviews the repaired artifact again", async () => {
+test("Review normalizes pass with advisory Evidence issues instead of requesting schema repair", () => {
+  const validation = validateReviewResult(reviewResponseFor(paperId, {
+    status: "pass",
+    issues: [{
+      field: "valueSignals",
+      code: "unsupported_numeric_premise",
+      message: "The computing-cost figures are not present in the bound excerpts."
+    }]
+  }), { item: reviewItemFor() });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.reviewResult.evidenceValidation.status, "repair_required");
+  assert.equal(validation.reviewResult.evidenceValidation.issues.length, 1);
+  assert.equal(validation.normalizations.some((entry) => (
+    entry.code === "evidence_status_normalized_for_advisory_issues"
+  )), true);
+});
+
+test("Review requires scoring fields even when semantic Evidence warnings are present", () => {
+  const validation = validateReviewResult({
+    paperId,
+    evidenceValidation: {
+      status: "repair_required",
+      issues: [{
+        field: "results",
+        code: "unit_mismatch",
+        message: "The summary says seconds, while the bound source says milliseconds."
+      }]
+    }
+  }, { item: reviewItemFor() });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => entry.code === "score_out_of_range"), true);
+  assert.equal(validation.issues.some((entry) => entry.code === "required_text_missing"), true);
+});
+
+test("Review records an Evidence semantic challenge as a warning and still completes scoring", async () => {
   const tasks = [];
   const events = [];
   const result = await runReviewAgent({
@@ -240,32 +296,23 @@ test("Review challenges Evidence, triggers one Evidence repair, then reviews the
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
       tasks.push(payload.task);
-      if (payload.task === "weekly_report_extract_evidence_repair") {
-        return evidenceArtifactsFor(paperId);
-      }
-      if (tasks.filter((task) => task === "weekly_report_review").length === 1) {
-        return reviewResponseFor(paperId, {
-          status: "repair_required",
-          issues: [{
+      return reviewResponseFor(paperId, {
+        status: "repair_required",
+        issues: [{
             field: "method",
             code: "claim_overstates_excerpt",
             message: "The source does not establish a production safety guarantee."
-          }]
-        });
-      }
-      return reviewResponseFor();
+        }]
+      });
     },
     onEvent: async (event) => events.push(event)
   });
 
-  assert.deepEqual(tasks, [
-    "weekly_report_review",
-    "weekly_report_extract_evidence_repair",
-    "weekly_report_review"
-  ]);
-  assert.equal(result.evidenceRepairAttempted, true);
-  assert.equal(result.reviewResult.evidenceValidation.status, "pass");
-  assert.equal(result.evidenceCard.method.summary, "The guardrail validates actions before execution.");
+  assert.deepEqual(tasks, ["weekly_report_review"]);
+  assert.equal(result.evidenceRepairAttempted, false);
+  assert.equal(result.reviewResult.evidenceValidation.status, "repair_required");
+  assert.equal(result.reviewResult.rawScore, 64);
+  assert.equal(result.evidenceCard.method.summary, "The guardrail guarantees safe production operation.");
   assert.equal(events.some((event) => event.type === "evidence_challenged"), true);
 });
 
@@ -299,32 +346,22 @@ test("invalid Review schema gets one structured repair without leaking another p
   assert.doesNotMatch(JSON.stringify(prompts[1]), /2607\.29999|ABSTRACT_MUST_NOT_ENTER_PROMPT/);
 });
 
-test("a second Evidence challenge excludes only that paper", async () => {
-  await assert.rejects(
-    () => runReviewAgent({
+test("an unresolved Review semantic challenge does not exclude the paper", async () => {
+  const result = await runReviewAgent({
       item: reviewItemFor(paperId, { overstated: true }),
       networkRetryDelayMs: 0,
-      callModel: async (prompt) => {
-        const payload = JSON.parse(prompt);
-        if (payload.task === "weekly_report_extract_evidence_repair") {
-          return evidenceArtifactsFor(paperId);
-        }
-        return reviewResponseFor(paperId, {
+      callModel: async () => reviewResponseFor(paperId, {
           status: "repair_required",
           issues: [{
             field: "method",
             code: "claim_overstates_excerpt",
             message: "The method summary remains unsupported."
           }]
-        });
-      }
-    }),
-    (error) => (
-      error instanceof ReviewAgentError
-      && error.code === "READING_LIST_REVIEW_EVIDENCE_UNRESOLVED"
-      && error.excludePaper === true
-    )
-  );
+      })
+  });
+  assert.equal(result.reviewResult.rawScore, 64);
+  assert.equal(result.reviewResult.evidenceValidation.issues.length, 1);
+  assert.equal(result.evidenceRepairAttempted, false);
 });
 
 test("Review model network failure retries once", async () => {
@@ -377,7 +414,7 @@ test("Review batch records a repeated transport failure and continues with other
   assert.equal(events.some((event) => event.type === "review_processing_started" && event.paperId === "2607.21001"), true);
 });
 
-test("Review 请求的 Evidence 格式恢复耗尽后记为处理失败并继续其它论文", async () => {
+test("Review semantic warnings do not enter the Evidence response-repair path", async () => {
   const events = [];
   const result = await reviewEvidenceBatch([
     reviewItemFor("2607.21001", { overstated: true }),
@@ -387,9 +424,6 @@ test("Review 请求的 Evidence 格式恢复耗尽后记为处理失败并继续
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
       if (payload.paper.paperId === "2607.21001") {
-        if (payload.task.startsWith("weekly_report_extract_evidence")) {
-          return "{\"evidenceCard\":";
-        }
         return reviewResponseFor("2607.21001", {
           status: "repair_required",
           issues: [{
@@ -404,13 +438,54 @@ test("Review 请求的 Evidence 格式恢复耗尽后记为处理失败并继续
     onEvent: async (event) => events.push(event)
   });
 
-  assert.deepEqual(result.succeeded.map((item) => item.paper.id), ["2607.21002"]);
+  assert.deepEqual(result.succeeded.map((item) => item.paper.id), ["2607.21001", "2607.21002"]);
   assert.equal(result.excluded.length, 0);
-  assert.equal(result.processingFailed.length, 1);
-  assert.equal(result.processingFailed[0].paper.id, "2607.21001");
-  assert.equal(result.processingFailed[0].error.code, "READING_LIST_REVIEW_EVIDENCE_REPAIR_FAILED");
-  assert.equal(events.some((event) => event.type === "review_processing_failed"), true);
+  assert.equal(result.processingFailed.length, 0);
+  assert.equal(events.some((event) => event.type === "evidence_challenged"), true);
   assert.equal(events.some((event) => event.type === "review_excluded"), false);
+});
+
+test("Review input precheck records Evidence numeric warnings and continues scoring", async () => {
+  const item = reviewItemFor("2609.08482");
+  item.evidenceCard.results.summary = "Unsafe actions are reduced by 37% across 20 deployments.";
+  const events = [];
+  let modelCalls = 0;
+
+  const result = await runReviewAgent({
+    item,
+    callModel: async () => {
+      modelCalls += 1;
+      return reviewResponseFor("2609.08482");
+    },
+    onEvent: async (event) => events.push(event)
+  });
+
+  assert.equal(modelCalls, 1);
+  assert.equal(result.reviewResult.paperId, "2609.08482");
+  const warning = events.find((event) => event.type === "evidence_input_warning");
+  assert.ok(warning);
+  assert.equal(warning.paperId, "2609.08482");
+  assert.equal(warning.issues.some((issue) => issue.code === "numeric_claim_not_in_excerpt"), true);
+});
+
+test("Review input precheck still blocks deterministic paper identity mismatches", async () => {
+  const item = reviewItemFor("2609.08482");
+  item.evidenceCard.paperId = "2609.00000";
+  let modelCalls = 0;
+
+  await assert.rejects(
+    () => runReviewAgent({
+      item,
+      callModel: async () => {
+        modelCalls += 1;
+        return reviewResponseFor("2609.08482");
+      }
+    }),
+    (error) => error instanceof ReviewAgentError
+      && error.code === "READING_LIST_REVIEW_INPUT_INVALID"
+      && error.issues.some((issue) => issue.code === "paper_id_mismatch")
+  );
+  assert.equal(modelCalls, 0);
 });
 
 test("Review batch propagates a non-paper system failure instead of excluding the paper", async () => {
@@ -465,4 +540,13 @@ test("Review repair prompt reports schema paths but omits prior raw output", () 
   assert.match(prompt, /weekly_report_review_repair/);
   assert.match(prompt, /scores\.evidence/);
   assert.doesNotMatch(prompt, /SECRET_RAW_RESPONSE/);
+});
+
+test("Review prompt consistently treats semantic Evidence issues as advisory while keeping scores", () => {
+  const payload = JSON.parse(buildReviewPrompt(reviewItemFor()));
+  const rules = payload.rules.join(" ");
+
+  assert.match(rules, /semantic Evidence issues are advisory/i);
+  assert.match(rules, /status=repair_required/i);
+  assert.doesNotMatch(rules, /return only paperId and evidenceValidation|omit scores/i);
 });

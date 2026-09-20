@@ -44,7 +44,11 @@ const DRAFT_FIELD_LABELS = Object.freeze({
 });
 
 const text = (value, limit = 4000) => String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
-const paperId = (value) => String(value || "").trim().replace(/v\d+$/i, "");
+const paperId = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  const match = normalized.match(/(?:^|\/)(\d{4}\.\d{4,5})(?:v\d+)?(?:$|[?#/])/i);
+  return match?.[1] || normalized.replace(/v\d+$/i, "");
+};
 const excerptAround = (value, needle, limit) => {
   const normalized = String(value || "").replace(/\s+/g, " ").trim();
   if (normalized.length <= limit) return normalized;
@@ -129,8 +133,147 @@ const sourceForRef = (item, reference, needle = "") => {
   };
 };
 
+const extractionSource = (source = {}, sections = new Map()) => {
+  const anchor = text(source.anchor, REVIEW_LIMITS.anchor);
+  const boundSection = sections.get(anchor);
+  const candidate = text(source.excerpt, REVIEW_LIMITS.sourceExcerpt);
+  const originalText = text(boundSection?.text, REVIEW_LIMITS.sourceExcerpt);
+  return {
+    ref: text(source.ref, 300) || anchor,
+    section: text(boundSection?.heading || source.section, REVIEW_LIMITS.section) || "原文章节未标注",
+    anchor,
+    excerpt: originalText ? excerptAround(originalText, candidate, REVIEW_LIMITS.sourceExcerpt) : candidate
+  };
+};
+
+export const evidenceExtractionReviewsForIssues = ({
+  issues = [],
+  artifacts = null,
+  contextPacket = null,
+  paperId: targetPaperId = ""
+} = {}) => {
+  const sections = new Map((Array.isArray(contextPacket?.inputSections) ? contextPacket.inputSections : [])
+    .map((section) => [String(section?.anchor || ""), section]));
+  const card = artifacts?.evidenceCard && typeof artifacts.evidenceCard === "object"
+    ? artifacts.evidenceCard
+    : {};
+  const signals = Array.isArray(artifacts?.valueSignals?.signals)
+    ? artifacts.valueSignals.signals
+    : [];
+  const sourceFromReference = (reference) => {
+    const match = String(reference || "").match(/^([A-Za-z]+):(\d+)$/u);
+    if (!match) return null;
+    const source = card?.[match[1]]?.sources?.[Number(match[2])];
+    return source && typeof source === "object"
+      ? extractionSource({ ...source, ref: `${match[1]}:${Number(match[2])}` }, sections)
+      : null;
+  };
+  const reviews = [];
+  (Array.isArray(issues) ? issues : []).forEach((entry, issueIndex) => {
+    const path = String(entry?.path || "");
+    const field = path.match(/^evidenceCard\.([A-Za-z]+)\.(?:summary|sources)/u)?.[1];
+    const signalIndex = Number(path.match(/^valueSignals\.signals\[(\d+)\]/u)?.[1]);
+    const signal = Number.isInteger(signalIndex) ? signals[signalIndex] : null;
+    const references = signal
+      ? (Array.isArray(signal.evidenceRefs) ? signal.evidenceRefs : [])
+      : (Array.isArray(card?.[field]?.sources)
+        ? card[field].sources.map((_, index) => `${field}:${index}`)
+        : []);
+    const evidenceSources = references
+      .map(sourceFromReference)
+      .filter((source) => source?.excerpt)
+      .slice(0, REVIEW_LIMITS.sources);
+    if (!evidenceSources.length) return;
+    const draftExcerpt = signal?.claim
+      || (path.includes(".summary") ? card?.[field]?.summary : "")
+      || evidenceSources.map((source) => source.excerpt).join(" ");
+    reviews.push({
+      issueKey: [String(entry?.code || "evidence_issue"), paperId(targetPaperId), path || field || signalIndex, issueIndex + 1].join("|"),
+      paperId: paperId(targetPaperId),
+      fieldPath: path || (field ? `evidenceCard.${field}.sources` : `valueSignals.signals[${signalIndex}]`),
+      fieldLabel: signal
+        ? "阅读价值判断的原文依据"
+        : (field === "problem" ? "研究问题的原文依据" : "证据卡片中的原文依据"),
+      reviewContext: "evidence_extraction",
+      draftExcerpt: text(draftExcerpt, REVIEW_LIMITS.draftExcerpt),
+      evidenceSources
+    });
+  });
+  return compactEvidenceReviews(reviews);
+};
+
+export const editorialEvidenceReviewsForIssues = ({
+  issues = [],
+  editorialPlan = null,
+  selectedItems = []
+} = {}) => {
+  const itemsByPaperId = new Map((Array.isArray(selectedItems) ? selectedItems : [])
+    .map((item) => [paperId(item?.paper?.id || item?.reviewResult?.paperId || item?.paperId), item])
+    .filter(([id]) => id));
+  const comparable = (value) => String(value || "")
+    .toLowerCase()
+    .replace(/\\%/gu, "%")
+    .replace(/\s+/gu, "")
+    .replace(/,/gu, "");
+  const matchingSources = (item, targetPaperId, needle) => {
+    const compactNeedle = comparable(needle);
+    if (!compactNeedle) return [];
+    return Object.entries(item?.evidenceCard || {}).flatMap(([field, value]) => (
+      Array.isArray(value?.sources) ? value.sources.map((source, index) => ({ source, field, index })) : []
+    )).filter(({ source }) => comparable(source?.excerpt).includes(compactNeedle))
+      .map(({ field, index }) => {
+        const source = sourceForRef(item, `${field}:${index}`, needle);
+        return source ? { ...source, ref: `${targetPaperId}:${source.ref}` } : null;
+      })
+      .filter(Boolean);
+  };
+  const reviews = [];
+  (Array.isArray(issues) ? issues : []).forEach((entry, issueIndex) => {
+    if (String(entry?.code || "") !== "numeric_claim_not_in_evidence") return;
+    const path = String(entry?.path || "");
+    const observationMatch = path.match(/^singlePaperObservations\[(\d+)\]\.claim$/u);
+    const trendMatch = path.match(/^trends\[(\d+)\]\.claim$/u);
+    const planEntry = observationMatch
+      ? editorialPlan?.singlePaperObservations?.[Number(observationMatch[1])]
+      : trendMatch ? editorialPlan?.trends?.[Number(trendMatch[1])] : null;
+    if (!planEntry) return;
+    const relatedPaperIds = observationMatch
+      ? [paperId(planEntry?.paperId)].filter(Boolean)
+      : (Array.isArray(planEntry?.supportingPaperIds) ? planEntry.supportingPaperIds : [])
+        .map(paperId)
+        .filter(Boolean);
+    const needle = issueNeedle(entry);
+    const matched = relatedPaperIds.flatMap((targetPaperId) => {
+      const item = itemsByPaperId.get(targetPaperId);
+      return item ? matchingSources(item, targetPaperId, needle) : [];
+    });
+    const targetPaperId = paperId(matched[0]?.ref?.split(":")?.[0] || relatedPaperIds[0]);
+    const item = itemsByPaperId.get(targetPaperId);
+    const references = Array.isArray(planEntry?.evidenceRefs) ? planEntry.evidenceRefs : [];
+    const evidenceSources = (matched.length ? matched : references
+      .map((reference) => sourceForRef(item, reference, needle))
+      .filter(Boolean))
+      .slice(0, REVIEW_LIMITS.sources);
+    if (!evidenceSources.length) return;
+    const fingerprint = createHash("sha256")
+      .update([entry.code, entry.path, entry.detail, planEntry.claim, references.join(",")].join("|"))
+      .digest("hex")
+      .slice(0, 20);
+    reviews.push({
+      issueKey: [entry.code, targetPaperId, entry.path, fingerprint, issueIndex + 1].join("|"),
+      paperId: targetPaperId,
+      fieldPath: String(entry.path || ""),
+      fieldLabel: trendMatch ? "跨论文趋势" : "逐篇观察",
+      reviewContext: "editorial_plan",
+      draftExcerpt: text(planEntry?.claim || entry?.triggerText, REVIEW_LIMITS.draftExcerpt),
+      evidenceSources
+    });
+  });
+  return compactEvidenceReviews(reviews);
+};
 const reviewKey = ({ issue, targetPaperId, field }) => {
   const code = String(issue?.code || "");
+  const stableCode = NUMERIC_REVIEW_CODES.has(code) ? "numeric_evidence" : code;
   const detail = NUMERIC_REVIEW_CODES.has(code)
     ? issueNeedle(issue)
     : [
@@ -145,7 +288,7 @@ const reviewKey = ({ issue, targetPaperId, field }) => {
     .update(detail || text(issue?.message || issue?.reason || issue?.detail, 1000))
     .digest("hex")
     .slice(0, 20);
-  return [code, targetPaperId, field?.path, fingerprint]
+  return [stableCode, targetPaperId, field?.path, fingerprint]
     .map((part) => String(part || "").trim())
     .join("|");
 };
@@ -207,6 +350,7 @@ export const compactEvidenceReviews = (reviews = []) => {
       paperId: text(review.paperId, 100),
       fieldPath: text(review.fieldPath, 300),
       fieldLabel: text(review.fieldLabel, 100),
+      reviewContext: text(review.reviewContext, 80),
       draftExcerpt: excerptAround(review.draftExcerpt, "", REVIEW_LIMITS.draftExcerpt),
       evidenceSources: (Array.isArray(review.evidenceSources) ? review.evidenceSources : [])
         .filter((source) => source && typeof source === "object" && !Array.isArray(source))

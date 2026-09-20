@@ -43,14 +43,20 @@ const object = (value, label) => {
 const normalizedDetails = (values) => (Array.isArray(values) ? values : [])
   .slice(0, 30)
   .filter((value) => value && typeof value === "object" && !Array.isArray(value))
-  .map((value) => ({
-    title: text(value.title, 200),
-    requirement: text(value.requirement, 1200),
-    actual: text(value.actual, 1200),
-    text: text(value.text || value.detail || value.message, 1600),
-    path: text(value.path, 300),
-    code: text(value.code, 160)
-  }));
+  .map((value) => {
+    const diagnosticReason = text(value.diagnosticReason, 1600);
+    const responseExcerpt = text(value.responseExcerpt, 1200);
+    return {
+      title: text(value.title, 200),
+      requirement: text(value.requirement, 1200),
+      actual: text(value.actual, 1200),
+      text: text(value.text || value.detail || value.message, 1600),
+      path: text(value.path, 300),
+      code: text(value.code, 160),
+      ...(diagnosticReason ? { diagnosticReason } : {}),
+      ...(responseExcerpt ? { responseExcerpt } : {})
+    };
+  });
 
 const normalizedIssues = (values) => (Array.isArray(values) ? values : [])
   .slice(0, 30)
@@ -59,7 +65,9 @@ const normalizedIssues = (values) => (Array.isArray(values) ? values : [])
     code: text(value.code, 160),
     path: text(value.path, 300),
     detail: text(value.detail, 1600),
-    reason: text(value.reason || value.message, 1600)
+    reason: text(value.reason || value.message, 1600),
+    triggerText: text(value.triggerText || value.claim, 1200),
+    evidenceRefs: uniqueText(value.evidenceRefs, 300)
   }));
 
 const normalizedScoreSnapshot = (value) => {

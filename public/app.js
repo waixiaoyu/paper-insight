@@ -1,7 +1,11 @@
 ﻿import { describeWeeklyReportManualReview } from "./manual-review-details.js";
 
 import { manualReviewDecisionStatusText, submitWeeklyReportManualReviewDecision } from "./manual-review-actions.js";
-import { weeklyReportManualReviewView } from "./manual-review-view.js";
+import {
+  weeklyReportManualReviewInFlightView,
+  weeklyReportManualReviewPresentationKey,
+  weeklyReportManualReviewView
+} from "./manual-review-view.js";
 import {
   candidateExpansionNotice,
   expandCandidateBatches
@@ -120,16 +124,18 @@ const storageKeys = {
   provider: "paper-insight:llm-provider",
   model: "paper-insight:llm-model",
   legacyModel: "paper-insight:deepseek-model",
+  modelDefaultsVersion: "paper-insight:llm-model-defaults-version",
   weeklyReportJob: "paper-insight:weekly-report-job"
 };
 
 const llmProviders = {
-  "glm-coding-anthropic": {
-    label: "GLM-5.3 (Anthropic)",
+  "glm-coding-openai": {
+    label: "GLM-5.3 (BigModel Coding OpenAI · low)",
     defaultModel: "glm-5.3",
     keyPlaceholder: "请输入 BigModel API Key",
     models: [
-      "glm-5.3"
+      "glm-5.3",
+      "glm-5.3-flash"
     ]
   }
 };
@@ -137,15 +143,29 @@ const llmProviders = {
 const normalizeProviderKey = (provider) => {
   const key = String(provider || "").trim();
 
-  if (key === "glm" || key === "glm-coding") {
-    return "glm-coding-anthropic";
+  if (key === "glm" || key === "glm-coding" || key === "glm-coding-anthropic") {
+    return "glm-coding-openai";
   }
 
-  return llmProviders[key] ? key : "glm-coding-anthropic";
+  return llmProviders[key] ? key : "glm-coding-openai";
 };
 const providerLabel = (provider = state.runtimeProvider) => llmProviders[normalizeProviderKey(provider)].label;
 const providerDefaultModel = (provider) => llmProviders[normalizeProviderKey(provider)].defaultModel;
 const providerModelStorageKey = (provider) => `${storageKeys.model}:${normalizeProviderKey(provider)}`;
+const llmModelDefaultsVersion = "glm-5.3-coding-openai-low-v3";
+const migrateStoredModelDefaults = () => {
+  if (sessionStorage.getItem(storageKeys.modelDefaultsVersion) === llmModelDefaultsVersion) {
+    return;
+  }
+
+  const provider = normalizeProviderKey(sessionStorage.getItem(storageKeys.provider) || "glm-coding-openai");
+  const modelKey = providerModelStorageKey(provider);
+  if (provider === "glm-coding-openai" && sessionStorage.getItem(modelKey) === "glm-5.3-flash") {
+    sessionStorage.setItem(modelKey, "glm-5.3");
+  }
+
+  sessionStorage.setItem(storageKeys.modelDefaultsVersion, llmModelDefaultsVersion);
+};
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -244,6 +264,7 @@ const elements = {
   weeklyReportTraceClose: $("#weeklyReportTraceClose"),
   weeklyReportTraceCancel: $("#weeklyReportTraceCancel"),
   weeklyReportManualReview: $("#weeklyReportManualReview"),
+  weeklyReportManualReviewEyebrow: $("#weeklyReportManualReviewEyebrow"),
   weeklyReportManualReviewTitle: $("#weeklyReportManualReviewTitle"),
   weeklyReportManualReviewSummary: $("#weeklyReportManualReviewSummary"),
   weeklyReportManualReviewMeta: $("#weeklyReportManualReviewMeta"),
@@ -335,10 +356,11 @@ function migrateStoredReportsForScoringRules() {
 
 migrateStoredQueryDefaults();
 migrateStoredReportsForScoringRules();
+migrateStoredModelDefaults();
 
 const savedQuery = localStorage.getItem(storageKeys.query);
 const savedQueryMode = localStorage.getItem(storageKeys.queryMode);
-const savedProvider = normalizeProviderKey(sessionStorage.getItem(storageKeys.provider) || "glm-coding-anthropic");
+const savedProvider = normalizeProviderKey(sessionStorage.getItem(storageKeys.provider) || "glm-coding-openai");
 
 const state = {
   reports: loadReports(),
@@ -377,6 +399,8 @@ const state = {
   readingListLatestJob: null,
   readingListTrace: null,
   manualReviewSelectedItemId: "",
+  manualReviewPresentedKey: "",
+  manualReviewInFlight: null,
   manualReviewRetryDecision: null,
   readingListLiveStatus: null,
   readingListSourceExpanded: false,
@@ -1205,10 +1229,10 @@ function filteredExplorePapers() {
 
 function modeLabel(mode) {
   if (mode === "glm-coding-anthropic") {
-    return "GLM-5.3 (Anthropic)";
+    return "GLM-5.3 (BigModel Anthropic)";
   }
 
-  return "GLM-5.3 (Anthropic)";
+  return "GLM-5.3 (BigModel Coding OpenAI · low)";
 }
 
 function weekStart(date = new Date()) {
@@ -2751,7 +2775,7 @@ const weeklyReportManualReviewActionLabels = Object.freeze({
   retry_job: "重新执行任务",
   continue_repair: "继续修正一次",
   exit_task: "退出任务",
-  skip_paper: "跳过这篇论文",
+  skip_paper: "从本期周报移除这篇论文",
   ignore_warning: "忽略告警并继续",
   confirm_evidence: "确认证据充分，继续任务"
 });
@@ -2784,14 +2808,15 @@ function renderWeeklyReportManualEvidenceReviews(evidenceReviews = []) {
 
     const draft = document.createElement("section");
     const draftLabel = document.createElement("strong");
-    draftLabel.textContent = "周报待核对内容";
+    const isEvidenceExtraction = review.reviewContext === "evidence_extraction";
+    draftLabel.textContent = isEvidenceExtraction ? "系统提取的证据内容" : "周报待核对内容";
     const draftText = document.createElement("p");
     draftText.textContent = review.draftExcerpt || "未保存待核对的稿件片段。";
     draft.append(draftLabel, draftText);
 
     const evidence = document.createElement("section");
     const evidenceLabel = document.createElement("strong");
-    evidenceLabel.textContent = "原文局部证据";
+    evidenceLabel.textContent = isEvidenceExtraction ? "对应原文局部证据" : "原文局部证据";
     const sources = Array.isArray(review.evidenceSources) ? review.evidenceSources : [];
     const sourceList = document.createElement("div");
     sourceList.className = "weekly-report-manual-evidence-sources";
@@ -2817,15 +2842,30 @@ function renderWeeklyReportManualEvidenceReviews(evidenceReviews = []) {
 function renderWeeklyReportManualReview(job) {
   const panel = elements.weeklyReportManualReview;
   if (!panel) return false;
-  const review = job?.state === "running" && job?.manualReview && typeof job.manualReview === "object"
+  const waitingReview = job?.state === "running" && job?.manualReview && typeof job.manualReview === "object"
     ? job.manualReview
     : null;
+  if (waitingReview) state.manualReviewInFlight = null;
+  const pendingRepair = state.manualReviewInFlight;
+  const pendingMatchesJob = Boolean(
+    !waitingReview
+    && job?.state === "running"
+    && pendingRepair?.jobId === job?.jobId
+  );
+  if (pendingRepair && !waitingReview && !pendingMatchesJob) state.manualReviewInFlight = null;
+  const inFlight = pendingMatchesJob
+    ? weeklyReportManualReviewInFlightView(pendingRepair)
+    : null;
+  const review = waitingReview || inFlight?.review || null;
   if (!review) {
     panel.hidden = true;
+    state.manualReviewPresentedKey = "";
     return false;
   }
 
-  const newlyShown = panel.hidden;
+  const presentationKey = inFlight?.presentationKey || weeklyReportManualReviewPresentationKey(job);
+  const shouldPresent = state.manualReviewPresentedKey !== presentationKey;
+  state.manualReviewPresentedKey = presentationKey;
   panel.hidden = false;
   const knownItemIds = new Set((Array.isArray(review.items) ? review.items : [review])
     .map((item) => String(item?.itemId || "").trim()).filter(Boolean));
@@ -2834,12 +2874,17 @@ function renderWeeklyReportManualReview(job) {
   }
   const view = weeklyReportManualReviewView(review, state.manualReviewSelectedItemId);
   state.manualReviewSelectedItemId = String(view.activeItem?.itemId || "");
-  elements.weeklyReportManualReviewTitle.textContent = view.title;
-  elements.weeklyReportManualReviewSummary.textContent = view.summary;
+  if (elements.weeklyReportManualReviewEyebrow) {
+    elements.weeklyReportManualReviewEyebrow.textContent = inFlight?.eyebrow || "等待管理员决策";
+  }
+  elements.weeklyReportManualReviewTitle.textContent = inFlight?.title || view.title;
+  elements.weeklyReportManualReviewSummary.textContent = inFlight?.summary || view.summary;
   elements.weeklyReportManualReviewMeta.textContent = [
     view.activeItem?.paperId ? `论文：${view.activeItem.paperId}` : "范围：整份周报",
-    `待处理 ${view.items.length} 项`,
-    Number(view.activeItem?.repairAttempts) > 0 ? `已自动修正 ${Number(view.activeItem.repairAttempts)} 次` : "等待管理员处理"
+    inFlight ? "正在处理刚才提交的决定" : `待处理 ${view.items.length} 项`,
+    inFlight
+      ? `开始于 ${new Date(pendingRepair.startedAt).toLocaleTimeString("zh-CN", { hour12: false })}`
+      : Number(view.activeItem?.repairAttempts) > 0 ? `已自动修正 ${Number(view.activeItem.repairAttempts)} 次` : "等待管理员处理"
   ].join(" · ");
   if (elements.weeklyReportManualReviewQueue) {
     elements.weeklyReportManualReviewQueue.textContent = "";
@@ -2906,7 +2951,7 @@ function renderWeeklyReportManualReview(job) {
     button.textContent = actionView?.label || "";
     button.title = actionView?.effect || "";
   });
-  return newlyShown;
+  return shouldPresent;
 }
 
 async function loadWeeklyReportTrace(jobId = state.readingListJobId) {
@@ -3000,9 +3045,8 @@ function defaultReadingListMinSelected(report = state.currentReport) {
   return 3;
 }
 
-function defaultReadingListMaxSelected(report = state.currentReport) {
-  const saved = report?.readingList?.maxSelectedCount;
-  return Number.isFinite(Number(saved)) ? Math.max(3, Math.min(20, Math.round(Number(saved)))) : 10;
+function defaultReadingListMaxSelected() {
+  return 5;
 }
 
 function readingListCandidateFloor() {
@@ -3018,7 +3062,7 @@ function readingListMinSelectedCount() {
 }
 
 function readingListMaxSelectedCount() {
-  return Math.max(3, Math.min(20, Math.round(Number(elements.readingListMaxSelected?.value) || 10)));
+  return Math.max(3, Math.min(20, Math.round(Number(elements.readingListMaxSelected?.value) || 5)));
 }
 
 function readingListCandidatePapers(report = state.currentReport) {
@@ -3434,7 +3478,7 @@ function savePublishedWeeklyReport(report, job, payload, settings = {}) {
       reviewSkippedCount: 0,
       reviewScoreThreshold: settings.reviewScoreThreshold ?? defaultReadingListReviewThreshold(report),
       minSelectedCount: job.options?.minSelectedCount || settings.minSelectedCount || 3,
-      maxSelectedCount: job.options?.maxSelectedCount || settings.maxSelectedCount || 10,
+      maxSelectedCount: job.options?.maxSelectedCount || settings.maxSelectedCount || 5,
       thresholdSelectedCount: paperCount,
       fallbackSelectedCount: 0,
       reviewBeforeGenerate: true,
@@ -5521,12 +5565,17 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-manual-review-action]");
   if (!button || button.disabled || !state.readingListJobId) return;
   const action = button.dataset.manualReviewAction;
-  if (action === "exit_task" && !window.confirm("确认退出当前周报任务？现有草稿和完整 Trace 会保留，但任务不会继续发布。")) return;
-  if (action === "skip_paper" && !window.confirm("确认跳过当前论文？系统会移除这篇论文并重新执行横向校准和选稿。")) return;
-  if (action === "confirm_evidence" && !window.confirm("确认当前列出的周报表述有原文证据支持？本次确认只放行这些证据问题，其他质量检查仍会继续，并将决定写入 Trace。")) return;
   const review = state.readingListLatestJob?.manualReview;
   const view = weeklyReportManualReviewView(review, state.manualReviewSelectedItemId);
   const selectedItem = view.activeItem || {};
+  if (action === "exit_task" && !window.confirm("确认退出当前周报任务？现有草稿和完整 Trace 会保留，但任务不会继续发布。")) return;
+  if (action === "skip_paper" && !window.confirm("确认从本期周报移除当前论文？当前稿件不会被采用，系统会移除这篇论文并重新执行横向校准和选稿。")) return;
+  if (action === "confirm_evidence") {
+    const confirmation = selectedItem.sourceStage === "write_paper_sections"
+      ? "确认保留当前这一处稿件表述？该操作不会确认同一稿件的其他问题；全部问题仍需逐项处理，并将决定写入 Trace。"
+      : "确认保留当前展示的周报表述？本次确认只放行这些已展示的证据问题，其他质量检查仍会继续，并将决定写入 Trace。";
+    if (!window.confirm(confirmation)) return;
+  }
   const reason = String(elements.weeklyReportManualReviewReason?.value || "").trim();
   if (action === "include_below_threshold" && reason.length < 8) {
     showStatus("人工纳入需要至少填写 8 个字符的具体理由。", "warning");
@@ -5546,6 +5595,17 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
     ...(selectedItem.paperId ? { paperId: String(selectedItem.paperId) } : {}),
     ...(action === "include_below_threshold" ? { reason } : {})
   };
+  if (action !== "exit_task") {
+    state.manualReviewInFlight = {
+      jobId: state.readingListJobId,
+      decisionId,
+      action,
+      selectedItem,
+      paperId: String(selectedItem.paperId || ""),
+      sourceStage: String(selectedItem.sourceStage || review?.stage || ""),
+      startedAt: new Date().toISOString()
+    };
+  }
 
   const buttons = [...elements.weeklyReportManualReview.querySelectorAll("[data-manual-review-action]")];
   const result = await submitWeeklyReportManualReviewDecision({
@@ -5565,6 +5625,7 @@ elements.weeklyReportManualReview?.addEventListener("click", async (event) => {
     }
   });
   if (result.error) {
+    state.manualReviewInFlight = null;
     state.manualReviewRetryDecision = { ...decision, jobId: state.readingListJobId };
     showStatus(`提交管理员决策失败：${result.error.message}。本次选择未提交；恢复连接后可再次操作。`, "error");
     if (result.job) renderWeeklyReportJobProgress(result.job);

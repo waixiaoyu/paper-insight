@@ -169,8 +169,9 @@ const paperFieldLabel = (value) => {
 
 const paperManualReviewSummary = (allowedActions) => {
   const actions = [
+    ["confirm_evidence", "保留当前这一处表述"],
     ["continue_repair", "继续修正这些问题"],
-    ["skip_paper", "跳过该论文并重新校准其余候选"],
+    ["skip_paper", "从本期周报移除这篇论文并重新校准其余候选"],
     ["exit_task", "退出任务"]
   ].filter(([action]) => allowedActions.has(action)).map(([, label]) => label);
   return actions.length
@@ -197,6 +198,120 @@ const paperIssueDetails = (review = {}) => {
   });
 };
 
+
+const extractEvidenceFieldLabel = (path = "") => {
+  const normalizedPath = String(path || "");
+  if (normalizedPath.startsWith("evidenceCard.problem.sources")) return "研究问题的原文依据";
+  if (/^valueSignals\.signals\[\d+\]\.evidenceRefs/u.test(normalizedPath)) return "阅读价值判断的证据引用";
+  if (normalizedPath.startsWith("evidenceCard.")) return "证据卡片中的原文依据";
+  if (normalizedPath.startsWith("valueSignals.")) return "阅读价值判断的证据引用";
+  return "证据提取结果";
+};
+
+const missingEvidenceReference = (issue = {}) => {
+  const detail = [issue.detail, issue.reason, issue.message]
+    .map((value) => String(value || "").trim())
+    .find(Boolean) || "";
+  return detail.match(/Evidence reference\s+([^\s]+)\s+does not exist\./iu)?.[1] || "该引用编号";
+};
+
+const extractEvidenceIssueDetails = (review = {}) => (Array.isArray(review.issues) ? review.issues : [])
+  .map((issue) => {
+    const code = String(issue?.code || "");
+    const label = extractEvidenceFieldLabel(issue?.path);
+    if (code === "problem_excerpt_not_problem_statement") {
+      return {
+        label,
+        value: "校验要求：原文依据需要直接说明研究问题、缺口、挑战、需求或待验证能力。；当前情况：已选片段只描述了论文做出的贡献，没有直接说明研究问题、缺口、挑战、需求或待验证能力。请在下方对照原文局部证据判断是否需要继续修正。"
+      };
+    }
+    if (code === "evidence_ref_not_found") {
+      const reference = missingEvidenceReference(issue);
+      return {
+        label,
+        value: `校验要求：阅读价值判断引用的证据编号必须存在于该论文的证据清单中。；当前情况：引用了不存在的 ${reference}。该问题没有可核对的原文摘录，不能由人工确认放行；需要定向修正引用，或跳过该论文。`
+      };
+    }
+    return {
+      label,
+      value: "校验要求：每条证据结论都必须能定位到同一篇论文的原文摘录。；当前情况：该证据项未通过结构或原文对应检查。请继续定向修正，或跳过该论文。"
+    };
+  });
+
+const extractEvidenceDecisionSummary = (allowedActions) => {
+  const actions = [
+    ["continue_repair", "继续定向修正当前证据问题"],
+    ["skip_paper", "跳过该论文并继续处理其余候选"],
+    ["exit_task", "退出任务"]
+  ].filter(([action]) => allowedActions.has(action)).map(([, label]) => label);
+  return actions.length ? actions.join("、") : "当前没有可执行操作";
+};
+
+const reviewEvidenceIssueDetails = (review = {}) => {
+  const issues = Array.isArray(review.issues) ? review.issues : [];
+  if (!issues.length) {
+    return [{ label: "实际问题", value: fallbackDetail }];
+  }
+  return issues.map((issue, index) => {
+    if (String(issue?.code || "") === "pass_with_evidence_issues") {
+      return {
+        label: "Evidence 校验状态",
+        value: "当前结果同时标记为“通过”并保留失败问题，两种状态互相矛盾。需要重新生成该论文的 Evidence 状态。"
+      };
+    }
+    const path = String(issue?.path || "Evidence 结构").trim();
+    return {
+      label: `Evidence 结构问题 ${index + 1}`,
+      value: `字段：${path}；当前 Evidence 没有满足可确定验证的身份、引用或结构要求，需要重新处理该论文。`
+    };
+  });
+};
+
+const EVIDENCE_RESPONSE_FIELD_LABELS = {
+  problem: "研究问题",
+  method: "方法",
+  systemDesign: "系统设计",
+  experiments: "实验设计",
+  results: "实验结果",
+  limitations: "限制与边界",
+  affiliations: "作者与单位"
+};
+
+const historicalResponseDiagnostic = (review, detailEntry) => {
+  const hasStoredDiagnostic = String(detailEntry?.diagnosticReason || "").trim()
+    || String(detailEntry?.responseExcerpt || "").trim();
+  if (hasStoredDiagnostic || String(detailEntry?.code || "") !== "READING_LIST_EVIDENCE_RESPONSE_INVALID") {
+    return null;
+  }
+
+  const issue = (Array.isArray(review.issues) ? review.issues : [])
+    .find((entry) => ["invalid_json", "schema_invalid"].includes(String(entry?.code || "")));
+  const detail = String(issue?.detail || "").trim();
+  const missingField = detail.match(/^evidenceCard\.([A-Za-z]+)\s+must be an object\./u)?.[1];
+  const fieldLabel = EVIDENCE_RESPONSE_FIELD_LABELS[missingField];
+  let reason = "";
+
+  if (fieldLabel) {
+    reason = "最后一次模型返回缺少“" + fieldLabel + "”证据对象。";
+  } else if (/^valueSignals\s+must be an object\./u.test(detail)) {
+    reason = "最后一次模型返回缺少完整的阅读价值信号对象。";
+  } else if (/^evidenceCard\.([A-Za-z]+)\.summary is required\./u.test(detail)) {
+    const field = detail.match(/^evidenceCard\.([A-Za-z]+)\.summary is required\./u)?.[1];
+    reason = "最后一次模型返回缺少“" + (EVIDENCE_RESPONSE_FIELD_LABELS[field] || "证据卡") + "”的摘要。";
+  } else if (/Unexpected non-whitespace character after JSON/u.test(detail)) {
+    reason = "最后一次模型返回在 JSON 结束后又包含额外内容，无法作为单个证据对象解析。";
+  } else if (detail) {
+    reason = "最后一次模型返回未满足证据数据的结构要求。";
+  }
+
+  return reason
+    ? {
+      reason,
+      responseExcerpt: "本次任务创建时未保存可展示的模型返回；重新执行该论文后会记录受限片段。"
+    }
+    : null;
+};
+
 export function describeWeeklyReportManualReview(review = {}) {
   const stage = String(review.stage || review.sourceStage || "当前阶段");
   const paperId = String(review.paperId || "");
@@ -209,6 +324,9 @@ export function describeWeeklyReportManualReview(review = {}) {
     const detailEntry = (Array.isArray(review.details) ? review.details : [])
       .find((entry) => entry && typeof entry === "object" && String(entry.text || entry.detail || "").trim());
     const actual = String(detailEntry?.text || detailEntry?.detail || detail || fallbackDetail).trim();
+    const historicalDiagnostic = historicalResponseDiagnostic(review, detailEntry);
+    const diagnosticReason = String(detailEntry?.diagnosticReason || historicalDiagnostic?.reason || "").trim();
+    const responseExcerpt = String(detailEntry?.responseExcerpt || historicalDiagnostic?.responseExcerpt || "").trim();
     const stageLabel = ({
       extract_evidence: "证据提取",
       review: "逐篇复评",
@@ -225,6 +343,8 @@ export function describeWeeklyReportManualReview(review = {}) {
       details: [
         { label: "已完成内容", value: "其他论文的处理结果已保留，不会因本论文失败而重做。" },
         { label: "实际失败", value: actual },
+        ...(diagnosticReason ? [{ label: "为什么不完整", value: diagnosticReason }] : []),
+        ...(responseExcerpt ? [{ label: "最后一次模型返回（受限片段）", value: responseExcerpt }] : []),
         { label: "重试范围", value: retryScope }
       ]
     };
@@ -246,15 +366,58 @@ export function describeWeeklyReportManualReview(review = {}) {
     };
   }
 
-  if (["deterministic_qa", "paper_semantic_qa"].includes(stage) && Array.isArray(review.evidenceReviews)
-    && review.evidenceReviews.length) {
+
+  if (review.kind === "evidence_dispute" && stage === "extract_evidence") {
+    const details = extractEvidenceIssueDetails(review);
     return {
-      title: paperId ? `论文 ${paperId} 的证据需要人工复核` : "周报证据需要人工复核",
-      summary: "请对照周报表述与原文局部证据。确认后只放行当前证据问题，其他质量检查仍会继续执行。",
-      details: [{
-        label: "复核范围",
-        value: paperId ? `仅复核论文 ${paperId} 当前列出的证据问题。` : "仅复核当前列出的证据问题。"
-      }],
+      title: paperId ? `论文 ${paperId} 的证据提取需要处理` : "证据提取需要处理",
+      summary: `系统无法将当前提取结果与原文建立完整对应，不代表论文质量不足。请根据下列具体问题决定：${extractEvidenceDecisionSummary(allowedActions)}。`,
+      details,
+      evidenceReviews: review.evidenceReviews
+    };
+  }
+  if (["write_paper_sections", "deterministic_qa", "paper_semantic_qa"].includes(stage) && Array.isArray(review.evidenceReviews)
+    && review.evidenceReviews.length) {
+    const isPaperDraft = stage === "write_paper_sections";
+    return {
+      title: isPaperDraft
+        ? (paperId ? `论文 ${paperId} 的当前稿件需要人工复核` : "当前稿件需要人工复核")
+        : (paperId ? `论文 ${paperId} 的证据需要人工复核` : "周报证据需要人工复核"),
+      summary: isPaperDraft
+        ? "请先对照当前这一处稿件表述与原文局部证据，再决定保留这一处表述、继续修正、从本期周报移除该论文或退出任务。同一稿件的其他问题需要分别处理。"
+        : "请对照周报表述与原文局部证据。确认后只放行当前证据问题，其他质量检查仍会继续执行。",
+      details: [
+        ...paperIssueDetails(review),
+        {
+          label: "复核范围",
+          value: paperId ? `仅复核论文 ${paperId} 当前列出的证据问题。` : "仅复核当前列出的证据问题。"
+        }
+      ],
+      evidenceReviews: review.evidenceReviews
+    };
+  }
+  if (review.kind === "evidence_dispute" && stage === "review") {
+    return {
+      title: paperId ? `论文 ${paperId} 的 Evidence 结构需要处理` : "Evidence 结构需要处理",
+      summary: "Review 输入存在可确定的结构矛盾，当前论文尚未完成评分；这不代表论文质量不足。请根据下列具体问题重试该论文、从本期周报移除，或退出任务。",
+      details: reviewEvidenceIssueDetails(review),
+      evidenceReviews: review.evidenceReviews
+    };
+  }
+
+  if (stage === "editorial_plan" && Array.isArray(review.evidenceReviews)
+    && review.evidenceReviews.length) {
+    const issues = Array.isArray(review.issues) ? review.issues : [];
+    return {
+      title: "编辑计划的数字证据需要人工复核",
+      summary: "请逐条对照编辑计划表述与引用的原文局部证据。确认后只放行当前展示的数字证据问题，其他结构和内容检查仍会继续执行。",
+      details: issues.map((entry, index) => {
+        const explanation = editorialIssueExplanation(entry);
+        return {
+          label: `待复核问题 ${index + 1}`,
+          value: `字段：${explanation.field}；${explanation.value}；系统判断：${explanation.requirement}`
+        };
+      }),
       evidenceReviews: review.evidenceReviews
     };
   }
@@ -291,15 +454,19 @@ export function describeWeeklyReportManualReview(review = {}) {
   }
 
   if (stage === "editorial_plan") {
-    const explanation = editorialIssueExplanation(issue);
+    const issues = Array.isArray(review.issues) ? review.issues : [];
     const related = Array.isArray(review.relatedPaperIds) ? review.relatedPaperIds : [];
     return {
       title: paperId ? `论文 ${paperId} 的编辑计划需要修正` : "编辑计划需要修正",
       summary: "自动修正未满足质量门。继续修正只会修改下列失败字段，其他已通过内容保持不变。",
       details: [
-        { label: "失败字段", value: explanation.field },
-        { label: "触发内容", value: explanation.value },
-        { label: "未达成要求", value: explanation.requirement },
+        ...issues.map((entry, index) => {
+          const explanation = editorialIssueExplanation(entry);
+          return {
+            label: `未通过校验 ${index + 1}`,
+            value: `字段：${explanation.field}；${explanation.value}；未达成要求：${explanation.requirement}`
+          };
+        }),
         { label: "关联论文", value: related.length ? related.join("、") : paperId || "无法从该问题定位到单篇论文" },
         { label: "继续修正", value: "服务端仅接受失败字段的局部补丁，并重新检查整份编辑计划。" }
       ]

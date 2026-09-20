@@ -401,6 +401,97 @@ test("Pipeline Runner retries only the failed paper before continuing calibratio
   assert.equal(result.state, "publish");
 });
 
+test("Pipeline Runner retains later Evidence failures across consecutive paper retries", async () => {
+  const failedPapers = ["2609.04001", "2609.04002"].map((paperId) => ({
+    contextPacket: { paperId },
+    paper: { id: paperId }
+  }));
+  const backlog = failedPapers.map((item) => ({
+    itemId: `evidence-${item.paper.id}`,
+    paperId: item.paper.id,
+    kind: "processing_failure",
+    scope: "paper",
+    sourceStage: "extract_evidence",
+    summary: "Evidence 调用未完成。",
+    allowedActions: ["retry_paper", "exit_task"]
+  }));
+  const decisions = backlog.map((item) => ({
+    action: "retry_paper",
+    itemId: item.itemId
+  }));
+  const retriedPaperIds = [];
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => decisions.shift()
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      evidenceResult: { processingFailed: failedPapers },
+      manualReviewBacklog: backlog
+    }),
+    evidence: async (value) => {
+      retriedPaperIds.push(value.contextResult.eligible[0].paper.id);
+      const isComplete = retriedPaperIds.length === failedPapers.length;
+      return {
+        ...value,
+        evidenceResult: { processingFailed: [] },
+        nextStage: isComplete ? "publish" : "manual_review",
+        ...(isComplete ? {
+          markdown: "# Consecutive retries completed",
+          qaReport: { status: "passed" }
+        } : {})
+      };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop(
+    { reportKey: "2026-W37" },
+    context,
+    { buildContext: async () => ({}), callModel: async () => ({}), steps }
+  );
+
+  assert.deepEqual(retriedPaperIds, ["2609.04001", "2609.04002"]);
+  assert.equal(result.state, "publish");
+});
+
+test("Pipeline Runner explains a stale paper retry with the concrete paper ID", async () => {
+  const paperId = "2609.04003";
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "retry_paper",
+      itemId: `evidence-${paperId}`
+    })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      evidenceResult: { processingFailed: [] },
+      manualReviewBacklog: [{
+        itemId: `evidence-${paperId}`,
+        paperId,
+        kind: "processing_failure",
+        scope: "paper",
+        sourceStage: "extract_evidence",
+        summary: "Evidence 调用未完成。",
+        allowedActions: ["retry_paper", "exit_task"]
+      }]
+    })
+  };
+
+  await assert.rejects(
+    () => runWeeklyReportAgentLoop(
+      { reportKey: "2026-W37" },
+      context,
+      { buildContext: async () => ({}), callModel: async () => ({}), steps }
+    ),
+    (error) => (
+      error.code === "READING_LIST_MANUAL_REVIEW_ACTION_INVALID"
+      && error.paperId === paperId
+      && error.message === `无法重试论文 ${paperId}：当前任务未保留该论文上一次失败时的处理产物。请退出当前任务并重新生成周报。`
+    )
+  );
+});
+
 test("Pipeline Runner retries calibration from preserved Review artifacts", async () => {
   let calibrationInput = null;
   const reviewedItem = {
@@ -708,4 +799,88 @@ test("Pipeline Runner returns a semantic evidence approval to paper semantic QA"
 
   assert.deepEqual(calls, ["prepare", "paper_semantic_qa", "report_semantic_qa"]);
   assert.equal(result.state, "publish");
+});
+
+test("Pipeline Runner adopts a retained paper draft after administrator evidence confirmation", async () => {
+  const calls = [];
+  const issueKeys = [
+    "numeric_evidence|2609.08482|experimentsAndResults|37.5|1",
+    "numeric_evidence|2609.08482|experimentsAndResults|121|1"
+  ];
+  const retainedDraft = { paperId: "2609.08482", experimentsAndResults: { text: "结果为 37.5%。", evidenceRefs: ["results:0"] } };
+  let headTailInput;
+  let reviewCount = 0;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async (review) => {
+      reviewCount += 1;
+      const item = review.items.find((entry) => entry.itemId === review.activeItemId);
+      const evidenceReview = item.evidenceReviews[0];
+      return {
+        action: "confirm_evidence",
+        itemId: item.itemId,
+        approvedIssueKeys: [evidenceReview.issueKey],
+        evidenceReviews: [evidenceReview]
+      };
+    }
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", calls, {
+      selectedItems: [{ paper: { id: "2609.08482" } }],
+      paperDrafts: [],
+      manualReviewBacklog: [],
+      paperDraftResult: {
+        succeeded: [],
+        failed: [{
+          item: { paper: { id: "2609.08482" } },
+          error: { paperId: "2609.08482", paperDraft: retainedDraft }
+        }]
+      },
+      manualReview: {
+        stage: "write_paper_sections",
+        resumeStage: "write_paper_sections",
+        activeItemId: "write-paper-2609.08482-1",
+        items: issueKeys.map((issueKey, index) => ({
+          itemId: `write-paper-2609.08482-${index + 1}`,
+          paperId: "2609.08482",
+          kind: "evidence_dispute",
+          scope: "paper",
+          sourceStage: "write_paper_sections",
+          summary: "数字证据需要人工核对。",
+          issues: [{ code: "unsupported_exact_number", path: "experimentsAndResults", detail: `问题 ${index + 1}` }],
+          evidenceReviews: [{
+            issueKey,
+            paperId: "2609.08482",
+            fieldPath: "experimentsAndResults",
+            draftExcerpt: "结果为 37.5%。",
+            evidenceSources: [{ ref: "results:0", excerpt: "The result is 37%." }]
+          }],
+          approvableIssueKeys: [issueKey],
+          allowedActions: ["confirm_evidence", "continue_repair", "skip_paper", "exit_task"]
+        }))
+      }
+    }),
+    headTail: async (value) => {
+      calls.push("write_head_tail");
+      headTailInput = value;
+      return { ...value, nextStage: "assemble" };
+    },
+    assemble: transition("assemble", "deterministic_qa", calls, { markdown: "# report", assemblyResult: { title: "report" } }),
+    deterministicQa: transition("deterministic_qa", "paper_semantic_qa", calls, { qaReport: { status: "passed" } }),
+    paperSemanticQa: transition("paper_semantic_qa", "report_semantic_qa", calls, { qaReport: { status: "passed" } }),
+    reportSemanticQa: transition("report_semantic_qa", "publish", calls, { qaReport: { status: "passed" } })
+  };
+
+  const result = await runWeeklyReportAgentLoop({ reportKey: "2026-W37" }, context, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps
+  });
+
+  assert.equal(result.state, "publish");
+  assert.equal(reviewCount, 2);
+  assert.deepEqual(calls, ["prepare", "write_head_tail", "assemble", "deterministic_qa", "paper_semantic_qa", "report_semantic_qa"]);
+  assert.deepEqual(headTailInput.paperDrafts, [retainedDraft]);
+  assert.equal(headTailInput.paperDraftResult.failed.length, 0);
+  assert.deepEqual(headTailInput.manualEvidenceApprovals.map((entry) => entry.issueKey), issueKeys);
 });

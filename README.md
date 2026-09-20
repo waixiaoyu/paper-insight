@@ -98,6 +98,8 @@ cs.NI, cs.AI, cs.LG, cs.MA, cs.DC, cs.IT, eess.SP, eess.SY
 
 论文推荐必须使用配置的大模型接口。应用不会使用本地关键词规则兜底。
 
+默认模型为 GLM-5.3，统一使用 BigModel Coding OpenAI 兼容接口：`https://open.bigmodel.cn/api/coding/paas/v4/chat/completions`。所有 GLM-5.3 系列请求固定发送 Thinking enabled 与 `reasoning_effort=low`；新版周报 Agent 另外使用流式响应，避免长时间等待响应头，Trace 同时记录请求档位和服务端返回的输入、输出、reasoning token。前端只在当前浏览器会话保存 API Key，已有会话中的旧 Anthropic 供应商标识会一次性迁移到 Coding OpenAI，旧的默认 `glm-5.3-flash` 会一次性迁移为 `glm-5.3`，之后仍可手动切换模型；服务端不保存密钥。
+
 推荐分析阶段的大模型输入包括论文标题、作者、分类、日期、arXiv 链接和摘要。生成发布版周报时，服务端必须抓取 arXiv HTML 原文并通过原文质量门，再从方法、系统、实验、结果、局限和结论等章节提取绑定证据。没有可用原文的论文不会降级为摘要进入发布链路，而是被排除并继续处理其他论文或增补候选。
 
 大模型负责生成：

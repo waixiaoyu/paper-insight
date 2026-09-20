@@ -1,4 +1,5 @@
 import { paperDraftRepairPaths } from "./paper-draft-patch.js";
+import { buildEvidenceSourceRegistry } from "./evidence-source-registry.js";
 
 const paperIdFrom = (paper = {}, contextPacket = {}) => String(
   contextPacket.paperId || paper.id || paper.absLink || paper.link || ""
@@ -15,14 +16,12 @@ const EVIDENCE_REPAIR_FIELDS = new Set([
 ]);
 
 const evidenceSections = (contextPacket = {}) => (
-  Array.isArray(contextPacket.inputSections)
-    ? contextPacket.inputSections.map((section) => ({
-      anchor: String(section?.anchor || ""),
-      heading: String(section?.heading || ""),
-      kind: String(section?.kind || ""),
-      text: String(section?.text || "")
-    }))
-    : []
+  buildEvidenceSourceRegistry(contextPacket).sections.map((section) => ({
+    anchor: section.anchor,
+    heading: section.heading,
+    kind: section.kind,
+    units: section.units.map(({ sourceId, text }) => ({ sourceId, text }))
+  }))
 );
 
 const evidenceOutputSchema = {
@@ -43,9 +42,7 @@ const evidenceOutputSchema = {
     status: "supported | not_present | insufficient",
     sources: [
       {
-        section: "exact supplied section heading",
-        anchor: "exact supplied section anchor",
-        excerpt: "verbatim short excerpt from that section"
+        sourceId: "one supplied sourceId"
       }
     ]
   },
@@ -59,7 +56,7 @@ const evidenceOutputSchema = {
         readerImplication: "What the reader should inspect",
         adnImplication: {
           relevance: "direct | transferable | weak | none",
-          angle: "intent | closed_loop | digital_twin | network_agent | cross_domain | ops | evaluation | safety | engineering | general | none",
+          angle: "intent | closed_loop | digital_twin | network_agent | cross_domain | ops | evaluation | safety | engineering | interpretability | general | none",
           insight: "Evidence-bounded implication",
           limit: "Boundary of that implication"
         },
@@ -69,15 +66,45 @@ const evidenceOutputSchema = {
   }
 };
 
+const evidencePatchOutputSchema = (repairTargets = {}) => {
+  const fields = [...new Set((Array.isArray(repairTargets?.evidenceFields)
+    ? repairTargets.evidenceFields
+    : []).map(String).filter((field) => EVIDENCE_REPAIR_FIELDS.has(field)))];
+  return {
+    paperId: "same paperId as input",
+    patch: Object.fromEntries(fields.map((field) => [field, evidenceOutputSchema.evidenceField])),
+    ...(repairTargets?.rebuildValueSignals ? { valueSignals: evidenceOutputSchema.valueSignals } : {})
+  };
+};
+
+const isFieldScopedEvidenceRepair = (repairTargets) => (
+  repairTargets?.mode === "field_scoped_merge"
+);
+
+const evidenceRepairContract = (repairTargets) => {
+  if (isFieldScopedEvidenceRepair(repairTargets)) {
+    return {
+      outputContract: "evidence_patch",
+      outputSchema: evidencePatchOutputSchema(repairTargets),
+      repairInstruction: "Return exactly one Evidence patch JSON object. Its only top-level keys are paperId, patch, and valueSignals when repairTargets.rebuildValueSignals is true. patch must contain exactly the fields named in repairTargets.evidenceFields. Do not return evidenceCard, do not return retained fields, and do not add explanatory text. The server will merge this patch into the retained verified Evidence before full validation."
+    };
+  }
+  return {
+    outputContract: "complete_evidence",
+    outputSchema: evidenceOutputSchema,
+    repairInstruction: "Return exactly one complete Evidence response JSON object with evidenceCard and valueSignals. Include every required Evidence field. Do not return a partial patch or explanatory text."
+  };
+};
+
 const commonEvidenceRules = [
-  "Use only the supplied arXiv HTML sections. Do not use the abstract, old analysis, recommendation score, outside knowledge, or another paper.",
-  "Every supported fact must bind to an exact section anchor, the exact supplied section heading, and a short contiguous verbatim excerpt copied character-for-character from that section. Never normalize LaTeX, punctuation, whitespace, citations, or symbols inside excerpts.",
-  "Each excerpt must be self-contained enough to identify its factual subject, comparison, and metric. Do not start an excerpt with unresolved anaphora such as 'It also' or 'They also'; include the contiguous antecedent sentence or choose another excerpt.",
+  "Use only the supplied arXiv HTML source units. Do not use the abstract, old analysis, recommendation score, outside knowledge, or another paper.",
+  "For every supported fact, select one or more supplied sourceId values. Return only sourceId in each source object; never copy, reconstruct, normalize, or override source text, section headings, anchors, LaTeX, punctuation, or whitespace. The server will materialize the immutable source text and metadata.",
+  "Each selected source unit must identify the factual subject, comparison, metric, and scope well enough to support the summary. If one unit begins with an unresolved reference such as 'It also' or 'They also', also select the supplied unit containing the antecedent or choose another self-contained unit.",
   "The problem field must cite a sentence that states the research problem, gap, challenge, need, or capability being tested. A contribution-only sentence such as 'We introduce X' is not sufficient problem Evidence.",
   "The affiliations field may use only the supplied paper author or institution metadata. Product names, evaluated providers, customer names, citations, acknowledgements, and body-text organization mentions are not author affiliations; return affiliations as not_present when metadata is insufficient.",
   "Keep negative result scope exact. If long-document degradation is reported for commercial VLMs while named extraction systems remain close to their short-document scores, do not summarize this as most or current systems degrading. A results summary that mentions commercial VLMs on long documents must bind a results excerpt that explicitly names both commercial VLMs and the long-document scope.",
-  "Before returning, verify every excerpt by exact substring matching against its selected section. If no exact excerpt can be copied, return not_present or insufficient instead of paraphrasing a source excerpt.",
-  "Every exact number in a summary or value claim must appear in its bound excerpt. Otherwise add an exact supporting excerpt or remove the number from the claim; do not introduce citation or section numbers into summaries.",
+  "Before returning, verify every sourceId exactly matches one of the supplied units for this paper. If no supplied unit supports a field, return not_present or insufficient instead of inventing a source.",
+  "Every exact number, unit, direction, comparison subject, and cohort or applicability scope in a summary or value claim must be supported by its bound source units. Otherwise select the supporting sourceId or remove the unsupported detail; do not introduce citation or section numbers into summaries.",
   "Every Evidence field always requires a non-empty summary. For not_present or insufficient, explain the evidence boundary briefly and return sources as an empty array.",
   "Every Value Signal requires dimension and it must be exactly one of: scenarioProblemValue, methodNovelty, practicalValue, evidence.",
   "Every evidenceRefs item must point to an existing source using the exact field:index form, for example method:0. Never reference a source index that was not returned.",
@@ -99,7 +126,7 @@ const evidenceCompletenessContract = {
     "warnings"
   ],
   everyEvidenceFieldRequiredFields: ["summary", "status", "sources"],
-  everyEvidenceSourceRequiredFields: ["section", "anchor", "excerpt"],
+  everyEvidenceSourceRequiredFields: ["sourceId"],
   valueSignalsRequiredFields: ["paperId", "signals"],
   everyValueSignalRequiredFields: [
     "dimension",
@@ -112,7 +139,40 @@ const evidenceCompletenessContract = {
   allowedDimensions: ["scenarioProblemValue", "methodNovelty", "practicalValue", "evidence"]
 };
 
-const baseEvidencePayload = ({ task, paper, contextPacket }) => ({
+const evidencePatchCompletenessContract = (repairTargets = {}) => {
+  const fields = [...new Set((Array.isArray(repairTargets?.evidenceFields)
+    ? repairTargets.evidenceFields
+    : []).map(String).filter((field) => EVIDENCE_REPAIR_FIELDS.has(field)))];
+  return {
+    patchEnvelopeRequiredFields: [
+      "paperId",
+      "patch",
+      ...(repairTargets?.rebuildValueSignals ? ["valueSignals"] : [])
+    ],
+    patchRequiredEvidenceFields: fields,
+    everyEvidenceFieldRequiredFields: evidenceCompletenessContract.everyEvidenceFieldRequiredFields,
+    everyEvidenceSourceRequiredFields: evidenceCompletenessContract.everyEvidenceSourceRequiredFields,
+    ...(repairTargets?.rebuildValueSignals ? {
+      valueSignalsRequiredFields: evidenceCompletenessContract.valueSignalsRequiredFields,
+      everyValueSignalRequiredFields: evidenceCompletenessContract.everyValueSignalRequiredFields,
+      allowedDimensions: evidenceCompletenessContract.allowedDimensions
+    } : {})
+  };
+};
+
+const evidenceReferenceCatalog = (artifacts = {}) => Object.fromEntries(
+  [...EVIDENCE_REPAIR_FIELDS].map((field) => [
+    field,
+    (Array.isArray(artifacts?.evidenceCard?.[field]?.sources)
+      ? artifacts.evidenceCard[field].sources
+      : []).map((source, index) => ({
+      ref: `${field}:${index}`,
+      sourceId: String(source?.sourceId || "")
+    }))
+  ])
+);
+
+const baseEvidencePayload = ({ task, paper, contextPacket, repairTargets = null }) => ({
   task,
   agentRole: "evidence_extraction",
   paper: {
@@ -124,8 +184,12 @@ const baseEvidencePayload = ({ task, paper, contextPacket }) => ({
     sections: evidenceSections(contextPacket)
   },
   rules: commonEvidenceRules,
-  completenessContract: evidenceCompletenessContract,
-  outputSchema: evidenceOutputSchema
+  completenessContract: isFieldScopedEvidenceRepair(repairTargets)
+    ? evidencePatchCompletenessContract(repairTargets)
+    : evidenceCompletenessContract,
+  outputSchema: isFieldScopedEvidenceRepair(repairTargets)
+    ? evidencePatchOutputSchema(repairTargets)
+    : evidenceOutputSchema
 });
 
 export const buildEvidencePrompt = ({ paper, contextPacket } = {}) => JSON.stringify(
@@ -137,22 +201,30 @@ export const buildEvidencePrompt = ({ paper, contextPacket } = {}) => JSON.strin
 );
 
 const EVIDENCE_REPAIR_HINTS = Object.freeze({
-  excerpt_not_in_source: "At this path, copy a shorter contiguous verbatim substring character-for-character from the exact bound section. Do not reconstruct, normalize, join non-contiguous sentences, or paraphrase the excerpt.",
-  excerpt_not_self_contained: "At this path, include the contiguous antecedent that names the subject, comparison, and metric, or choose another self-contained excerpt. Do not start with It also or They also.",
-  numeric_claim_not_in_excerpt: "At this path, remove the exact number or version from the summary or Value Signal unless the same field binds a verbatim excerpt containing that exact token. Do not move the unsupported number to another field.",
-  problem_excerpt_not_problem_statement: "Replace the problem source with a verbatim sentence that directly states a problem, gap, challenge, need, risk, or tested capability. A contribution announcement is not problem Evidence.",
-  commercial_vlm_long_document_source_missing: "Bind a verbatim results excerpt that explicitly names both commercial VLMs and the long-document scope, or remove that commercial-VLM long-document claim from the summary.",
+  excerpt_not_in_source: "Replace the legacy copied source with a supplied sourceId that supports this path. Do not return source text.",
+  excerpt_not_self_contained: "Select the supplied sourceId containing the antecedent that names the subject, comparison, and metric, or choose another self-contained source unit.",
+  numeric_claim_not_in_excerpt: "At this path, remove the exact number or version unless the same field binds a sourceId whose unit contains that exact token. Do not move the unsupported number to another field.",
+  problem_excerpt_not_problem_statement: "Replace the problem source with a sourceId whose unit directly states a problem, gap, challenge, need, risk, or tested capability. A contribution announcement is not problem Evidence.",
+  commercial_vlm_long_document_source_missing: "Bind a results sourceId whose unit explicitly names both commercial VLMs and the long-document scope, or remove that commercial-VLM long-document claim from the summary.",
   model_cohort_scope_overgeneralized: "Keep the negative result limited to the evaluated or named cohort. Do not rewrite commercial VLM, named-system, or best-system evidence as a result about most or current systems.",
   affiliation_source_not_metadata: "Remove body, appendix, product, provider, customer, citation, or acknowledgement sources from affiliations. Use author or institution metadata only; otherwise return not_present with no sources.",
-  unknown_section_anchor: "Replace the source anchor with an exact anchor from the supplied context and copy the excerpt from that same section.",
-  missing_evidence_source: "Add a valid bound source for this supported field or change the field to not_present or insufficient with an empty sources array."
+  unknown_section_anchor: "Replace the legacy source with a sourceId from the supplied context.",
+  missing_evidence_source: "Add a valid supplied sourceId for this supported field or change the field to not_present or insufficient with an empty sources array.",
+  schema_invalid: "Return only the declared JSON contract. Every Evidence field status must be exactly supported, not_present, or insufficient; do not use verified or any other status."
 });
 
 const evidenceRepairIssue = (itemIssue) => {
+  const code = String(itemIssue?.code || "evidence_validation_failed");
   const result = {
-    code: String(itemIssue?.code || "evidence_validation_failed"),
-    path: String(itemIssue?.path || "")
+    code,
+    path: String(itemIssue?.path || ""),
+    detail: code === "paper_id_mismatch"
+      ? "Paper identifier must match the requested paper."
+      : String(itemIssue?.detail || "").slice(0, 1200)
   };
+  if (code !== "paper_id_mismatch" && itemIssue?.previousValue !== undefined) {
+    result.previousValue = itemIssue.previousValue;
+  }
   const repairHint = EVIDENCE_REPAIR_HINTS[result.code];
   if (repairHint) {
     result.repairHints = [repairHint];
@@ -163,15 +235,17 @@ const evidenceRepairIssue = (itemIssue) => {
 export const buildEvidenceRepairPrompt = ({
   paper,
   contextPacket,
+  currentArtifacts = null,
   repairTargets = {},
   issues = []
 } = {}) => JSON.stringify({
   ...baseEvidencePayload({
     task: "weekly_report_extract_evidence_repair",
     paper,
-    contextPacket
+    contextPacket,
+    repairTargets
   }),
-  repairInstruction: "Regenerate the complete Evidence response for this paper. Fix the listed validation classes while preserving every required field in completenessContract. Do not omit a field merely because its path is not listed. Recheck exact excerpt substrings, section headings, numeric grounding, evidenceRefs, and every Value Signal dimension before returning.",
+  ...evidenceRepairContract(repairTargets),
   repairTargets: {
     mode: String(repairTargets?.mode || "full_response"),
     evidenceFields: [...new Set((Array.isArray(repairTargets?.evidenceFields)
@@ -180,21 +254,26 @@ export const buildEvidenceRepairPrompt = ({
     rebuildValueSignals: Boolean(repairTargets?.rebuildValueSignals)
   },
   serverMergePolicy: "Only fields named in repairTargets.evidenceFields and valueSignals when rebuildValueSignals is true may replace the retained normalized artifacts. Changes outside that scope are ignored. The merged complete artifacts are then fully revalidated.",
+  currentEvidenceReferenceCatalog: evidenceReferenceCatalog(currentArtifacts),
+  evidenceRefInstruction: "Every evidenceRefs value uses field:index. For retained fields, use only a ref listed in currentEvidenceReferenceCatalog. For fields returned in patch, index the patch field's sources array from zero. Never use section names such as intro, a sourceId, an anchor, or a source-unit position as an evidenceRefs value.",
   issues: (Array.isArray(issues) ? issues : []).slice(0, 30).map(evidenceRepairIssue)
 });
 
 export const buildEvidenceResponseRepairPrompt = ({
   paper,
   contextPacket,
+  currentArtifacts = null,
   repairTargets = null,
   issues = []
 } = {}) => JSON.stringify({
   ...baseEvidencePayload({
     task: "weekly_report_extract_evidence_response_repair",
     paper,
-    contextPacket
+    contextPacket,
+    repairTargets
   }),
-  repairInstruction: "Return one complete Evidence response as valid JSON that conforms to outputSchema and completenessContract. Correct only the response structure. Do not rely on, quote, or reproduce the prior malformed raw response. When repairTargets is present, preserve that content-repair scope and return all required fields so the server can apply the existing scope restriction.",
+  ...evidenceRepairContract(repairTargets),
+  responseRepairInstruction: "Correct only JSON syntax or the declared output contract. Do not rely on, quote, or reproduce the prior malformed raw response. Keep the supplied repairTargets unchanged.",
   ...(repairTargets ? {
     repairTargets: {
       mode: String(repairTargets?.mode || "full_response"),
@@ -203,7 +282,9 @@ export const buildEvidenceResponseRepairPrompt = ({
         : []).map(String).filter((field) => EVIDENCE_REPAIR_FIELDS.has(field)))],
       rebuildValueSignals: Boolean(repairTargets?.rebuildValueSignals)
     },
-    serverMergePolicy: "When repairTargets is present, only fields named in repairTargets.evidenceFields and valueSignals when rebuildValueSignals is true may replace retained normalized artifacts. Changes outside that scope are ignored and the merged complete artifacts are fully revalidated."
+    serverMergePolicy: "When repairTargets is present, only fields named in repairTargets.evidenceFields and valueSignals when rebuildValueSignals is true may replace retained normalized artifacts. Changes outside that scope are ignored and the merged complete artifacts are fully revalidated.",
+    currentEvidenceReferenceCatalog: evidenceReferenceCatalog(currentArtifacts),
+    evidenceRefInstruction: "Every evidenceRefs value uses field:index. For retained fields, use only a ref listed in currentEvidenceReferenceCatalog. For fields returned in patch, index the patch field's sources array from zero. Never use section names such as intro, a sourceId, an anchor, or a source-unit position as an evidenceRefs value."
   } : {}),
   responseIssues: (Array.isArray(issues) ? issues : []).slice(0, 30).map(evidenceRepairIssue)
 });
@@ -284,8 +365,12 @@ const reviewOutputSchema = {
       message: "Why the Evidence summary is not faithful to its excerpt"
     }]
   },
+  responseModes: {
+    repair_required: "Return the complete Review response, including all scores and editorial fields. The semantic Evidence issues are advisory and do not stop scoring.",
+    pass: "Return paperId, evidenceValidation, scores, scoreReason, weakness, uncertainty, interestFit, interestReason, affiliations, and affiliationEvidenceRefs."
+  },
   scores: {
-    scenarioProblemValue: "integer 0-100",
+    scenarioProblemValue: "integer 0-100; always required",
     methodNovelty: "integer 0-100",
     practicalValue: "integer 0-100",
     evidence: "integer 0-100"
@@ -300,9 +385,10 @@ const reviewOutputSchema = {
 };
 
 const commonReviewRules = [
-  "First verify every independent sentence and clause in each Evidence Card summary against at least one bound verbatim excerpt from that same field.",
+  "First verify every independent sentence and clause in each Evidence Card summary against at least one bound server-owned readable source excerpt from that same field. Each readable excerpt is backed by an exact rawExcerpt retained in Trace; do not require the readable form to preserve LaTeX or typography.",
+  "For every quantitative or comparative claim, verify the numeric value together with its unit, direction, comparison subject, and cohort or applicability scope. Any unit mismatch, reversed direction, swapped comparison subject, or scope expansion requires Evidence repair.",
   "Also verify every Value Signal claim, reader implication, ADN implication, limit, and caveat against its declared evidenceRefs. If a Value Signal introduces an unsupported factual premise, request repair with field=valueSignals.",
-  "If any summary materially overstates, contradicts, or invents information, return evidenceValidation.status=repair_required with specific issues. Do not accept scores in that response.",
+  "If any summary materially overstates, contradicts, or invents information, set evidenceValidation.status=repair_required and list specific issues. Semantic Evidence issues are advisory: still return all scores and editorial fields so the paper can continue through Review with an administrator warning.",
   "If Evidence passes, score all four research-quality dimensions independently from 0 to 100.",
   "Direction fit is only a label. It must not increase or decrease any of the four research-quality scores.",
   "Use target_network_autonomy only when the paper's primary problem domain is directly about communication networks, telecom infrastructure, network operations, or network autonomy. A general AI/agent benchmark that may transfer to network autonomy is general_ai_system, not target_network_autonomy.",
@@ -665,6 +751,14 @@ const WRITING_REPAIR_HINTS = Object.freeze({
   single_paper_head_tail_repetition: "For a one-paper report, keep reportIntroduction to the problem and reading entry, keep the single-paper observation to one useful result and one evidence boundary, and keep closingSummary to a distinct final reading focus. Choose a different supplied reading dimension for closingSummary, such as an evidence boundary or final verification priority. Do not preserve or lightly paraphrase any long phrase from paperDraft recommendedFocus; changing only the tail of that sentence is insufficient."
 });
 
+const safeUnsupportedNumbers = (itemIssue = {}) => {
+  if (String(itemIssue?.code || "") !== "numeric_claim_not_in_evidence") return [];
+  const match = String(itemIssue?.detail || "").match(
+    /^Exact number ([0-9]+(?:[.,][0-9]+)*(?:%)?) does not occur in the cited Evidence\.$/u
+  );
+  return match ? [match[1]] : [];
+};
+
 const writingRepairIssue = (itemIssue, fallbackCode) => {
   const result = {
     code: String(itemIssue?.code || fallbackCode),
@@ -682,8 +776,31 @@ const writingRepairIssue = (itemIssue, fallbackCode) => {
   if (repairHints.length) {
     result.repairHints = repairHints;
   }
+  const unsupportedNumbers = safeUnsupportedNumbers(itemIssue);
+  if (unsupportedNumbers.length) {
+    result.unsupportedNumbers = unsupportedNumbers;
+  }
   return result;
 };
+
+export const editorialPlanRepairPathsForIssues = (issues = []) => [...new Set(
+  (Array.isArray(issues) ? issues : []).flatMap((itemIssue) => {
+    const path = String(itemIssue?.path || "");
+    const trendRefMatch = path.match(/^(trends\[\d+\])\.(supportingPaperIds|evidenceRefs)$/u);
+    if (trendRefMatch) {
+      return [
+        path,
+        `${trendRefMatch[1]}.${trendRefMatch[2] === "supportingPaperIds" ? "evidenceRefs" : "supportingPaperIds"}`
+      ];
+    }
+    const numericClaimMatch = String(itemIssue?.code || "") === "numeric_claim_not_in_evidence"
+      ? path.match(/^((?:trends|singlePaperObservations)\[\d+\])\.claim$/u)
+      : null;
+    return numericClaimMatch
+      ? [path, `${numericClaimMatch[1]}.evidenceRefs`]
+      : [path];
+  }).filter(Boolean)
+)];
 
 const baseEditorialPlanPayload = ({ task, selectedItems = [] }) => ({
   task,
@@ -712,13 +829,7 @@ export const buildEditorialPlanRepairPrompt = ({
   currentEditorialPlan,
   outputSchema: editorialPlanPatchOutputSchema,
   repairInstruction: "Return a JSON patch only. Each patch path must exactly equal one listed repairPaths item. Change only those values; every unpatched value is retained by the server. Do not regenerate the complete Editorial Plan.",
-  repairPaths: [...new Set((Array.isArray(issues) ? issues : []).flatMap((itemIssue) => {
-    const path = String(itemIssue?.path || "");
-    const trendMatch = path.match(/^(trends\[\d+\])\.(supportingPaperIds|evidenceRefs)$/u);
-    return trendMatch
-      ? [path, `${trendMatch[1]}.${trendMatch[2] === "supportingPaperIds" ? "evidenceRefs" : "supportingPaperIds"}`]
-      : [path];
-  }).filter(Boolean))],
+  repairPaths: editorialPlanRepairPathsForIssues(issues),
   issues: (Array.isArray(issues) ? issues : []).slice(0, 40)
     .map((itemIssue) => writingRepairIssue(itemIssue, "editorial_plan_validation_failed"))
 });

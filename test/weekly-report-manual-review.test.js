@@ -21,7 +21,11 @@ test("unified manual-review queue normalizes all three review kinds", () => {
         scope: "paper",
         sourceStage: "extract_evidence",
         summary: "Evidence 响应格式恢复后仍不可用。",
-        details: [{ text: "模型返回的外层字段不符合契约。" }],
+        details: [{
+          text: "模型返回的外层字段不符合契约。",
+          diagnosticReason: "最后一次模型返回缺少完整的证据卡对象。",
+          responseExcerpt: "{\"evidenceCard\":"
+        }],
         allowedActions: ["retry_paper", "retry_paper", "exit_task"]
       },
       {
@@ -36,6 +40,7 @@ test("unified manual-review queue normalizes all three review kinds", () => {
           paperId: "2609.02515",
           fieldPath: "experimentsAndResults",
           fieldLabel: "实验与结果",
+          reviewContext: "evidence_extraction",
           draftExcerpt: "正文片段",
           evidenceSources: [{ ref: "results:0", section: "Results", anchor: "S4", excerpt: "原文摘录" }]
         }],
@@ -62,6 +67,16 @@ test("unified manual-review queue normalizes all three review kinds", () => {
   assert.equal(queue.items.length, 3);
   assert.deepEqual(queue.items[0].relatedPaperIds, ["2609.02514"]);
   assert.deepEqual(queue.items[0].allowedActions, ["retry_paper", "exit_task"]);
+  assert.deepEqual(queue.items[0].details[0], {
+    title: "",
+    requirement: "",
+    actual: "",
+    text: "模型返回的外层字段不符合契约。",
+    path: "",
+    code: "",
+    diagnosticReason: "最后一次模型返回缺少完整的证据卡对象。",
+    responseExcerpt: "{\"evidenceCard\":"
+  });
   assert.equal(manualReviewItem(queue, "selection-2609.02516").scoreSnapshot.finalScore, 67);
   assert.equal(manualReviewItem(queue, "missing-item"), null);
 
@@ -87,4 +102,22 @@ test("legacy single-item manual review request is wrapped into a queue", () => {
   assert.equal(queue.items[0].kind, "evidence_dispute");
   assert.equal(queue.items[0].paperId, "2609.02517");
   assert.equal(queue.resumeStage, "paper_semantic_qa");
+});
+
+test("manual review keeps bounded trigger text and Evidence references for administrator diagnosis", () => {
+  const queue = normalizeManualReviewRequest({
+    stage: "editorial_plan",
+    relatedPaperIds: ["2608.09312"],
+    issues: [{
+      code: "numeric_claim_not_in_evidence",
+      path: "singlePaperObservations[0].claim",
+      detail: "Exact number 100 does not occur in the cited Evidence.",
+      triggerText: "该系统保持 100 微秒时限。",
+      evidenceRefs: ["2608.09312:results:0"]
+    }],
+    allowedActions: ["confirm_evidence", "continue_repair", "exit_task"]
+  });
+
+  assert.equal(queue.items[0].issues[0].triggerText, "该系统保持 100 微秒时限。");
+  assert.deepEqual(queue.items[0].issues[0].evidenceRefs, ["2608.09312:results:0"]);
 });

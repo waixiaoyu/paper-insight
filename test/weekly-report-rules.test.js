@@ -422,6 +422,30 @@ test("new Selection enforces maxSelectedCount with deterministic calibrated orde
   assert.equal(result.notSelected[0].selection.selectionReason, "max_selected_count");
 });
 
+test("new Selection defaults to the five highest calibrated papers", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("paper-91", 91, "must_read"),
+    calibratedItem("paper-89", 89, "must_read"),
+    calibratedItem("paper-87", 87, "worth_reading"),
+    calibratedItem("paper-85", 85, "worth_reading"),
+    calibratedItem("paper-83", 83, "skim"),
+    calibratedItem("paper-81", 81, "skim"),
+    calibratedItem("paper-79", 79, "background_only")
+  ], { threshold: 70, minSelectedCount: 3 });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), [
+    "paper-91",
+    "paper-89",
+    "paper-87",
+    "paper-85",
+    "paper-83"
+  ]);
+  assert.deepEqual(result.notSelected.map((item) => item.selection.selectionReason), [
+    "max_selected_count",
+    "max_selected_count"
+  ]);
+});
+
 test("new Selection excludes papers without a converged calibrationResult", () => {
   const result = selectCalibratedPapers([
     calibratedItem("consistent", 75, "worth_reading"),

@@ -36,18 +36,18 @@ Agent Loop 的过程展示是辅助能力，只服务于管理员运维、问题
 
 running 和各 Agent stage 只是任务执行状态，不是第三种发布结果。第一阶段没有 queued 状态或任务队列。
 
-不引入 draft、review、publishable 等额外发布状态。语义检查内部如果返回 review，最终发布决策仍映射为 reject。
+不引入 draft、review、publishable 等额外发布状态。语义检查只产生管理员告警，不直接改变 publish/reject；只有确定性身份、来源归属、产物集合或结构完整性门禁失败时，任务才进入修正或管理员处理。
 
-管理员不能强制发布已经进入最终 `reject` 的整稿，也不能绕过全文、身份、事实证据、跨论文隔离、敏感信息和最终整稿 QA。对于已经通过这些可信度门、但分数低于默认入选线的单篇论文，允许按 2.1.1.2 的规则人工覆盖 Selection 阈值；这不是覆盖整稿 reject。
+管理员不能强制发布已经进入最终 `reject` 的整稿，也不能绕过全文可用性、论文身份、来源归属、跨论文隔离、敏感信息、产物集合和发布结构。对于已经通过这些确定性可信度门、但分数低于默认入选线的单篇论文，允许按 2.1.1.2 的规则人工覆盖 Selection 阈值；这不是覆盖整稿 reject。
 
 ### 2.1.1 修正耗尽后的管理员处理
 
-每个可修复的内容质量门默认允许 3 次定向修正。第 3 次修正后仍有阻断问题时，任务保持 `running` 并暂停在当前 stage，向管理员展示问题、涉及论文、3 次修正记录和可选处理；这不是第三种发布结果。
+每个可修复的确定性质量门默认允许 3 次定向修正。第 3 次修正后仍有阻断问题时，任务保持 `running` 并暂停在当前 stage，向管理员展示问题、涉及论文、3 次修正记录和可选处理；这不是第三种发布结果。语义判断不会进入这条阻断修正链路。
 
 - 继续修正：管理员可以继续触发定向修正，不设人工修正次数上限。每次修正只允许写入本轮 issues 指定的 artifact 路径；服务端必须基于上一版 artifact 应用路径级补丁，未被指定的字段逐值保持不变。补丁后重新执行完整校验；若仍失败，Trace 必须记录本轮目标路径、前后差异、遗留问题和新出现问题，随后再次回到管理员处理。
 - 退出任务：以 `reject` 结束，保留当前 Trace、未发布 Markdown 和原因。
 - 跳过论文：单篇问题必须从 issue 的 artifact 路径和 evidenceRefs 推导唯一 paperId，并直接开放跳过。跨论文问题必须列出相关 paperIds，由管理员选择其中一篇后再提交跳过决定；不得因为 issue 属于 Editorial Plan、整稿 QA 或其他报告级 artifact 就禁用跳过。排除后记录原因，并从 reserveCandidates 增补；候选耗尽时按已有合格论文继续。跳过后必须重新执行受影响的后续阶段，不能复用旧的跨论文产物。
-- 忽略：只允许处理非阻断管理员告警，不能忽略 Evidence、数字、机构、跨论文归因、发布结构或语义 QA 的阻断问题，也不能据此绕过 publish 质量门。
+- 忽略：用于语义一致性、数字字面匹配、机构语义判断、范围限定、文风和其他模型判断告警。它不修改稿件，也不覆盖确定性硬门禁。论文身份、sourceId/evidenceRefs 归属、跨论文引用、论文集合、评分/层级、必填结构、敏感信息和发布结构问题不能忽略。
 
 浏览器关闭不影响暂停任务。重新打开后，管理员能够恢复看到同一处理面板并作出决定。服务重启仍按既有规则标记为 `agent_interrupted`，第一阶段不做断点恢复。
 
@@ -58,21 +58,44 @@ Evidence Agent 的失败必须先按性质分类，不能把模型响应格式�
 - 响应格式错误包括 JSON 无法解析、必填对象或字段缺失、字段类型错误，以及结构化响应截断。它们只触发独立的 response-format repair，不计入内容质量修正次数，也不产生 `evidence_excluded`。
 - 每次 Evidence 调用最多执行 2 次自动 response-format repair；每次只要求模型按既定 Evidence 契约重新返回完整结构化响应，不改变原文质量门和事实校验规则。
 - response-format repair 仍无法获得可解析且符合 Schema 的响应时，该论文记为 `processingFailed`，并继续处理其他论文及 reserveCandidates。它不是“原文证据不足”或“论文 Evidence 不合格”。
-- 只有响应结构有效后，才执行论据核验。数字必须出现于对应原文摘录、摘录必须可在绑定原文段落中逐字找到、Value Signal 的引用必须存在；这些问题进入内容修正，不得通过格式恢复绕过。
+- 只有响应结构有效后，才执行来源绑定与语义检查。paperId、sourceId、章节锚点、来源归属和 Value Signal 引用存在性属于确定性硬门禁；数字、单位、方向、比较对象、适用范围和自然语言是否被摘录充分支持属于语义提示，只写入 Trace 和管理员告警，不触发内容修正、人工决策或论文排除。
 - 论据内容修正默认最多 3 次，只能修改本轮 issues 指定的字段和引用。对“研究问题”字段，研究目标、待验证能力、明确限制或研究空白均可作为有效问题依据；校验不得仅凭固定关键词否定已经被绑定摘录直接表达的研究问题。
-- 内容修正仍不能解决论据问题时，不再静默排除论文；系统将其归入 `evidence_dispute` 并进入 2.1.1.2 的统一待复核队列。只有管理员明确跳过，或服务端能确定原文不存在任何可用于收缩表述的证据时，才形成内容排除。Trace 必须分别记录格式恢复、内容修正、处理失败、人工复核和内容排除。
+- 确定性来源绑定问题修正后仍不能解决时，不再静默排除论文；系统将其归入 `evidence_dispute` 或 `processing_failure` 并进入 2.1.1.2 的统一待复核队列。语义检查未收敛时继续任务并保留告警。只有管理员明确跳过，或服务端能确定论文身份、来源归属或必填产物不可恢复时，才形成内容排除。Trace 必须分别记录格式恢复、确定性修正、语义告警、处理失败、人工复核和内容排除。
 
 ### 2.1.1.2 单篇人工复核与保底入选
 
 单篇失败必须先区分问题性质，不能把 PaperInsight 自身的处理失败解释为论文质量不足：
 
 - `processing_failure`：网络或模型最终失败、响应截断、JSON/Schema 形状不兼容、服务端规范化失败或阶段产物缺失。它不改变论文分数，也不产生自动内容排除；优先确定性恢复，单篇范围只重试当前论文，Calibration 或报告级范围只重试当前阶段，仍失败则进入待复核队列。
-- `evidence_dispute`：稿件表述与局部原文之间存在可解释差异、数字或单位等价关系无法确定、校验器可能误判，或自动局部修正耗尽。界面必须同时显示周报片段和 `evidenceRefs` 对应的局部原文，允许定向修正、确认当前证据问题或跳过论文。
+- `evidence_dispute`：确定性的来源引用、论文归属或证据对象关系无法成立，且系统保留了可复核产物。界面显示周报片段、引用标识和可取得的局部原文，允许重试当前论文或跳过论文。数字、单位等价、事实支持充分性等语义分歧不再进入阻断队列，只作为告警展示。
 - `quality_below_threshold`：论文已经通过全文、身份和证据门，但真实 Review/Calibration 分低于默认入选线。当已达标数量不足 `minSelectedCount` 时，系统优先把接近阈值的论文加入待复核队列；管理员填写理由后可以人工纳入，也可以保持不入选。
 
-人工纳入只覆盖 Selection 的分数阈值。系统必须保留真实四维分、最终分、默认决策和人工理由，并在 Trace 标记 `selectionSource=admin_override`。人工纳入不能绕过全文、身份、事实证据、跨论文归因、敏感信息和最终 QA，也不能把内部流程写入读者可见正文。
+人工纳入只覆盖 Selection 的分数阈值。系统必须保留真实四维分、最终分、默认决策和人工理由，并在 Trace 标记 `selectionSource=admin_override`。人工纳入不能绕过全文可用性、论文身份、来源归属、跨论文引用、敏感信息、产物集合和发布结构，也不能把内部流程写入读者可见正文。
+
+### 2.1.1.3 可信度门统一判定
+
+发布链路只允许两类结果：确定性硬门禁和非阻断语义告警。判断标准不是问题看起来是否严重，而是服务端能否不依赖模型理解、稳定复现同一结论。
+
+确定性硬门禁包括：
+
+- JSON/Schema、必填字段和必填产物缺失。
+- paperId、sourceId、章节锚点、evidenceRefs 的存在性、当前论文归属和跨论文引用。
+- 最终论文集合、顺序、评分、维度、readingTier、发布元数据和 Markdown 结构与服务端 artifacts 不一致。
+- API Key 等敏感信息泄漏，以及任务无法取得执行必需产物。
+
+非阻断语义告警包括：
+
+- 数字、单位、方向、比较对象、cohort、事实支持充分性和局限是否准确。
+- “明确事实冲突”、机构语义、推荐语气、文风、范围扩大、趋势质量和阅读价值等需要模型或启发式规则理解正文的判断。
+- 数字字面不一致，包括 `1000 万` 与 `10 million` 等表达换算。服务端可以记录字面差异并给出局部证据，但不能据此修正、暂停、排除论文或拒绝整稿。
+
+所有 Agent 和 deterministic_qa 共用同一判定策略。未知 issue code 默认按非阻断告警处理，只有显式列入确定性硬门禁白名单的 code 才能阻断。语义 Agent 仍必须运行并把 issue、涉及字段、稿件片段、证据引用和原因写入 Trace；其作用是帮助管理员发现风险，不是替管理员作最终事实裁决。
+
+Review Agent 在调用模型前对 Evidence 输入进行再次校验时，也必须应用同一判定策略。数字未逐字出现在绑定摘录、单位或范围语义差异等问题只能生成 `evidence_input_warning` Trace 并继续评分，不能重新包装为 `READING_LIST_REVIEW_INPUT_INVALID`。只有身份、来源归属、引用存在性或 Schema 等确定性问题可以进入 Review 人工复核；人工复核页面必须使用中文说明具体字段、当前矛盾和处理要求，不得显示空白详情或仅显示内部规则码。
 
 独立论文继续并发处理，单篇异常先写入 `manualReview.items`，不立即暂停其他论文。系统在 Selection 前集中展示待复核队列；写作或 QA 阶段新出现的单篇问题使用同一队列暂停。管理员处理后只重跑最小受影响范围；论文集合发生变化时必须重新执行 Calibration、Selection 和全部跨论文产物。
+
+Review 返回完整评分和语义问题、但错误地把 `evidenceValidation.status` 标成 `pass` 时，服务端确定性规范化为 `repair_required` 并按非阻断告警继续，不为状态标签矛盾再次调用模型。进入人工复核队列的 Evidence 或 Review 单篇失败必须单独保留原始处理产物；`retry_paper` 只重新执行该论文对应阶段并合并其他已完成论文，不得因后续阶段覆盖临时结果而退化为 `retry_job`。
 
 统一人工复核设计、状态契约、操作边界和测试要求详见 `docs/superpowers/specs/2026-09-08-weekly-report-manual-review-selection-design.md`。
 
@@ -163,7 +186,7 @@ Calibration 不得修改四维分；它只能发现评分误判并触发 Review 
 
 新增 maxSelectedCount：
 
-- 默认值 10。
+- 默认值 5。
 - 前端允许配置 3–20。
 - 服务端保证 minSelectedCount 不大于 maxSelectedCount；冲突时以下调 minSelectedCount 为准。
 - 达到阈值的论文超过上限时，按最终评分、校准结论和确定性排序只取最高优先级论文。
@@ -375,7 +398,7 @@ Agent Loop 是服务端控制的有限状态流程，不是开放式自主规划
     "paperConcurrency": 2,
     "calibrationMaxPapers": 30,
     "minSelectedCount": 3,
-    "maxSelectedCount": 10
+    "maxSelectedCount": 5
   },
   "counts": {
     "primary": 0,
@@ -457,7 +480,7 @@ state 在运行期间可使用 running；完成后只能是 publish 或 reject�
   "weekEnd": "...",
   "reviewScoreThreshold": 70,
   "minSelectedCount": 3,
-  "maxSelectedCount": 10
+  "maxSelectedCount": 5
 }
 ~~~
 
@@ -581,9 +604,11 @@ evidenceCard 不只是总结，必须保存原文来源定位。
     "status": "supported | not_present | insufficient",
     "sources": [
       {
+        "sourceId": "2606.20621:S4:U003",
         "section": "1 Introduction",
         "anchor": "S1",
-        "excerpt": "原文短摘录"
+        "excerpt": "服务端生成的可读来源文本",
+        "rawExcerpt": "缓存原文中的逐字符来源文本，仅供 Trace 与审计"
       }
     ]
   },
@@ -601,24 +626,26 @@ problem、method、systemDesign、experiments、results、limitations 使用相�
 
 证据规则：
 
-- excerpt 必须是原文中的短句或短段落，不允许模型改写。
+- Evidence Agent 调用前，服务端将通过原文质量门的章节切分为有界来源单元，并生成论文内唯一的 sourceId。来源单元同时保存原始连续文本和服务端生成的可读文本；原始文本用于 Trace 与审计，可读文本用于模型判断和管理员复核。
+- 新生成的 Evidence 响应只允许模型选择 sourceId，不允许模型回写或覆盖 excerpt、section 和 anchor。服务端依据 sourceId 物化这些字段。实时模型调用缺少 sourceId 时必须进入响应格式修正，不能回退到模型复制摘录；仅在读取、校验和迁移既有缓存产物时兼容没有 sourceId 的 `{section, anchor, excerpt}` 结构。
 - excerpt 必须足以独立识别事实主语、比较对象和指标；不能以未解析的 `It also`、`They also` 等代词承接开头，必要时连同相邻的先行句一起摘录。
-- 服务端归一化空白和 HTML 实体后，验证 excerpt 确实存在于缓存原文。
+- sourceId 必须属于当前论文且能够定位到缓存原文中的连续文本。未知、跨论文或同时携带模型自定义 excerpt 的 sourceId 一律拒绝。
 - section 和 anchor 必须存在于解析后的章节结构。
-- 精确数字必须同时存在于绑定 excerpt 中。
+- 排版差异不作为拒绝依据，包括空白、标点、HTML 实体、LaTeX 包裹符和 arXiv 渲染产生的相邻重复 token。最终 Markdown 不要求展示复杂公式或原始排版。
+- Evidence 阶段由服务端确定性核对 paperId、sourceId、引用存在性和来源归属。summary 与 Value Signal 中的数字值、单位、方向、比较对象和适用范围继续由规则和 Review Agent 检查，但检查结果作为语义告警，不阻止评分和后续发布。
+- Review Agent 必须始终返回完整四维评分。其对单位、方向、比较对象和 cohort/适用范围的质疑随评分写入 `evidenceValidation.issues` 和 Trace，不再触发 Evidence 自动重写、候选增补或论文排除。
 - `F1`、`V4` 等由拉丁字母直接前缀的指标或版本标识不拆成独立数字；完整标识及其事实含义仍由 Evidence 复核和后续语义 QA 检查。
-- 本轮 Evidence 修正后若只剩未绑定数字，服务端只能删除包含这些数字的句子，保留其余已验证的论文内容；不得用“数字已省略”“未完全落入摘录”等内部处理说明替换 summary。
-- 删除后仍有论文内容时保留原字段状态和来源；若该 summary 已无可保留内容，则将字段标记为 insufficient，使用简短证据边界说明并清空 sources，同时删除引用该字段的 Value Signal。处理完成后重新执行完整 Evidence 校验，仍不合格则进入 `evidence_dispute`；只有能够确定原文不存在任何可用于安全收缩表述的证据时才自动排除。
+- 未绑定数字或其他语义差异不再触发确定性删句、字段降级或 Value Signal 删除。系统保留模型产物，并将失败数字、字段路径和绑定来源写入 Trace 告警，交由管理员在运维视图复核。
 - affiliations 只能绑定论文作者/机构 metadata 区块；正文、附录、引用、致谢、受测产品、供应商或客户名称不能作为作者单位线索。metadata 不足时返回 not_present，不能从产品关系推断机构。
-- results summary 必须保留受测对象和反例范围。例如原文只报告商业 VLM 在长文档上退化、同时列出保持接近短文档表现的点名抽取系统时，不能概括为“多数/现有系统”普遍退化。summary 同时提到商业 VLM 和长文档结果时，当前 results.sources 中至少一个绑定摘录必须明确出现这两个范围对象，不能用同字段内其他结果摘录替代。
+- results summary 应保留受测对象和反例范围。例如原文只报告商业 VLM 在长文档上退化、同时列出保持接近短文档表现的点名抽取系统时，不应概括为“多数/现有系统”普遍退化。此类范围判断作为语义告警，不作为来源绑定硬门禁。
 - 找不到依据时返回 not_present 或 insufficient，不能补写。
-- 摘录匹配失败或必填证据缺失时，Evidence Agent 默认最多获得 3 次定向修正机会，每次只修改当前问题映射的字段。
-- Evidence 修正只接收当前原文、issue code/path 和服务端安全提示，不携带上次原始响应。安全提示按问题类型明确要求：非逐字摘录改用更短的同区块连续原文；未解析指代补连续先行句或换自包含摘录；未绑定数字删除或绑定含同一 token 的摘录且不得移到其他字段；problem 使用直接问题句；商业 VLM 长文档结论补齐同时包含两个范围的结果摘录。
+- sourceId、章节锚点、引用存在性、论文归属或必填证据对象失败时，Evidence Agent 默认最多获得 3 次定向修正机会，每次只修改当前问题映射的字段。
+- Evidence 确定性修正只接收当前原文、issue code/path 和服务端安全提示，不携带上次原始响应。安全提示只处理来源 ID、引用、论文身份和必填结构，不以数字或自然语言语义判断强制改写内容。
 - Evidence 定向修正采用服务端字段级合并：初稿中已通过校验的 evidenceCard 字段由服务端保留，模型修正响应只有 `repairTargets.evidenceFields` 指定的字段可以替换；响应对其他 Evidence 字段的修改一律忽略。
-- 任一 Evidence 字段被修正时，valueSignals 必须基于合并后的 Evidence 整体重新生成；仅 valueSignals 被 Review 指出问题时，只替换 valueSignals。合并完成后仍对完整 evidenceCard 和 valueSignals 执行全部校验，不能只校验修正字段。
+- Evidence 字段修正时只返回本轮目标字段。服务端保留现有 valueSignals，合并后执行完整校验；只有 valueSignals 的引用或内容因此失效时，下一次定向修正才单独替换 valueSignals。不得在同一次响应中强制重写两类产物。
 - 初稿无法规范化，或问题属于 JSON、Schema、paperId/响应标识等完整响应级错误时，修正回退为完整响应替换；该回退不降低验证门，也不增加第二次修正机会。
 - Review 触发的 Evidence 修正使用相同的字段级合并规则。每次 Trace 必须记录 repairScope、目标 Evidence 字段、是否重建 valueSignals，以及完整合并后校验结果。
-- 自动修正耗尽后仍不合格，进入 `evidence_dispute` 待复核队列并继续处理其他候选；不得静默排除。
+- 确定性修正耗尽后仍不合格，进入 `evidence_dispute` 或 `processing_failure` 待复核队列并继续处理其他候选；语义告警直接继续，不得静默排除。
 
 ### 8.3 valueSignals
 
@@ -684,11 +711,10 @@ Review 在评分前必须复核 Evidence Card 总结是否忠于原文摘录。
 
 如果 evidenceValidation = repair_required：
 
-- 暂不接受本次评分。
-- 返回具体 evidence_issue。
-- Evidence Agent 定向修正一次。
-- 重新执行 Review。
-- 仍不一致则排除并增补。
+- 仍必须返回完整 scores、scoreReason、weakness、uncertainty、interestFit、interestReason 和机构字段。
+- 返回具体 evidence_issue，并将其作为管理员语义告警写入 Trace。
+- 接受服务端计算的本次评分，不触发 Evidence Agent 修正，不重新执行 Review，也不排除或增补论文。
+- evidenceValidation 的状态名称用于保留模型原始判断，不代表 Pipeline 的阻断状态。
 
 rawScore 由服务端计算，模型不能自报总分。
 
@@ -764,19 +790,14 @@ Calibration 不返回分数调整。
 - 单篇支持只能进入 singlePaperObservations，不能写成本周趋势。
 - 跨论文趋势必须说明共同的具体评测设计、机制、指标纪律、比较边界或工程含义；仅陈述“多篇论文都构建基准”或“都指出旧评测不足”不具备足够阅读信息量，必须修正。
 - evidenceRefs 必须存在。
-- 中文稿中的阿拉伯数字可与绑定英文 Evidence 中的 `zero`–`twelve` 直接数词等价匹配，例如 `two of five` 支持 `2/5`；其他数字仍要求精确出现。
+- 中文稿中的阿拉伯数字与绑定英文 Evidence 中的数字字面差异继续记录，例如 `two of five` 与 `2/5`；匹配或不匹配均只形成语义告警，不影响 Editorial Plan 结构通过。
 - readingOrder 必须与最终分数和 readingTier 一致。
-- 必须保留原文中的总体、子集和比较限定；“最强”“最佳”或点名模型的结果不能改写为“前沿大模型”或“模型整体”的结论。
-- 必须保留受测对象类型；同时包含 VLM、开源抽取工具、编码代理和专用 API 的 cohort 只能称为“方法”或“系统”，不能统一改为“前沿模型”。
-- 点名系统或商业 VLM 等特定 cohort 的负面结果不得推广为“多数/现有系统或方法”的总体结论；来源同时给出反例时，综合判断必须保留这些反例。
-- 趋势中的共同设计和 caveat 均要由当前 evidenceRefs 直接支持；“多维度评测指标”需要每篇支撑论文的摘录明确给出维度、轴或多指标，“未涵盖通用表格处理”等边界也不得从常识补全。
-- coreTheme、titleAngle、趋势、单篇观察和阅读理由全部执行中性技术文风检查，中文和英文等价修辞模式都不能继续传给后续 Writer；“而非仅追求”“具有较高的直接参考价值”等泛化对比或价值判断也必须改为具体技术信息。
-- 中文条件句保持语法完整；例如使用“在奖励函数未知的情况下”，不得写成缺少介词的“旨在奖励函数未知的情况下”。
+- 总体/子集限定、受测对象类型、cohort 范围、趋势证据充分性、中性技术文风和中文语法继续执行语义检查；不符合时记录字段级告警并继续，不触发 Editorial Plan 内容修正或管理员决策。
 
 修正与问题归属：
 
 - Editorial Plan 初稿及每次修正稿都必须保留为可验证 artifact。修正请求携带上一版规范化 Editorial Plan、当前 issues 和仅包含相关论文的 Evidence；模型只返回 issues 指定路径的补丁，不得重新生成整份计划。
-- 服务端拒绝补丁中任何未被授权的路径，并将合法补丁应用到上一版计划后再执行完整 Schema、Evidence、数字、范围和文风校验。未被修改的字段不得因为一次局部修正而变更或新产生问题。
+- 服务端拒绝补丁中任何未被授权的路径，并将合法补丁应用到上一版计划后再执行完整 Schema、论文集合、引用归属和顺序校验；数字、范围和文风结果写入告警。未被修改的字段不得因为一次局部修正而变更或新产生问题。
 - `singlePaperObservations[i]`、`readingOrder[i]` 等单篇路径的关联论文由该条目的 paperId 或全部 evidenceRefs 推导；只有一个候选 paperId 时写入 manualReview.paperId。`trends[i]` 等跨篇路径必须写入 relatedPaperIds，来源为 supportingPaperIds 和 evidenceRefs 的并集。
 - 管理员面板必须以中文显示每条问题的路径含义、触发文本、关联论文、违反的发布要求和本次补丁动作；不得显示英文校验 detail 或内部 code 作为主要说明。
 - 文本中的 arXiv 论文编号（`YYMM.NNNNN` 或 `YYMM.NNNN`）不是实验数字。数字证据校验不得把它们识别为需由 Evidence 支持的精确数值；同时 Editorial Plan 的读者态文本不应使用论文编号代替论文名称。
@@ -822,11 +843,12 @@ Writer 不能读取其他论文原文，不能新增 evidenceCard 之外的事�
 paperDraft 质量门：
 
 - 所有正文单元必须绑定当前论文中存在的 evidenceRefs。
-- 精确数字必须存在于该正文单元绑定的原文摘录中。
+- 精确数字是否在该正文单元绑定摘录中出现只形成字段级告警；不能单独触发修正、人工复核、移除论文或拒绝发布。
 - 数字提取不得把 `F1`、`V4` 等由拉丁字母直接前缀的指标或版本标识拆成独立精确数字；该规则必须同时用于 Paper Section、Editorial Plan 和 Head/Tail。
 - 数字归一化支持英文 `zero`–`twelve` 与阿拉伯数字的直接等价，以及英文月份与中文数字月份的日期等价；不做任意语义换算。
 - limitationsAndConstraints 至少两条，并分别绑定证据；性能下降、低分/零分、任务失败或受测系统默认不返回证据属于实验设置或结果，不自动构成独立研究局限。若要作为约束，必须进一步陈述由摘录直接支持的评估边界；两条限制必须分别描述范围、数据、场景、种子、对手、模型版本/价格时间点、比较设置、排除对象、缺失验证或适用边界。
-- 两条限制必须在语义上独立；不得把同一个 word-level grounding/精确证据关联问题拆成两条并重复引用同一 Evidence。第二条应从受测对象、数据、种子、比较设置、任务范围或缺失验证中选择另一受支持边界。
+- limitationsAndConstraints 的数组长度、字段结构和引用存在性是硬门禁；两条限制是否语义独立、是否准确描述评估边界属于语义告警。
+- 以下关于 cohort、指标名称、时间跨度、文风和事实范围的规则均作为语义告警执行；它们是写作质量目标，不是移除论文或拒绝周报的依据。
 - 精确模型数量必须与其 cohort/track 限定保留在同一子句；例如原文只说明 Encounter 赛道评估五个模型时，不能概括为整篇实验使用五个模型版本；`该赛道/本赛道/this track` 等指向紧邻已命名赛道的明确回指可以接受。
 - 单一 track 的模型数量不能同时挂到 Encounter 与 Day；零结果也必须保留测量对象，例如 Day 结果中的 `clears none` 只能写成未通过任何 Day 场景，不能写成未通过任何赛道。
 - `score zero at both grounding levels` 中的 zero 是得分，不是层级名称；不得据此生成“零级/zero-level grounding”，层级名必须由绑定摘录直接提供。
@@ -977,9 +999,9 @@ Trace 是运维数据，不是用户周报数据。
 - 一篇论文一次调用。
 - 默认并发 2。
 - 生成 evidenceCard 和 valueSignals。
-- 服务端验证原文摘录、章节锚点和精确数字。
-- 校验失败时默认最多定向修正 3 次。
-- 仍失败则进入 `evidence_dispute` 待复核队列，并继续其他论文及增补流程。
+- 服务端确定性验证论文身份、sourceId、章节锚点和引用关系，并记录精确数字字面匹配告警。
+- 确定性校验失败时默认最多定向修正 3 次；语义告警不触发修正。
+- 确定性问题仍失败则进入 `evidence_dispute` 或 `processing_failure` 待复核队列，并继续其他论文及增补流程。
 
 ### 9.4 review
 
@@ -987,9 +1009,9 @@ Trace 是运维数据，不是用户周报数据。
 - 先逐句验证 Evidence summary 和 Value Signal 的事实前提是否被各自绑定摘录支持，再给四维绝对分。
 - `target_network_autonomy` 只用于主问题域直接属于通信网络、电信基础设施、网络运维或网络自治的论文；仅具有迁移可能的通用 AI/Agent 评测仍归为 `general_ai_system`。服务端对缺少直接领域证据的 target 标签确定性降级，并记录 Trace。
 - 服务端计算 rawScore。
-- Evidence 误读时返回 Evidence 定向修正，默认最多 3 次。
+- Evidence 可能误读时返回具体语义 issue，同时仍完成评分；不触发 Evidence 定向修正。
 - Review 网络、限流、JSON 或 schema 失败时执行调用或格式恢复；它们不计入内容修正次数。
-- 仍失败则按性质进入 `processing_failure` 或 `evidence_dispute` 待复核队列，并继续其他论文及增补流程。
+- Review 响应结构、paperId 或必填评分字段仍失败时进入 `processing_failure` 待复核队列；语义 issue 不进入 `evidence_dispute`。
 
 ### 9.5 calibrate
 
@@ -1018,26 +1040,24 @@ Selection 由服务端确定性执行。
 - 达阈值论文优先。
 - 达标论文不足 minSelectedCount 时继续从 reservePapers 增补并完整执行原文、Evidence、Review 和 Calibration。
 - 低于阈值的论文不得自动入选，也不得以 `background_only` 或其他阅读层级绕过入选线；只有已经通过全部可信度门且管理员填写理由后，才可以按 2.1.1.2 人工覆盖 Selection 阈值。
-- 最多 maxSelectedCount，默认 10。
+- 最多 maxSelectedCount，默认 5；达到阈值的论文超过上限时，只发布横向校准后排序最高的论文，其余论文保留在推荐列表和 Trace 中。
 - 同分使用确定性次序。
 - selectionReason 只进入 Trace，不进入发布稿。
 - candidate pool 耗尽时允许少于 minSelectedCount；系统先把证据门已通过的接近阈值论文加入人工复核队列，管理员完成选择后按实际数量继续。最终没有任何可发布论文时进入管理员处理，由管理员选择重试或退出任务。
 
 ### 9.8 editorial_plan
 
-`editorial_plan`、`write_paper_sections` 和 `write_head_tail` 的内容修正与响应格式纠正分开计数。初次生成或唯一内容修正若只剩 `invalid_json` 或顶层 `schema_invalid`，允许一次响应格式纠正；它不产生第二次内容修正。格式纠正 prompt 不携带畸形原始响应；若正在纠正内容修正的响应，必须继续携带原 content issues 和同一修正范围。返回完整 artifact 后重新执行全部 Schema、Evidence、范围、数字和文风校验。调用、耗时、response issues、attemptType 和 `responseRepairAttempted` 全部写入 Trace；格式纠正后仍无效则 reject。
+`editorial_plan`、`write_paper_sections` 和 `write_head_tail` 的确定性内容修正与响应格式纠正分开计数。初次生成或唯一确定性修正若只剩 `invalid_json` 或顶层 `schema_invalid`，允许一次响应格式纠正；它不产生第二次内容修正。格式纠正 prompt 不携带畸形原始响应；若正在纠正内容修正的响应，必须继续携带原 content issues 和同一修正范围。返回完整 artifact 后重新执行全部 Schema、身份、引用、集合和顺序校验，并把范围、数字和文风结果记录为告警。调用、耗时、response issues、attemptType 和 `responseRepairAttempted` 全部写入 Trace；格式纠正后仍无效则进入管理员处理。
 
 - 使用最终 selectedPapers 和结构化 artifacts。
 - 模型的事实输入只包含带 ref 的原文 Evidence 短摘录；不发送 Evidence summary、Value Signal 事实文本、Review 理由或 Calibration 理由，避免编辑提示进入发布事实。
 - 生成 coreTheme、trends 和 readingOrder。
 - titleAngle 在 Editorial Plan 阶段就必须满足 18–32 Unicode 字符，安全目标为 20–28 字符；不能把超长标题留给 Head/Tail 的唯一修正机会处理。ASCII 字母逐个计数，titleAngle 不添加论文、基准或产品名加冒号的前缀；若模型仍返回“论文/系统名：标题正文”且仅正文已满足 18–32 字符，服务端可确定性移除该前缀；若正文过短，则进入一次定向修正，不得因整串仍在 18–32 字符内而接受前缀，也不得直接截断其他长标题。
 - 趋势绑定至少两篇论文和具体 evidenceRefs。
-- 趋势除多篇支撑外，还必须包含具体共同设计、机制、指标或工程边界；低信息的“都做基准、都发现旧评测不足”不进入发布稿。
-- 事实前提仍须由各论文原文 Evidence 摘录支持；Evidence summary、Value Signal 和 Review 不替代摘录，不得把其中的编辑提示直接写成主题、判断、限制或阅读理由。
-- 保留来源限定词和概念边界，例如 `resource budgeting` 只能写为“资源预算”；具体系统设置没有直接摘录时必须删除或改为摘录实际支持的表述。
+- 趋势质量、事实支持充分性、来源限定词和概念边界继续由语义规则检查并写入告警；低信息趋势或可能扩大范围的表述不会单独阻断发布。
 - 每篇最多生成一条 singlePaperObservation，把该论文最重要的单篇发现和一个实质证据边界合并，不能用多条重复论文标题和正文。
 - caveat 描述当前实验、数据、模型、指标或适用范围，不写“不排除未来改进”等泛化可能性。
-- Editorial Plan、Paper Section 和 Head/Tail 若命中修辞式或推广式表达，唯一修正必须改成直接的事实陈述。不得在“不等于”“不等同于”“而非”“并非……而是”“揭示”等禁用表达之间互相替换；需要区分两个概念时，拆成两句并分别保留其受支持的对象范围、指标名称和 Evidence 边界。
+- Editorial Plan、Paper Section 和 Head/Tail 若命中修辞式或推广式表达，记录字段级文风告警；不触发自动改写。
 - 服务端先校验计划，再允许写头尾。
 
 ### 9.9 write_paper_sections
@@ -1047,8 +1067,8 @@ Selection 由服务端确定性执行。
 - 生成该论文正文块。
 - 模型的事实输入只包含当前论文带 ref 的原文 Evidence 短摘录；Value Signal 仅保留维度和方向路由，Review/Calibration 仅保留评分与层级元数据。
 - 事实范围不得超出 evidenceCard。
-- 每个正文单元中的精确数字必须由该单元绑定的 evidenceRefs 覆盖；章节阅读指引中的章节号是引用定位信息，可由该单元引用的 Evidence `section` 元数据直接支持，不要求章节号同时逐字出现在 excerpt 中。未出现在所引 Evidence `section` 的章节号仍按未绑定数字阻断。章节号只识别独立的“节”或“章节”表达，不得把“46 节点”等由“节”开头的名词识别成章节引用；其中的事实数字仍按普通 Evidence 数字校验。
-- Paper Section 内容修正采用基于上一版规范化 paperDraft 的路径级补丁。模型只返回本轮 issues 映射出的 `repairPaths` 及完整替换值；每个补丁项必须显式包含 `{ path, value }`，`value` 缺失或为 `undefined` 属于响应 Schema 错误。服务端拒绝未授权、重复、不存在或缺少完整替换值的路径，并在拒绝时保持上一版 paperDraft 不变；此类格式错误进入同一次内容修正内的响应格式纠正。应用合法补丁后重新执行全部 Schema、Evidence、数字、范围和文风校验。未列入 `repairPaths` 的字段逐值保持不变，不能把未绑定数字或其他问题移动到别的字段。
+- 每个正文单元的精确数字与 evidenceRefs、章节元数据进行字面对照并记录告警。章节号只识别独立的“节”或“章节”表达，不把“46 节点”等普通名词识别成章节引用；无论是否匹配，数字语义检查均不阻断。
+- Paper Section 确定性修正采用基于上一版规范化 paperDraft 的路径级补丁。模型只返回本轮 issues 映射出的 `repairPaths` 及完整替换值；每个补丁项必须显式包含 `{ path, value }`，`value` 缺失或为 `undefined` 属于响应 Schema 错误。服务端拒绝未授权、重复、不存在或缺少完整替换值的路径，并在拒绝时保持上一版 paperDraft 不变；此类格式错误进入同一次内容修正内的响应格式纠正。应用合法补丁后重新执行全部确定性校验，数字、范围和文风结果只记录告警。未列入 `repairPaths` 的字段逐值保持不变。
 - 响应格式修正继续使用同一份上一版 paperDraft 和同一组 `repairPaths`，只重新获取合法补丁 JSON，不携带或复述被截断的原始响应。每次补丁的目标路径、前后差异、拒绝原因和完整复检结果写入 Trace。
 - 数字提取必须忽略 `F1`、`V4` 等字母数字标识内部的数字，避免将指标名误报为未绑定数字事实。
 - 时间跨度限定不得扩大：`medium-horizon` 或跨多场任务只允许写为“中期”或具体任务跨度，没有直接证据时不能写成“中长期”“长期”或“长周期”。
@@ -1123,8 +1143,8 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - 论文是否遗漏、重复或混入未入选论文。
 - 链接和 paperId 是否对应。
 - 评分、维度、readingTier 和 selection 是否一致。
-- 机构是否来自 Evidence。
-- 精确数字是否能回到 evidenceRefs。
+- 机构是否来自服务端可信发布元数据；机构语义是否准确另记告警。
+- 精确数字是否能在 evidenceRefs 中字面核对；不一致只记告警。
 - 是否有低于入选阈值的论文进入发布稿。
 - 是否出现指向 Paper Insight 自身的 Agent、artifact、prompt、选稿阈值、旧分数或内部 JSON；命中时按 11.4 记录管理员告警，不生成阻断 issue。
 
@@ -1134,7 +1154,7 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - 每个 issue 必须包含 code、path、message、severity、scope、paperId（适用时）、repairTarget 和 repairable。
 - 内部流程告警使用 `internal_process_leak`，保留字段路径和 Trace；它不进入 repairTarget，也不改变 deterministic QA 或 semantic QA 的通过结论。
 - 服务端拥有的评分、维度、机构、readingTier、发布元数据和 Markdown 结构问题定向到 assemble，由可信 artifacts 重新拼装，不调用 Writer。
-- 论文事实、数字、局限或跨论文串写问题定向到对应 paper_section；报告标题、导读、趋势、阅读顺序或头尾问题定向到 head_tail。
+- 跨论文引用、论文集合、评分/层级和结构问题定向到对应可信 artifact；事实、数字、局限、标题、导读、趋势和文风等语义问题只进入 warnings 与 Trace，不进入 repair_once。
 - 可修复失败返回 repair_required，记录完整 Trace 和管理员告警，任务继续进入 repair_once；默认最多自动修正 3 次，这不是第三种发布状态。
 - 第 3 次修正后仍失败返回 manual_review 路由，Job 保持 running，等待管理员继续修正一次或退出任务；确定性阻断问题不允许忽略。
 - 输入缺失或无法执行校验时不得绕过质量门进入语义 QA；记录为报告级 `processing_failure` 并进入管理员处理，允许恢复缺失产物后重试或退出任务，不自动 reject。
@@ -1145,7 +1165,7 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - 这是逐篇语义 QA Agent，不与 deterministic_qa 合并。
 - 一篇论文一次调用。
 - 输入仅包含该论文 paperDraft、服务端发布元数据、evidenceCard 和绑定的来源摘录；不得输入摘要、完整原文、旧分析、选择原因或其他论文。
-- 检查事实、方法、实验、数字、机构、局限和推荐语气。
+- 检查事实、方法、实验、数字、机构、局限和推荐语气，并将结论作为字段级语义告警。
 - 默认并发 2。
 - 不一次混合多篇长正文。
 
@@ -1157,12 +1177,11 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - QA 必须以绑定摘录而不是 Evidence summary 或 Value Signal 文本作为事实依据；逐句检查设置、可观察性、控制器类型和时间跨度限定，引用存在不等于事实被支持。
 - 每个语义 issue 必须包含 code、severity、field、claim、reason、evidenceRefs、paperId、scope、repairTarget 和 repairable。
 - 每个为 false 的 check 必须有对应 check-specific code 的详细 issue；缺失时视为 QA 响应契约错误，走一次响应结构修正，不得生成笼统内容问题并消耗正文 repair_once。
-- 服务端根据 checks 和 issues 计算最终 status；模型声明 pass 不能覆盖失败检查或已有 issue。
+- 服务端保留 checks 和 issues 供管理员查看；只要响应结构、paperId 和 artifact 身份有效，语义 issue 不改变阶段继续结论。
 - QA 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，并且这不消耗正文唯一一次 repair_once。
 - QA 模型调用最终不可用或响应修正后仍无效时，当前论文记为 `processing_failure` 并进入待复核队列，继续其他论文；不能把系统故障伪装成论文内容失败，也不能自动整体 reject。
 - 论文 artifacts 身份不一致时不直接发布；有明确 paperId 时进入管理员处理，只允许跳过该论文或退出任务，不能忽略阻断问题或在错误身份上继续修正。
-- 任一论文发现内容问题时，把问题定向到对应 paper_section 并进入 repair_once；不得重写其他论文或整篇报告。
-- 内容问题默认最多自动修正 3 次；第 3 次后仍存在则进入管理员处理，可继续修正一次、跳过该论文或退出任务。
+- 任一论文发现语义内容问题时，记录 paperId、字段、claim、reason 和 evidenceRefs 后继续，不进入 repair_once，不自动重写正文，也不跳过论文。
 - 每次模型调用、响应修正、逐篇结论、聚合结果、耗时和最终路由全部写入 Trace。
 - 全部论文通过后才进入 report_semantic_qa。
 
@@ -1184,15 +1203,15 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - qaResult 至少包含 status、verdict、summary、checks、issues 和 repairTarget。
 - checks 必须分别覆盖标题、导读、跨论文趋势、单篇观察边界、阅读顺序和头尾隔离。
 - 每个 issue 必须包含 code、severity、field、claim、reason、supportingPaperIds、scope、paperId、repairTarget 和 repairable。
-- 服务端根据 checks 和 issues 计算最终 status；模型声明 pass 不能覆盖失败检查或已有 issue。
+- 服务端保留 checks 和 issues 供管理员查看；语义 issue 不改变阶段继续结论。
 
 响应与路由：
 
 - 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，也不消耗正文 repair_once。
 - 模型最终不可用或响应修正后仍无效时保持 fail closed，不发布当前稿；任务暂停在报告级管理员处理，并明确显示“报告级语义质量检查不可用”，允许重试该阶段或退出任务，不自动写入最终 reject。
-- 发现报告级内容问题时，只定向到 head_tail 并进入 repair_once，默认最多自动修正 3 次。
-- 第 3 次正文修正后仍有报告级问题则进入管理员处理，可继续修正一次或退出任务；报告级阻断问题不能按单篇跳过，也不能忽略。
-- 全部检查通过后进入 publish，不需要经过 repair_once，也不存在第三种发布状态。
+- 发现报告级语义内容问题时写入 warnings 与 Trace，保留涉及字段和支撑论文后继续 publish，不进入 repair_once。
+- 只有报告语义 QA 的 JSON/Schema、身份或必填 artifact 结构无效时才进入管理员处理；这类确定性问题不能忽略。
+- 结构检查完成后进入 publish，不存在第三种发布状态。
 - 模型调用、响应修正、qaResult、耗时、管理员告警和最终路由全部写入 Trace。
 
 ### 9.15 repair_once
@@ -1231,19 +1250,19 @@ QA 发现可修复问题时默认允许最多 3 次自动修正：
 - 每个 repairResult 记录 repairTarget、method、paperId、issueCodes、changed、changedFields 和 responseRepairAttempted。
 - 修正 prompt、原始响应、授权路径、实际补丁路径、校验结果、实际修改路径的前后差异、耗时和失败原因全部写入 Trace。
 - 修正完成后 qaReport.repairAttempted 固定为 true，保留 repairResults，并返回 assemble 重新生成完整 Markdown。
-- 重新拼装后重跑 deterministic_qa、paper_semantic_qa 和 report_semantic_qa；这些阶段不修改内容，因此确定性门检查的仍是最终修正版 artifacts。
-- 每轮修正后重新执行全部强制质量门；自动修正次数未满 3 次时可以再次进入 repair_once。
+- 重新拼装后重跑 deterministic_qa、paper_semantic_qa 和 report_semantic_qa；只有确定性 issue 可以再次进入 repair_once，语义 issue 只追加告警。
+- 每轮修正后重新执行全部确定性质量门；自动修正次数未满 3 次时可以再次处理仍存在的确定性问题。
 - 自动修正达到 3 次后仍失败时，Job 保持 running 并设置 manualReview；管理员每次选择继续修正只增加 1 次机会，再次失败仍回到管理员处理。
 
-证据问题的人工复核：
+确定性证据问题的人工复核：
 
-- 精确数字校验必须先统一中英文单位及常见等价形式，例如 `10-s`、`10 s`、`10 seconds` 与“10 秒”；能够确定等价时直接通过，不进入人工复核。
-- 自动修正后仍存在事实、精确数字或证据边界问题时，只有系统能从当前稿件字段的 `evidenceRefs` 解析出至少一条原文局部证据，才允许提供“确认证据充分，继续任务”。
+- 数字、单位和自然语言事实判断不再进入阻断式人工复核。界面可以展示字面差异和局部证据，但管理员无需逐项确认才能继续。
+- 只有 sourceId/evidenceRefs 不存在、归属错误、跨论文引用或身份不一致等确定性证据问题进入人工复核；这类问题不能使用“保留这一处表述”覆盖。
 - 人工复核必须同时显示论文编号、稿件字段、周报待核对片段，以及每条引用证据的字段编号、原文章节、锚点和局部摘录；不得只显示规则码或笼统的“自动修正未完成”。
 - 复核数据必须保持局部和有界：稿件片段不超过 800 字符，每个问题最多展示 3 条原文摘录、每条不超过 1200 字符；单次最多展示 20 个问题且整个证据包不超过 60000 字符。任务记录和 Trace 使用同一份裁剪后的证据包。
 - 管理员确认只对界面实际展示并由任务状态返回的问题键生效。流水线不得使用裁剪前的原始问题列表扩大确认范围；同一字段中的多个同类问题必须具有不同的问题键。
-- 管理员确认只放行当前列出的证据问题。系统保存稳定的问题键和当时展示的证据快照，写入 Agent Loop Trace，并返回产生问题的 QA 阶段重新检查；未确认的问题及后续新问题不得被一并忽略。
-- 人工确认不修改稿件，也不等于整篇论文或整份周报通过。跨论文串写、论文集合、发布结构、身份一致性、敏感信息和缺少可展示证据的问题仍保持阻断，不提供证据放行按钮。
+- 管理员对语义告警的确认只记录已查看状态，不改变质量门结果，也不触发重新检查。确定性问题必须通过重试、恢复产物、修正引用或跳过论文解决。
+- 跨论文引用、论文集合、发布结构、身份一致性、敏感信息和缺少必填产物的问题保持阻断，不提供语义放行按钮。
 
 ## 10. 重试、修正和排除规则
 
@@ -1346,11 +1365,11 @@ Evidence、Review、Calibration、单篇 Writer 或逐篇 QA 的调用、内容�
 
 论文原文及其方法、实验中具有学术含义的同名术语不属于内部流程信息。例如实验阈值、默认 10 秒阈值、论文自身的 Agent Loop、prompt、artifact 或 stage 均允许正常写入；用户可见的阅读价值分数和推荐理由也不属于内部流程泄漏。
 
-内部流程信息命中后只生成管理员运维告警，并写入对应字段、模型调用和阶段 Trace；不得单独触发自动修正、管理员决策、跳过论文或拒绝发布。事实、Evidence、精确数字、机构、跨论文归因、发布结构和其他语义 QA 问题继续保持阻断；其中有可定位原文局部证据的内容证据问题，可以按上文的单问题人工复核流程确认放行。API Key 和模型敏感配置不适用该降级规则，仍必须阻断或脱敏。
+内部流程信息命中后只生成管理员运维告警，并写入对应字段、模型调用和阶段 Trace；不得单独触发自动修正、管理员决策、跳过论文或拒绝发布。事实、精确数字、机构和其他语义 QA 问题采用同一告警策略；跨论文引用、论文集合、发布结构、身份和来源归属继续阻断。API Key 和模型敏感配置不适用该降级规则，仍必须阻断或脱敏。
 
 ## 12. 强制 QA 与管理员告警
 
-新版 Agent Loop 不读取 WEEKLY_REPORT_SEMANTIC_REVIEW_MODE 的 off/warn 语义；质量门始终强制。
+新版 Agent Loop 不读取 WEEKLY_REPORT_SEMANTIC_REVIEW_MODE。语义 QA 始终执行并记录 Trace，但固定为非阻断告警；确定性质量门始终强制。
 
 管理员告警必须在运维对话框顶部显示，而不是只出现在 Trace 深层。
 
@@ -1757,15 +1776,15 @@ runStep 统一负责：
 - Evidence excerpt 原文匹配。
 - 精确数字匹配。
 - Evidence not_present。
-- Review 质疑 Evidence 后的修正。
+- Review 质疑 Evidence 后仍完成评分，并记录非阻断告警。
 - Calibration 不直接返回分数。
 - Calibration 定向 Review 后重新计算。
 - unresolved 排除和增补。
 - editorialPlan 多论文支撑。
 - Editorial Plan 路径级补丁只改变指定字段，未指定字段逐值保持不变。
 - 单篇和跨篇 Editorial Plan issue 的 paperId/relatedPaperIds 归属。
-- arXiv 编号不触发数字证据校验，真实实验数字仍必须受 Evidence 支持。
-- “节点”等普通名词中的数字不触发章节号例外，仍按当前字段绑定的 Evidence 校验。
+- arXiv 编号不触发数字字面告警；真实实验数字的 Evidence 对照结果作为告警记录。
+- “节点”等普通名词中的数字不触发章节号例外；普通数字继续参与非阻断字面对照。
 - Paper Section 补丁缺少 `value` 时拒绝补丁、保留旧稿并进入响应格式纠正。
 - 管理员可无限继续局部修正；每轮 Trace 记录补丁路径和前后差异。
 - Trace 脱敏、保留 20 次和 30 天。
@@ -1881,7 +1900,7 @@ Mock arXiv 和 Mock LLM 走完：
 - 单篇并发池。
 - 带来源定位的 evidenceCard。
 - 原文摘录确定性匹配。
-- Review 对 Evidence 的语义质疑和一次修正。
+- Review 对 Evidence 的语义质疑、完整评分和非阻断告警。
 - 单篇失败后增补。
 
 ### 阶段 4：Calibration、定向重评和 Selection
@@ -1936,11 +1955,11 @@ Mock arXiv 和 Mock LLM 走完：
 - 摘要论文不会进入发布链路。
 - 每篇发布论文通过原文质量门。
 - 每篇发布论文有 contextPacket、evidenceCard、valueSignals、reviewResult 和 calibrationResult。
-- 每个 Evidence 事实能定位到原文。
-- 精确数字能确定性匹配原文。
-- Review 会质疑 Evidence 误读，而不是盲信。
+- 每个 Evidence 来源引用都能确定性定位到当前论文原文。
+- 精确数字字面对照结果写入 Trace，不影响论文保留和周报发布。
+- Review 会质疑 Evidence 误读、保留具体 issue，并同时完成真实四维评分。
 - Calibration 不直接改分，只能触发一次定向 Review。
-- 重评后仍无法收敛的论文进入人工复核队列，不被静默排除；管理员可以基于真实分数和证据门状态决定是否纳入或跳过。
+- Calibration 重评后仍无法收敛的评分问题进入人工复核队列，不被静默排除；Review 的语义 issue 本身不再导致重评或排除。
 - 每篇最终发布论文完成横向校准。
 - 最终篇数不超过 maxSelectedCount。
 - 逐篇正文独立生成和 QA。

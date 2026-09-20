@@ -4,9 +4,11 @@ import {
   buildEditorialPlanResponseRepairPrompt,
   buildHeadTailPrompt,
   buildHeadTailRepairPrompt,
-  buildHeadTailResponseRepairPrompt
+  buildHeadTailResponseRepairPrompt,
+  editorialPlanRepairPathsForIssues
 } from "./prompts.js";
 import { internalProcessWarnings } from "./internal-process-policy.js";
+import { acceptCredibilityAdvisories } from "./credibility-gate-policy.js";
 
 const MATURITY_LEVELS = new Set(["emerging", "developing", "mature", "uncertain"]);
 const EVIDENCE_FIELDS = [
@@ -336,16 +338,8 @@ const parseModelJson = (raw) => {
 const editableEditorialPlanPath = /^(?:coreTheme|titleAngle|trends\[\d+\](?:\.(?:claim|supportingPaperIds|evidenceRefs|maturity|caveat))?|singlePaperObservations\[\d+\](?:\.(?:paperId|claim|evidenceRefs|caveat))?|readingOrder(?:\[\d+\](?:\.(?:paperId|reason))?)?)$/u;
 
 const editorialRepairPaths = (issues = []) => {
-  const paths = new Set((Array.isArray(issues) ? issues : [])
-    .map((entry) => String(entry?.path || ""))
+  return new Set(editorialPlanRepairPathsForIssues(issues)
     .filter((path) => editableEditorialPlanPath.test(path)));
-  [...paths].forEach((path) => {
-    const trendMatch = path.match(/^(trends\[\d+\])\.(supportingPaperIds|evidenceRefs)$/u);
-    if (trendMatch) {
-      paths.add(`${trendMatch[1]}.${trendMatch[2] === "supportingPaperIds" ? "evidenceRefs" : "supportingPaperIds"}`);
-    }
-  });
-  return paths;
 };
 
 const patchPathParts = (path) => [...String(path || "").matchAll(/([A-Za-z]+)|\[(\d+)\]/g)]
@@ -475,7 +469,10 @@ const isTimeWindowToken = (text, index, token) => {
 };
 
 const numericTokens = (value) => {
-  const text = normalizeText(value, 12000);
+  const text = normalizeText(value, 12000).replace(
+    /(?<![A-Za-z0-9_.])(?:\d{4}\.\d{4,5}(?:v\d+)?:)?[A-Za-z][A-Za-z0-9]*:\d+\b/giu,
+    " "
+  );
   const explicit = [...text.matchAll(/(?<![A-Za-z0-9_])\d+(?:[.,]\d+)*(?:\s*%)?/g)]
     .filter((match) => !isTimeWindowToken(text, match.index || 0, match[0]))
     .map((match) => match[0].replace(/\s+/g, "").replace(/,/g, ""))
@@ -1069,6 +1066,7 @@ export const runEditorialPlanAgent = async ({
         editorialPlan: null
       };
     }
+    validation = acceptCredibilityAdvisories(validation);
     const record = {
       role: "editorial_planning",
       paperId: "",
@@ -1215,6 +1213,7 @@ export const runEditorialPlanAgent = async ({
     } catch (error) {
       repairedValidation = repairIssue("invalid_json", "response", error.message);
     }
+    repairedValidation = acceptCredibilityAdvisories(repairedValidation);
     const record = {
       role: "editorial_planning",
       paperId: "",
@@ -1275,6 +1274,45 @@ export const runEditorialPlanAgent = async ({
         editorialPlan: validation.editorialPlan,
         ...reviewScope
       });
+      if (decision?.action === "confirm_evidence") {
+        const approvedIssueKeys = new Set((Array.isArray(decision.approvedIssueKeys)
+          ? decision.approvedIssueKeys
+          : []).map(String).filter(Boolean));
+        const evidenceReviews = Array.isArray(decision.evidenceReviews)
+          ? decision.evidenceReviews
+          : [];
+        const confirmsEveryIssue = validation.issues.length > 0
+          && evidenceReviews.length === validation.issues.length
+          && evidenceReviews.every((review) => (
+            approvedIssueKeys.has(String(review?.issueKey || ""))
+            && String(review?.issueKey || "").startsWith("numeric_claim_not_in_evidence|")
+          ));
+        if (!confirmsEveryIssue) {
+          throw new EditorialAgentError("Editorial Plan evidence confirmation did not cover every remaining issue.", {
+            code: "READING_LIST_ADMIN_EVIDENCE_CONFIRMATION_INVALID",
+            issues: validation.issues
+          });
+        }
+        await onEvent?.({
+          type: "editorial_plan_evidence_confirmed",
+          stage: "editorial_plan",
+          scope: "job",
+          repairAttempts: repairAttempt - 1,
+          approvedIssueKeys: [...approvedIssueKeys]
+        });
+        return {
+          editorialPlan: validation.editorialPlan,
+          warnings: validation.warnings || [],
+          repairAttempted: true,
+          repairAttempts: repairAttempt - 1,
+          responseRepairAttempted,
+          manualEvidenceApprovals: evidenceReviews.map((review) => ({
+            ...review,
+            decidedAt: String(decision.decidedAt || "")
+          })),
+          calls
+        };
+      }
       if (decision?.action === "skip_paper") {
         throw new EditorialAgentError("An administrator skipped one paper after Editorial Plan repair exhaustion.", {
           code: "READING_LIST_ADMIN_SKIPPED_PAPER",
@@ -1976,6 +2014,7 @@ export const runHeadTailWriter = async ({
         headTailDraft: null
       };
     }
+    validation = acceptCredibilityAdvisories(validation);
     const record = {
       role: "editorial_head_tail_writer",
       paperId: "",

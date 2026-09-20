@@ -21,12 +21,15 @@ import {
 import { normalizeWeeklyReportJobOptions } from "./schema.js";
 import { runDeterministicQa } from "./qa-checker.js";
 import {
+  editorialEvidenceReviewsForIssues,
   enrichEvidenceReviewIssues,
+  evidenceExtractionReviewsForIssues,
   evidenceReviewsForIssues,
   removeApprovedEvidenceIssues
 } from "./evidence-review.js";
 import { reviewPaperSemanticsBatch } from "./paper-semantic-qa-agent.js";
 import { reviewReportSemantics } from "./report-semantic-qa-agent.js";
+import { applyCredibilityGatePolicy } from "./credibility-gate-policy.js";
 import {
   repairHeadTailFromQa,
   repairPaperSectionFromQa
@@ -364,6 +367,10 @@ const reviewBacklogItem = (item, {
   const paperId = manualReviewPaperId(item);
   const error = item?.error && typeof item.error === "object" ? item.error : {};
   const processingFailure = kind === "processing_failure";
+  const responseDiagnostic = error?.responseDiagnostic && typeof error.responseDiagnostic === "object"
+    ? error.responseDiagnostic
+    : null;
+  const evidenceReviews = processingFailure ? [] : evidenceExtractionReviewsForIssues({ issues: error.issues, artifacts: error.artifacts, contextPacket: item?.contextPacket, paperId });
   return {
     itemId: `${sourceStage}:${paperId || "job"}:${kind}:${index}`,
     paperId,
@@ -376,13 +383,19 @@ const reviewBacklogItem = (item, {
       : `论文 ${paperId || "当前任务"} 的证据校验尚未收敛，需要管理员复核。`,
     details: [{
       code: String(error.code || ""),
-      text: String(error.detail || error.message || "")
-    }],
+      text: String(error.detail || error.message || ""),
+      ...(responseDiagnostic?.reason ? { diagnosticReason: String(responseDiagnostic.reason) } : {}),
+      ...(responseDiagnostic?.responseExcerpt ? { responseExcerpt: String(responseDiagnostic.responseExcerpt) } : {})
+    }, ...(!processingFailure ? [{
+      code: "READING_LIST_EVIDENCE_RETRY_REQUIRED",
+      text: "当前原文对照没有直接支持全部争议内容，不能直接保留。请重新处理这篇论文；该操作只重试当前论文，不会重新处理其他论文。"
+    }] : [])],
     issues: Array.isArray(error.issues) ? error.issues : [],
+    evidenceReviews,
     repairAttempts: Math.max(0, Math.trunc(Number(item?.repairAttempts) || 0)),
     allowedActions: processingFailure
       ? (paperId ? ["retry_paper", "skip_paper", "exit_task"] : ["retry_stage", "exit_task"])
-      : ["continue_repair", "skip_paper", "exit_task"]
+      : ["retry_paper", "skip_paper", "exit_task"]
   };
 };
 
@@ -724,7 +737,7 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
         code: "READING_LIST_EVIDENCE_CHALLENGED_BY_REVIEW",
         stage: "review",
         paperId: String(event.paperId || ""),
-        message: `Review 发现论文 ${String(event.paperId || "")} 的 Evidence 可能误读原文，已触发一次定向修正。`,
+        message: `Review 发现论文 ${String(event.paperId || "")} 的 Evidence 可能存在语义差异，已记录到 Trace；评分继续完成，不会自动改写 Evidence。`,
         severity: "warning"
       });
     }
@@ -870,6 +883,22 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
     reviewDisputes,
     processingFailed
   };
+  const retryFailures = [...reviewDisputes, ...processingFailed];
+  const retainedPaperRetryFailures = {
+    ...(evidenced.retainedPaperRetryFailures || {}),
+    extract_evidence: [
+      ...(Array.isArray(evidenced.retainedPaperRetryFailures?.extract_evidence)
+        ? evidenced.retainedPaperRetryFailures.extract_evidence
+        : []),
+      ...retryFailures.filter((item) => item.failedStage === "extract_evidence")
+    ],
+    review: [
+      ...(Array.isArray(evidenced.retainedPaperRetryFailures?.review)
+        ? evidenced.retainedPaperRetryFailures.review
+        : []),
+      ...retryFailures.filter((item) => item.failedStage !== "extract_evidence")
+    ]
+  };
   const manualReviewBacklog = [
     ...(Array.isArray(evidenced.manualReviewBacklog) ? evidenced.manualReviewBacklog : []),
     ...processingFailed.map((item, index) => reviewBacklogItem(item, {
@@ -936,6 +965,7 @@ export const reviewWeeklyReportPapers = async (evidenced, context = {}, {
     refill,
     counts,
     warnings,
+    retainedPaperRetryFailures,
     manualReviewBacklog
   };
 };
@@ -967,6 +997,31 @@ const uniqueWarnings = (warnings) => {
     seen.add(key);
     return true;
   });
+};
+
+const semanticQaWarningRecords = (issues = [], stage = "") => {
+  const normalizedStage = String(stage || "");
+  if (normalizedStage === "paper_semantic_qa") {
+    const counts = new Map();
+    (Array.isArray(issues) ? issues : []).forEach((issue) => {
+      const paperId = String(issue?.paperId || "").trim();
+      counts.set(paperId, (counts.get(paperId) || 0) + 1);
+    });
+    return [...counts.entries()].map(([paperId, count]) => ({
+      code: "READING_LIST_PAPER_SEMANTIC_WARNING",
+      stage: normalizedStage,
+      paperId,
+      message: `论文 ${paperId || "当前稿件"} 有 ${count} 项语义一致性提示，已记录到 Trace；这些判断不阻止发布。`,
+      severity: "warning"
+    }));
+  }
+  const count = Array.isArray(issues) ? issues.length : 0;
+  return count ? [{
+    code: "READING_LIST_REPORT_SEMANTIC_WARNING",
+    stage: normalizedStage || "report_semantic_qa",
+    message: `整稿有 ${count} 项语义一致性提示，已记录到 Trace；这些判断不阻止发布。`,
+    severity: "warning"
+  }] : [];
 };
 
 export const calibrateWeeklyReportPapers = async (reviewed, context = {}, {
@@ -1649,15 +1704,32 @@ export const planWeeklyReportEditorial = async (selected, context = {}, {
       onCall: persistCall,
       onEvent: (event) => context.recordTrace(event),
       onRepairExhausted: typeof context.requestManualReview === "function"
-        ? ({ issues, repairAttempts, paperId, relatedPaperIds }) => context.requestManualReview({
-          stage: "editorial_plan",
-          paperId,
-          relatedPaperIds,
-          summary: "编辑计划在三次自动修正后仍未通过证据和结构检查。",
-          issues,
-          repairAttempts,
-          allowedActions: ["continue_repair", "exit_task", ...(paperId || relatedPaperIds?.length ? ["skip_paper"] : [])]
-        })
+        ? ({ issues, repairAttempts, editorialPlan, paperId, relatedPaperIds }) => {
+          const evidenceReviews = editorialEvidenceReviewsForIssues({
+            issues,
+            editorialPlan,
+            selectedItems: selected.selectedItems
+          });
+          const allIssuesAreReviewableNumbers = issues.length > 0
+            && evidenceReviews.length === issues.length
+            && issues.every((issue) => String(issue?.code || "") === "numeric_claim_not_in_evidence");
+          return context.requestManualReview({
+            stage: "editorial_plan",
+            paperId,
+            relatedPaperIds,
+            summary: "编辑计划在三次自动修正后仍未通过证据和结构检查。",
+            issues,
+            evidenceReviews,
+            approvableIssueKeys: evidenceReviews.map((review) => review.issueKey),
+            repairAttempts,
+            allowedActions: [
+              ...(allIssuesAreReviewableNumbers ? ["confirm_evidence"] : []),
+              "continue_repair",
+              "exit_task",
+              ...(paperId || relatedPaperIds?.length ? ["skip_paper"] : [])
+            ]
+          });
+        }
         : undefined
     });
 
@@ -1901,18 +1973,56 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     const firstFailure = failed[0];
     const failedPaperId = firstFailure.error.paperId || paperIdForStage(firstFailure.item);
     const failureDetail = firstFailure.error.message || "A selected paper did not produce a valid paperDraft.";
-    const failureIssues = [{
-      code: firstFailure.error.code || "READING_LIST_PAPER_SECTION_FAILED",
-      paperId: failedPaperId,
-      reason: failureDetail,
-      details: Array.isArray(firstFailure.error.issues) ? firstFailure.error.issues : []
-    }];
+    const reviewItems = failed.flatMap((entry, failureIndex) => {
+      const targetPaperId = entry.error.paperId || paperIdForStage(entry.item);
+      const rawIssues = Array.isArray(entry.error.issues) && entry.error.issues.length
+        ? entry.error.issues
+        : [{
+            code: entry.error.code || "READING_LIST_PAPER_SECTION_FAILED",
+            reason: entry.error.message || "逐篇稿件未生成可供复核的结构化结果。"
+          }];
+      const issues = enrichEvidenceReviewIssues({
+        issues: rawIssues.map((issue) => ({
+          ...issue,
+          paperId: targetPaperId,
+          path: String(issue?.path || issue?.field || "")
+        })),
+        selectedItems,
+        paperDrafts: entry.error.paperDraft ? [entry.error.paperDraft] : []
+      });
+      return issues.map((issue, issueIndex) => {
+        const evidenceReviews = evidenceReviewsForIssues([issue]);
+        const canKeepCurrentStatement = Boolean(entry.error.paperDraft)
+          && evidenceReviews.length === 1
+          && Boolean(issue?.evidenceReview?.issueKey);
+        return {
+          itemId: `write_paper_sections:${targetPaperId}:${failureIndex + 1}:${issueIndex + 1}`,
+          paperId: targetPaperId,
+          kind: "evidence_dispute",
+          scope: "paper",
+          sourceStage: "write_paper_sections",
+          summary: evidenceReviews.length
+            ? `当前稿件第 ${issueIndex + 1} 处表述需要与原文证据核对。`
+            : `当前稿件第 ${issueIndex + 1} 处校验问题需要处理。`,
+          issues: [issue],
+          evidenceReviews,
+          approvableIssueKeys: evidenceReviews.map((review) => review.issueKey),
+          repairAttempts: Math.max(1, Math.trunc(Number(paperSectionRepairAttempts[targetPaperId]) || 1)),
+          allowedActions: [
+            ...(canKeepCurrentStatement ? ["confirm_evidence"] : []),
+            "continue_repair",
+            "skip_paper",
+            "exit_task"
+          ]
+        };
+      });
+    });
     await context.recordTrace({
       type: "stage_failed",
       stage: "write_paper_sections",
       scope: "job",
       durationMs: elapsed(stageStartedAt),
-      code: failureIssues[0].code,
+      code: firstFailure.error.code || "READING_LIST_PAPER_SECTION_FAILED",
       paperId: failedPaperId,
       failedPaperIds: failed.map((entry) => paperIdForStage(entry.item)),
       reason: failureDetail,
@@ -1927,13 +2037,9 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
       paperSectionRepairAttempts,
       manualReview: {
         stage: "write_paper_sections",
-        paperId: failedPaperId,
-        summary: "该论文的逐篇稿件在自动修正后仍无法通过证据校验，可继续定向修正当前论文，或跳过后重新校准其余候选。",
-        issues: failureIssues,
-        repairAttempts: Math.max(1, Math.trunc(Number(paperSectionRepairAttempts[failedPaperId]) || 1)),
-        allowedActions: failedPaperId
-          ? ["continue_repair", "exit_task", "skip_paper"]
-          : ["exit_task"]
+        resumeStage: "write_paper_sections",
+        activeItemId: reviewItems[0].itemId,
+        items: reviewItems
       }
     };
   }
@@ -2489,15 +2595,23 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     selectedItems,
     paperDrafts
   });
-  const paperIssues = removeApprovedEvidenceIssues(
+  const reviewedPaperIssues = removeApprovedEvidenceIssues(
     enrichedPaperIssues,
     checked.manualEvidenceApprovals
+  );
+  const paperPolicy = applyCredibilityGatePolicy({ issues: reviewedPaperIssues });
+  const paperIssues = paperPolicy.issues;
+  const paperSemanticWarnings = paperPolicy.warnings;
+  const semanticWarningRecords = semanticQaWarningRecords(
+    paperSemanticWarnings,
+    "paper_semantic_qa"
   );
   const baseArtifact = {
     concurrency: result.concurrency,
     attempted: result.attempted,
     paperSemanticResults,
     paperIssues,
+    paperSemanticWarnings,
     responseRepairCount: result.succeeded.filter((entry) => entry.responseRepairAttempted).length,
     failed: result.failed.map((entry) => ({
       paperId: paperIdForStage(entry.item),
@@ -2588,12 +2702,13 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
   }
 
   if (paperIssues.length === 0) {
+    const warnings = uniqueWarnings([...(checked.warnings || []), ...semanticWarningRecords]);
     const qaReport = {
       ...checked.qaReport,
       status: "passed",
       paperSemanticResults,
       paperIssues: [],
-      warnings: checked.qaReport?.warnings || []
+      warnings: uniqueWarnings([...(checked.qaReport?.warnings || []), ...semanticWarningRecords])
     };
     await context.writeTrace(`paper-semantic-qa${traceSuffix}`, {
       ...baseArtifact,
@@ -2601,7 +2716,7 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     });
     await context.updateStage("paper_semantic_qa", {
       counts: checked.counts,
-      warnings: checked.warnings || []
+      warnings
     });
     await context.recordTrace({
       type: "stage_completed",
@@ -2616,7 +2731,8 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     return {
       ...checked,
       nextStage: "report_semantic_qa",
-      qaReport
+      qaReport,
+      warnings
     };
   }
 
@@ -2836,7 +2952,13 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
     throw rejected;
   }
 
-  const reportIssues = result.qaResult.issues;
+  const reportPolicy = applyCredibilityGatePolicy({ issues: result.qaResult.issues });
+  const reportIssues = reportPolicy.issues;
+  const reportSemanticWarnings = reportPolicy.warnings;
+  const semanticWarningRecords = semanticQaWarningRecords(
+    reportSemanticWarnings,
+    "report_semantic_qa"
+  );
   const repairAttempted = repairCount > 0;
   const automaticRepairAvailable = repairCount < AUTOMATIC_CONTENT_REPAIR_LIMIT;
   const qaReport = {
@@ -2846,6 +2968,7 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
       : automaticRepairAvailable ? "repair_required" : "rejected",
     reportSemanticResult: result.qaResult,
     reportIssues,
+    reportSemanticWarnings,
     repairAttempted,
     repairCount
   };
@@ -2853,14 +2976,16 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
     status: qaReport.status,
     reportSemanticResult: result.qaResult,
     reportIssues,
+    reportSemanticWarnings,
     responseRepairAttempted: result.responseRepairAttempted,
     repairAttempted
   });
 
   if (reportIssues.length === 0) {
+    const warnings = uniqueWarnings([...(checked.warnings || []), ...semanticWarningRecords]);
     await context.updateStage("report_semantic_qa", {
       counts: checked.counts,
-      warnings: checked.warnings || []
+      warnings
     });
     await context.recordTrace({
       type: "stage_completed",
@@ -2873,7 +2998,8 @@ export const runWeeklyReportReportSemanticQa = async (checked, context = {}, {
     return {
       ...checked,
       nextStage: "publish",
-      qaReport
+      qaReport,
+      warnings
     };
   }
 

@@ -39,6 +39,7 @@ export class WeeklyReportPipelineError extends Error {
   constructor(message, {
     code = "READING_LIST_PIPELINE_STAGE_INVALID",
     stage = "pipeline",
+    paperId = "",
     traceId = "",
     detail = ""
   } = {}) {
@@ -46,7 +47,7 @@ export class WeeklyReportPipelineError extends Error {
     this.name = "WeeklyReportPipelineError";
     this.code = code;
     this.stage = stage;
-    this.paperId = "";
+    this.paperId = paperId;
     this.retryable = false;
     this.traceId = traceId;
     this.detail = detail || message;
@@ -98,6 +99,12 @@ const selectedManualReviewItem = (review, decision = {}) => (
 const consumeManualReviewItem = (current = {}, review = {}, selectedReview = {}) => {
   const itemId = String(selectedReview?.itemId || "").trim();
   if (!itemId) return { ...current, manualReview: null };
+  if (current?.manualReview && Array.isArray(review?.items)) {
+    return {
+      ...current,
+      manualReview: withoutManualReviewItem(review, itemId)
+    };
+  }
   if (Array.isArray(current?.manualReviewBacklog)) {
     return {
       ...current,
@@ -134,17 +141,15 @@ const paperIdForRetry = (item = {}) => String(
   || ""
 ).trim().replace(/v\d+$/i, "");
 
-const retryFailureForPaper = (current = {}, sourceStage, paperId) => {
-  const normalizedPaperId = String(paperId || "").trim().replace(/v\d+$/i, "");
+const retryFailuresFromResult = (current = {}, sourceStage) => {
   const source = sourceStage === "extract_evidence"
     ? current?.evidenceResult
     : current?.reviewResult;
-  const failures = [
+  return [
     ...(Array.isArray(source?.processingFailed) ? source.processingFailed : []),
     ...(Array.isArray(source?.evidenceDisputes) ? source.evidenceDisputes : []),
     ...(Array.isArray(source?.reviewDisputes) ? source.reviewDisputes : [])
   ];
-  return failures.find((item) => paperIdForRetry(item) === normalizedPaperId) || null;
 };
 
 const mergePaperItems = (existing, recovered) => {
@@ -158,6 +163,17 @@ const mergePaperItems = (existing, recovered) => {
     if (paperId) merged.set(paperId, item);
   });
   return [...merged.values()];
+};
+
+const retryFailuresForStage = (current = {}, sourceStage) => mergePaperItems(
+  current?.retainedPaperRetryFailures?.[sourceStage],
+  retryFailuresFromResult(current, sourceStage)
+);
+
+const retryFailureForPaper = (current = {}, sourceStage, paperId) => {
+  const normalizedPaperId = String(paperId || "").trim().replace(/v\d+$/i, "");
+  return retryFailuresForStage(current, sourceStage)
+    .find((item) => paperIdForRetry(item) === normalizedPaperId) || null;
 };
 
 export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
@@ -317,18 +333,27 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           const sourceStage = String(selectedReview.sourceStage || "").trim();
           const failedItem = retryFailureForPaper(current, sourceStage, paperId);
           if (!paperId || !failedItem || !["extract_evidence", "review"].includes(sourceStage)) {
+            const targetLabel = paperId ? `论文 ${paperId}` : "所选论文";
             throw new WeeklyReportPipelineError(
-              "Paper retry requires the retained artifact for the selected failed paper.",
+              `无法重试${targetLabel}：当前任务未保留该论文上一次失败时的处理产物。请退出当前任务并重新生成周报。`,
               {
                 code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
                 stage: sourceStage || "manual_review",
+                paperId,
                 traceId: context.traceId
               }
             );
           }
+          const retainedPaperRetryFailures = {
+            ...(current?.retainedPaperRetryFailures || {}),
+            [sourceStage]: retryFailuresForStage(current, sourceStage).filter((item) => (
+              paperIdForRetry(item) !== paperIdForRetry(failedItem)
+            ))
+          };
           if (sourceStage === "extract_evidence") {
             current = {
               ...consumeManualReviewItem(current, review, selectedReview),
+              retainedPaperRetryFailures,
               nextStage: "extract_evidence",
               contextResult: {
                 ...(current?.contextResult || {}),
@@ -349,6 +374,7 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
           }
           current = {
             ...consumeManualReviewItem(current, review, selectedReview),
+            retainedPaperRetryFailures,
             nextStage: "review",
             evidenceItems: [failedItem],
             manualRetry: {
@@ -495,11 +521,97 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
               .map((entry) => [String(entry?.issueKey || ""), entry])
           );
           approvals.forEach((entry) => approvalByKey.set(entry.issueKey, entry));
+          const sourceStage = String(selectedReview.sourceStage || review.stage || "");
+          if (sourceStage === "write_paper_sections") {
+            const targetPaperId = String(selectedReview.paperId || "").trim();
+            const normalizedTargetPaperId = targetPaperId.replace(/v\d+$/i, "");
+            const failures = Array.isArray(current?.paperDraftResult?.failed)
+              ? current.paperDraftResult.failed
+              : [];
+            const retainedFailure = failures.find((entry) => (
+              paperIdForRetry(entry?.item || entry) === targetPaperId
+              || String(entry?.error?.paperId || "").trim().replace(/v\d+$/i, "") === normalizedTargetPaperId
+            ));
+            const retainedDraft = retainedFailure?.error?.paperDraft;
+            if (!targetPaperId || !retainedDraft
+              || paperIdForRetry(retainedDraft) !== normalizedTargetPaperId) {
+              throw new WeeklyReportPipelineError(
+                "无法采用当前稿件：任务没有保留该论文可供复核的逐篇稿件。请继续修正或从本期周报移除该论文。",
+                {
+                  code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                  stage: "write_paper_sections",
+                  paperId: targetPaperId,
+                  traceId: context.traceId
+                }
+              );
+            }
+            const consumed = consumeManualReviewItem(current, review, selectedReview);
+            const hasRemainingPaperIssues = Array.isArray(consumed.manualReview?.items)
+              && consumed.manualReview.items.some((item) => (
+                String(item?.paperId || "").trim().replace(/v\d+$/i, "") === normalizedTargetPaperId
+              ));
+            await context.recordTrace?.({
+              type: "paper_section_issue_approved",
+              stage: "write_paper_sections",
+              scope: "paper",
+              paperId: targetPaperId,
+              approvedIssueKeys,
+              remainingPaperIssues: hasRemainingPaperIssues,
+              decision: "continue"
+            });
+            if (hasRemainingPaperIssues) {
+              current = {
+                ...consumed,
+                nextStage: "manual_review",
+                manualEvidenceApprovals: [...approvalByKey.values()]
+              };
+              continue;
+            }
+            const draftByPaperId = new Map((Array.isArray(current?.paperDrafts) ? current.paperDrafts : [])
+              .map((draft) => [paperIdForRetry(draft), draft]));
+            draftByPaperId.set(normalizedTargetPaperId, retainedDraft);
+            const selectedPaperIds = (Array.isArray(current?.selectedItems) ? current.selectedItems : [])
+              .map((item) => paperIdForRetry(item));
+            const paperDrafts = selectedPaperIds.length
+              ? selectedPaperIds.map((paperId) => draftByPaperId.get(paperId)).filter(Boolean)
+              : [...draftByPaperId.values()];
+            const remainingFailures = failures.filter((entry) => entry !== retainedFailure);
+            await context.recordTrace?.({
+              type: "paper_section_current_draft_approved",
+              stage: "write_paper_sections",
+              scope: "paper",
+              paperId: targetPaperId,
+              approvedIssueKeys,
+              decision: "continue"
+            });
+            current = {
+              ...consumed,
+              nextStage: consumed.manualReview ? "manual_review" : "write_head_tail",
+              paperDrafts,
+              paperDraftResult: {
+                ...(current?.paperDraftResult || {}),
+                succeeded: [
+                  ...(Array.isArray(current?.paperDraftResult?.succeeded)
+                    ? current.paperDraftResult.succeeded.filter((entry) => paperIdForRetry(entry?.item || entry) !== normalizedTargetPaperId)
+                    : []),
+                  {
+                    item: retainedFailure.item,
+                    paperDraft: retainedDraft,
+                    administratorConfirmed: true
+                  }
+                ],
+                failed: remainingFailures
+              },
+              paperSectionRetry: null,
+              manualEvidenceApprovals: [...approvalByKey.values()]
+            };
+            continue;
+          }
           current = {
             ...consumeManualReviewItem(current, review, selectedReview),
             nextStage: ["deterministic_qa", "paper_semantic_qa", "report_semantic_qa"]
-              .includes(String(selectedReview.sourceStage || review.stage || ""))
-              ? String(selectedReview.sourceStage || review.stage)
+              .includes(sourceStage)
+              ? sourceStage
               : "deterministic_qa",
             manualEvidenceApprovals: [...approvalByKey.values()]
           };

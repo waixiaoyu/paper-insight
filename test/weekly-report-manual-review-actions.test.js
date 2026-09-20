@@ -59,7 +59,7 @@ test("exit-task decision is not described as continued execution", () => {
   );
   assert.equal(
     manualReviewDecisionStatusText("skip_paper", { state: "running" }),
-    "管理员决策已提交：跳过这篇论文。任务已继续执行。"
+    "管理员决策已提交：从本期周报移除这篇论文。任务已继续执行。"
   );
   assert.equal(
     manualReviewDecisionStatusText("confirm_evidence", { state: "running" }),

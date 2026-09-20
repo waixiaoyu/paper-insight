@@ -35,7 +35,7 @@ const fixturePapers = JSON.parse(await readFile(
   "utf8"
 ));
 const previousLlmApiKey = process.env.LLM_API_KEY;
-const previousLlmApiUrl = process.env.GLM_CODING_ANTHROPIC_API_URL;
+const previousLlmApiUrl = process.env.GLM_CODING_OPENAI_API_URL;
 const previousSemanticReviewMode = process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_MODE;
 const mockLlmServer = createServer(async (request, response) => {
   let body = "";
@@ -53,12 +53,12 @@ const mockLlmServer = createServer(async (request, response) => {
   });
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify({
-    content: [
-      {
-        type: "text",
-        text: isSemanticReview ? mockSemanticReviewText : mockGenerationText
-      }
-    ]
+    choices: [{
+      message: {
+        content: isSemanticReview ? mockSemanticReviewText : mockGenerationText
+      },
+      finish_reason: "stop"
+    }]
   }));
 });
 
@@ -282,7 +282,7 @@ before(async () => {
     });
   });
   process.env.LLM_API_KEY = "test-api-key";
-  process.env.GLM_CODING_ANTHROPIC_API_URL = mockLlmUrl;
+  process.env.GLM_CODING_OPENAI_API_URL = `${mockLlmUrl}/api/coding/paas/v4/chat/completions`;
   process.env.WEEKLY_REPORT_SEMANTIC_REVIEW_MODE = "off";
 
   await new Promise((resolve, reject) => {
@@ -311,9 +311,9 @@ after(async () => {
   }
 
   if (previousLlmApiUrl === undefined) {
-    delete process.env.GLM_CODING_ANTHROPIC_API_URL;
+    delete process.env.GLM_CODING_OPENAI_API_URL;
   } else {
-    process.env.GLM_CODING_ANTHROPIC_API_URL = previousLlmApiUrl;
+    process.env.GLM_CODING_OPENAI_API_URL = previousLlmApiUrl;
   }
 
   if (previousSemanticReviewMode === undefined) {
@@ -329,6 +329,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(page.headers.get("content-type") || "", /text\/html/);
   const html = await page.text();
   assert.match(html, /weekly-report-trace-summary-v2026-08-31/);
+  assert.match(html, /<script src="\/app\.js\?v=glm-5\.3-default-v2026-09-14" type="module"><\/script>/);
   assert.match(html, /id="weeklyReportTraceDialog"/);
   assert.match(html, /id="weeklyReportJobHealth"/);
   assert.match(html, /id="weeklyReportTraceReconnect"/);
@@ -338,7 +339,7 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /id="weeklyReportManualReviewDetail"/);
   assert.match(html, /id="weeklyReportManualReviewGates"/);
   assert.match(html, /id="weeklyReportManualReviewReason"/);
-  assert.match(html, /GLM-5\.3 \(Anthropic\)/);
+  assert.match(html, /GLM-5\.3 \(BigModel Coding OpenAI · low\)/);
   assert.match(html, /data-manual-review-action="continue_repair"/);
   assert.match(html, /data-manual-review-action="retry_job"/);
   assert.match(html, /data-manual-review-action="exit_task"/);
@@ -351,7 +352,8 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(html, /data-manual-review-action="keep_excluded"/);
   assert.match(html, /id="weeklyReportManualEvidenceReview"/);
   assert.match(html, /确认范围，抓取原文，排除无法支撑写作的论文。/);
-  assert.match(html, /id="readingListMaxSelected"/);
+  assert.match(html, /本期最多发布几篇/);
+  assert.match(html, /id="readingListMaxSelected"[^>]*value="5"/);
   assert.match(html, /候选目标数/);
 
   const app = await fetch(`${baseUrl}/app.js`);
@@ -365,6 +367,8 @@ test("首页和静态资源仍可访问", async () => {
   assert.match(source, /connectionInterrupted: true/);
   assert.match(source, /weeklyReportDisconnectedJob/);
   assert.match(source, /weeklyReportRequestRetryable/);
+  assert.match(source, /function defaultReadingListMaxSelected\([^)]*\)\s*{\s*return 5;\s*}/);
+  assert.match(source, /readingListMaxSelectedCount[\s\S]*?\|\| 5/);
   assert.match(source, /from "\.\/candidate-expansion\.js"/);
   assert.match(source, /expandCandidateBatches\(/);
   assert.match(source, /candidateExpansionNotice\(/);
@@ -571,7 +575,7 @@ test("周报 API 在模拟 LLM 返回合格正文时通过质量门并返回发�
   assert.match(payload.markdown, /## 完整论文清单/);
 });
 
-test("GLM-5.3 默认保留 Anthropic 接口和既有请求形状", async () => {
+test("GLM-5.3 默认使用 Coding OpenAI 接口和系统消息", async () => {
   mockGenerationText = validMarkdown;
   const requestsBeforeCall = mockLlmRequests.length;
   const response = await fetch(`${baseUrl}/api/reading-list`, {
@@ -594,11 +598,13 @@ test("GLM-5.3 默认保留 Anthropic 接口和既有请求形状", async () => {
 
   assert.equal(response.status, 200, payload.detail || payload.message);
   const request = mockLlmRequests.at(requestsBeforeCall);
-  assert.equal(request.path, "/v1/messages");
+  assert.equal(request.path, "/api/coding/paas/v4/chat/completions");
   assert.equal(request.payload.model, "glm-5.3");
-  assert.equal(request.payload.thinking, undefined);
-  assert.equal(request.payload.messages[0].role, "user");
-  assert.match(request.payload.system, /论文周报编辑/);
+  assert.deepEqual(request.payload.thinking, { type: "enabled" });
+  assert.equal(request.payload.reasoning_effort, "low");
+  assert.equal(request.payload.messages[0].role, "system");
+  assert.match(request.payload.messages[0].content, /论文周报编辑/);
+  assert.equal(request.payload.system, undefined);
 });
 
 test("warn 模式下 LLM 语义评审 pass，结果标记为可直接发布", async () => {

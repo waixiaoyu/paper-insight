@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyEditorialPlanPatch,
   EditorialAgentError,
   deriveEditorialPlanReviewScope,
   runEditorialPlanAgent,
@@ -711,6 +712,26 @@ test("publication-process terms produce a non-blocking Editorial Plan warning", 
   assert.equal(validation.warnings.some((entry) => entry.code === "internal_process_leak"), true);
 });
 
+test("Editorial Plan Agent keeps semantic claim doubts as warnings without repair", async () => {
+  const plan = validPlan();
+  plan.trends[0].claim = "多篇论文共同报告了 42% 的安全改进。";
+  let calls = 0;
+  const result = await runEditorialPlanAgent({
+    selectedItems,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      return plan;
+    }
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.repairAttempted, false);
+  assert.equal(result.warnings.some((entry) => (
+    entry.code === "numeric_claim_not_in_evidence" && entry.blocking === false
+  )), true);
+});
+
 test("Editorial Plan gets one structured repair and does not include the prior raw response", async () => {
   const invalid = validPlan();
   invalid.trends[0].supportingPaperIds = ["2607.50001"];
@@ -757,6 +778,20 @@ test("Editorial numeric validation does not treat an arXiv identifier as an expe
   assert.equal(validation.issues.some((entry) => entry.code === "numeric_claim_not_in_evidence"), false);
 });
 
+test("Editorial numeric validation does not treat an inline Evidence reference index as a factual number", () => {
+  const plan = validPlan();
+  plan.singlePaperObservations[0].claim = "该论文报告危险动作减少 37%（2607.50003:results:0）。";
+  plan.singlePaperObservations[0].evidenceRefs = ["2607.50003:results:0"];
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(
+    validation.issues.some((entry) => entry.code === "numeric_claim_not_in_evidence"),
+    false,
+    validation.issues.map((entry) => `${entry.code}: ${entry.detail}`).join("\n")
+  );
+});
+
 test("Editorial Plan repair scope identifies one observation's paper and a cross-paper trend", () => {
   const plan = validPlan();
   const observationScope = deriveEditorialPlanReviewScope({
@@ -774,9 +809,9 @@ test("Editorial Plan repair scope identifies one observation's paper and a cross
   assert.equal(trendScope.paperId, "");
 });
 
-test("Editorial Plan preserves the original issue after an unaffected patch", async () => {
+test("Editorial Plan preserves a structural issue after an unaffected patch", async () => {
   const invalid = validPlan();
-  invalid.singlePaperObservations[0].caveat = "该指标得分为零，而非指标本身为零。";
+  invalid.readingOrder = [];
   const changedCoreTheme = "不应随局部修正改变的全局主题";
 
   await assert.rejects(
@@ -794,13 +829,13 @@ test("Editorial Plan preserves the original issue after an unaffected patch", as
       }
     }),
     (error) => error instanceof EditorialAgentError
-      && error.issues.some((entry) => entry.code === "rhetorical_prose_style")
+      && error.issues.some((entry) => entry.code === "reading_order_mismatch")
   );
 });
 
 test("Editorial Plan gets one response-format repair after a malformed content repair", async () => {
   const invalid = validPlan();
-  invalid.singlePaperObservations[0].caveat = "该指标得分为零，而非指标本身为零。";
+  invalid.readingOrder = [];
   const prompts = [];
   const result = await runEditorialPlanAgent({
     selectedItems,
@@ -816,8 +851,8 @@ test("Editorial Plan gets one response-format repair after a malformed content r
       }
       return {
         patches: [{
-          path: "singlePaperObservations[0].caveat",
-          value: validPlan().singlePaperObservations[0].caveat
+          path: "readingOrder",
+          value: validPlan().readingOrder
         }]
       };
     }
@@ -830,7 +865,7 @@ test("Editorial Plan gets one response-format repair after a malformed content r
     "weekly_report_editorial_plan_repair",
     "weekly_report_editorial_plan_response_repair"
   ]);
-  assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
+  assert.equal(prompts[2].issues[0].code, "reading_order_mismatch");
   assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
   assert.deepEqual(prompts[2].currentEditorialPlan.singlePaperObservations[0].claim, invalid.singlePaperObservations[0].claim);
   assert.doesNotMatch(JSON.stringify(prompts[2]), /\{\"coreTheme\":\"broken\"/);
@@ -896,7 +931,7 @@ test("Editorial Plan uses three content repairs before reporting that the repair
     .map((event) => event.repairAttempt), [1, 2, 3]);
 });
 
-test("Editorial repair prompt includes safe numeric repair instructions but not issue details", () => {
+test("Editorial repair prompt includes safe numeric targets without carrying arbitrary issue details", () => {
   const prompt = buildEditorialPlanRepairPrompt({
     selectedItems,
     issues: [{
@@ -906,7 +941,12 @@ test("Editorial repair prompt includes safe numeric repair instructions but not 
     }, {
       code: "numeric_claim_not_in_evidence",
       path: "singlePaperObservations[0].claim",
-      detail: "SECRET_UNTRUSTED_400"
+      detail: "Exact number 44.7% does not occur in the cited Evidence."
+    }, {
+      code: "numeric_claim_not_in_evidence",
+      path: "singlePaperObservations[0].claim",
+      detail: "Exact number 61.2% does not occur in the cited Evidence.",
+      triggerText: "SECRET_UNTRUSTED_400"
     }, {
       code: "rhetorical_prose_style",
       path: "singlePaperObservations[0].caveat",
@@ -929,6 +969,10 @@ test("Editorial repair prompt includes safe numeric repair instructions but not 
   assert.match(prompt, /weekly_report_editorial_plan_repair/);
   assert.match(prompt, /readingOrder/);
   assert.match(prompt, /For every exact number in the affected claim/i);
+  assert.deepEqual(JSON.parse(prompt).issues.filter((issue) => (
+    issue.code === "numeric_claim_not_in_evidence"
+  )).flatMap((issue) => issue.unsupportedNumbers), ["44.7%", "61.2%"]);
+  assert.equal(JSON.parse(prompt).repairPaths.includes("singlePaperObservations[0].evidenceRefs"), true);
   assert.match(prompt, /remove resource budgeting\/资源预算/i);
   assert.match(prompt, /remove state tracking\/状态追踪/i);
   assert.match(prompt, /Remove the multidimensional-evaluation claim/i);
@@ -940,6 +984,48 @@ test("Editorial repair prompt includes safe numeric repair instructions but not 
   assert.match(prompt, /Do not replace one forbidden contrast with another/i);
   assert.doesNotMatch(prompt, /SECRET_PRIOR_RAW_RESPONSE/);
   assert.doesNotMatch(prompt, /SECRET_UNTRUSTED_400/);
+});
+
+test("a numeric Editorial claim repair may add the adjacent Evidence refs", () => {
+  const plan = validPlan();
+  const issue = {
+    code: "numeric_claim_not_in_evidence",
+    path: "trends[0].claim",
+    detail: "Exact number 44.7% does not occur in the cited Evidence."
+  };
+  const nextRefs = [...plan.trends[0].evidenceRefs, "2607.50001:experiments:0"];
+
+  const result = applyEditorialPlanPatch({
+    editorialPlan: plan,
+    issues: [issue],
+    patchResponse: {
+      patches: [{ path: "trends[0].evidenceRefs", value: nextRefs }]
+    }
+  });
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.editorialPlan.trends[0].evidenceRefs, nextRefs);
+});
+
+test("Editorial Agent keeps a supported number with an incomplete adjacent Evidence ref as a warning", async () => {
+  const invalid = validPlan();
+  invalid.trends[0].claim = "多篇论文共同把安全检查前移到动作执行之前，第二篇论文报告危险动作减少 37%。";
+  invalid.trends[0].evidenceRefs = ["2607.50001:method:0", "2607.50002:method:0"];
+
+  const result = await runEditorialPlanAgent({
+    selectedItems,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      if (payload.task === "weekly_report_editorial_plan") return invalid;
+      assert.fail(`semantic warning must not trigger repair: ${payload.task}`);
+    }
+  });
+
+  assert.equal(result.repairAttempted, false);
+  assert.equal(result.editorialPlan.trends[0].claim.includes("37%"), true);
+  assert.equal(result.editorialPlan.trends[0].evidenceRefs.includes("2607.50002:results:0"), false);
+  assert.equal(result.warnings.some((entry) => entry.code === "numeric_claim_not_in_evidence"), true);
 });
 
 const paperDrafts = selectedItems.map((selectedItem) => ({
@@ -1446,9 +1532,31 @@ test("Head/Tail gets one structured repair and never carries the previous raw re
   assert.doesNotMatch(JSON.stringify(prompts[1]), /SECRET_PRIOR_RAW_RESPONSE/);
 });
 
+test("Head/Tail Agent keeps model semantic judgments as warnings without repair", async () => {
+  const draft = validHeadTail();
+  draft.reportIntroduction = "该结果揭示了任务差异。";
+  let calls = 0;
+  const result = await runHeadTailWriter({
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      return draft;
+    }
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.repairAttempted, false);
+  assert.equal(result.warnings.some((entry) => (
+    entry.code === "rhetorical_prose_style" && entry.blocking === false
+  )), true);
+});
+
 test("Head/Tail gets one response-format repair after a malformed content repair", async () => {
   const invalid = validHeadTail();
-  invalid.reportIntroduction = "该结果揭示了任务差异。";
+  invalid.readingOrder = [];
   const prompts = [];
   const result = await runHeadTailWriter({
     editorialPlan: validPlan(),
@@ -1475,7 +1583,7 @@ test("Head/Tail gets one response-format repair after a malformed content repair
     "weekly_report_write_head_tail_repair",
     "weekly_report_write_head_tail_response_repair"
   ]);
-  assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
+  assert.equal(prompts[2].issues[0].code, "reading_order_mismatch");
   assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
   assert.doesNotMatch(JSON.stringify(prompts[2]), /\{\"titleAngle\":\"broken\"/);
 });

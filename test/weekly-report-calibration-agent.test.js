@@ -138,6 +138,36 @@ test("Calibration validation rejects direct score changes and unknown comparison
   assert.equal(comparisonValidation.issues.some((issue) => issue.code === "comparison_paper_unknown"), true);
 });
 
+test("Calibration validation unwraps only an unambiguous answer results envelope", () => {
+  const items = [reviewItemFor("2609.05881"), reviewItemFor("2609.05802")];
+  const response = calibrationResponseFor(items);
+
+  const wrappedValidation = validateCalibrationResponse({ answer: response }, {
+    items,
+    phase: "confirm"
+  });
+  assert.equal(wrappedValidation.valid, true);
+  assert.deepEqual(wrappedValidation.results.map((entry) => entry.paperId), [
+    "2609.05881",
+    "2609.05802"
+  ]);
+
+  const conflictingValidation = validateCalibrationResponse({
+    results: response.results,
+    answer: { results: [...response.results].reverse() }
+  }, { items, phase: "confirm" });
+  assert.equal(conflictingValidation.valid, false);
+  assert.equal(conflictingValidation.issues.some((entry) => (
+    entry.code === "calibration_result_envelope_conflict"
+  )), true);
+
+  const stringAnswerValidation = validateCalibrationResponse({
+    answer: JSON.stringify(response)
+  }, { items, phase: "confirm" });
+  assert.equal(stringAnswerValidation.valid, false);
+  assert.equal(stringAnswerValidation.issues.some((entry) => entry.code === "schema_invalid"), true);
+});
+
 test("Calibration status follows suspected misjudgments when the model returns a contradictory resolved status", () => {
   const items = [reviewItemFor("2607.30501"), reviewItemFor("2607.30502")];
   const suspicion = [{

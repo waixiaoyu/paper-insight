@@ -1002,6 +1002,29 @@ test("Writer output still rejects other arXiv papers and model-owned score field
   assert.equal(validation.issues.some((issue) => issue.code === "writer_field_forbidden"), true);
 });
 
+test("Paper Section Writer keeps semantic evidence doubts as warnings instead of opening repair", async () => {
+  const draft = validDraft();
+  draft.experimentsAndResults.text = "训练数据规模为 1000 万样本。";
+  let calls = 0;
+
+  const result = await runPaperSectionWriter({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      return draft;
+    }
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.repairAttempted, false);
+  assert.equal(result.paperDraft.paperId, item.paper.id);
+  assert.equal(result.warnings.some((entry) => (
+    entry.code === "numeric_claim_not_in_evidence"
+    && entry.blocking === false
+  )), true);
+});
+
 test("Paper Section Writer gets one structured repair without carrying its prior raw response", async () => {
   const invalid = validDraft();
   invalid.limitationsAndConstraints = [];
@@ -1038,7 +1061,7 @@ test("Paper Section Writer gets one structured repair without carrying its prior
 
 test("Paper Section Writer gets one response-format repair after a malformed content repair", async () => {
   const invalid = validDraft();
-  invalid.adnInsight.text = "该结果揭示了系统差异。";
+  invalid.limitationsAndConstraints = [];
   const prompts = [];
   const result = await runPaperSectionWriter({
     item,
@@ -1054,8 +1077,8 @@ test("Paper Section Writer gets one response-format repair after a malformed con
       }
       return {
         patches: [{
-          path: "adnInsight",
-          value: validDraft().adnInsight
+          path: "limitationsAndConstraints",
+          value: validDraft().limitationsAndConstraints
         }]
       };
     }
@@ -1068,9 +1091,9 @@ test("Paper Section Writer gets one response-format repair after a malformed con
     "weekly_report_write_paper_section_repair",
     "weekly_report_write_paper_section_response_repair"
   ]);
-  assert.equal(prompts[2].issues[0].code, "rhetorical_prose_style");
+  assert.equal(prompts[2].issues[0].code, "limitations_insufficient");
   assert.equal(prompts[2].responseValidationIssues[0].code, "invalid_json");
-  assert.deepEqual(prompts[2].repairPaths, ["adnInsight"]);
+  assert.deepEqual(prompts[2].repairPaths, ["limitationsAndConstraints"]);
   assert.deepEqual(prompts[2].currentPaperDraft.coreContribution, invalid.coreContribution);
   assert.doesNotMatch(JSON.stringify(prompts[2]), /SECRET_MALFORMED_RAW/);
 });
@@ -1154,7 +1177,7 @@ test("Paper Section repair rejects a patch item without a value", () => {
 
 test("Paper Section uses response-format repair when a patch item omits value", async () => {
   const invalid = validDraft();
-  invalid.readingValue.recommendedFocus.text = "建议优先阅读第 9 节。";
+  invalid.limitationsAndConstraints = [];
   const prompts = [];
   const result = await runPaperSectionWriter({
     item,
@@ -1166,16 +1189,16 @@ test("Paper Section uses response-format repair when a patch item omits value", 
       if (payload.task === "weekly_report_write_paper_section_repair") {
         return {
           patches: [{
-            path: "readingValue.recommendedFocus",
+            path: "limitationsAndConstraints",
             text: "Incorrect patch shape.",
-            evidenceRefs: ["method:0"]
+            evidenceRefs: ["limitations:0"]
           }]
         };
       }
       return {
         patches: [{
-          path: "readingValue.recommendedFocus",
-          value: validDraft().readingValue.recommendedFocus
+          path: "limitationsAndConstraints",
+          value: validDraft().limitationsAndConstraints
         }]
       };
     }
@@ -1187,7 +1210,7 @@ test("Paper Section uses response-format repair when a patch item omits value", 
     "weekly_report_write_paper_section_repair",
     "weekly_report_write_paper_section_response_repair"
   ]);
-  assert.deepEqual(result.paperDraft.readingValue.recommendedFocus, validDraft().readingValue.recommendedFocus);
+  assert.deepEqual(result.paperDraft.limitationsAndConstraints, validDraft().limitationsAndConstraints);
 });
 
 test("Paper Section deterministically removes an unknown response field without regenerating the draft", async () => {

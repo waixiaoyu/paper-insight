@@ -41,6 +41,7 @@ const ADN_ANGLES = new Set([
   "evaluation",
   "safety",
   "engineering",
+  "interpretability",
   "general",
   "none"
 ]);
@@ -76,9 +77,11 @@ const requireObject = (value, label) => {
 const normalizeEvidenceSource = (value, label) => {
   const source = requireObject(value, label);
   const normalized = {
+    ...(source.sourceId ? { sourceId: normalizedText(source.sourceId, 240) } : {}),
     section: normalizedText(source.section, 240),
     anchor: normalizedText(source.anchor, 80),
-    excerpt: normalizedText(source.excerpt, 1200)
+    excerpt: normalizedText(source.excerpt, 1200),
+    ...(source.rawExcerpt ? { rawExcerpt: String(source.rawExcerpt).slice(0, 1200) } : {})
   };
 
   if (!normalized.section || !normalized.anchor || !normalized.excerpt) {
@@ -168,8 +171,15 @@ export const normalizeEvidenceArtifacts = (value) => {
       if (!claim || !evidenceRefs.length) {
         throw new TypeError(`valueSignals.signals[${index}] requires claim and evidenceRefs.`);
       }
-      if (!ADN_RELEVANCE.has(relevance) || !ADN_ANGLES.has(angle)) {
-        throw new TypeError(`valueSignals.signals[${index}].adnImplication is invalid.`);
+      if (!ADN_RELEVANCE.has(relevance)) {
+        throw new TypeError(
+          `valueSignals.signals[${index}].adnImplication.relevance must be one of ${[...ADN_RELEVANCE].join(", ")}; received "${relevance}".`
+        );
+      }
+      if (!ADN_ANGLES.has(angle)) {
+        throw new TypeError(
+          `valueSignals.signals[${index}].adnImplication.angle must be one of ${[...ADN_ANGLES].join(", ")}; received "${angle}".`
+        );
       }
 
       return {
@@ -193,7 +203,7 @@ export const normalizeEvidenceArtifacts = (value) => {
 export const WEEKLY_REPORT_JOB_STATES = Object.freeze([...JOB_STATES]);
 
 export const normalizeWeeklyReportJobOptions = (value = {}) => {
-  const maxSelectedCount = boundedInteger(value.maxSelectedCount, 10, 3, 20);
+  const maxSelectedCount = boundedInteger(value.maxSelectedCount, 5, 3, 20);
   const requestedMinimum = boundedInteger(value.minSelectedCount, 3, 1, 20);
 
   return {

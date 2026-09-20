@@ -1,4 +1,5 @@
 import { validateWeeklyReportMarkdown } from "./publish-guard.js";
+import { applyCredibilityGatePolicy } from "./credibility-gate-policy.js";
 
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
@@ -124,8 +125,13 @@ export const runDeterministicQa = ({
     useOriginalText: true,
     footerNote
   });
-  const deterministicIssues = (Array.isArray(validation.errors) ? validation.errors : [])
+  const normalizedIssues = (Array.isArray(validation.errors) ? validation.errors : [])
     .map((message) => normalizeIssue(String(message), papers));
+  const policy = applyCredibilityGatePolicy({
+    issues: normalizedIssues,
+    warnings: Array.isArray(validation.warnings) ? validation.warnings : []
+  });
+  const deterministicIssues = policy.issues;
   const status = deterministicIssues.length
     ? (repairAttempted ? "rejected" : "repair_required")
     : "passed";
@@ -136,7 +142,11 @@ export const runDeterministicQa = ({
     reportIssues: deterministicIssues.filter((entry) => entry.scope === "report"),
     repairAttempted: Boolean(repairAttempted),
     repairResults: [],
-    warnings: Array.isArray(validation.warnings) ? validation.warnings.map(String) : [],
+    warnings: policy.warnings.map((entry) => (
+      typeof entry === "string"
+        ? entry
+        : normalizeText(entry?.message || entry?.detail || entry?.reason || entry?.code)
+    )).filter(Boolean),
     validation
   };
 };

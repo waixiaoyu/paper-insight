@@ -20,6 +20,7 @@ import {
   writeWeeklyReportPaperSections
 } from "../weekly-report/orchestrator.js";
 import { WeeklyReportTraceStore } from "../weekly-report/trace-store.js";
+import { buildEvidenceSourceRegistry } from "../weekly-report/evidence-source-registry.js";
 
 const tempDirectories = [];
 const waitForManualReview = async (manager, jobId) => {
@@ -173,6 +174,40 @@ const evidenceResponseFor = (paperId, { valid = true } = {}) => ({
     }]
   }
 });
+
+const evidenceModelResponseFor = (paperId, { valid = true } = {}) => {
+  const response = structuredClone(evidenceResponseFor(paperId));
+  const registry = buildEvidenceSourceRegistry(evidencePacketFor(paperId));
+  const idByAnchor = new Map(registry.sections.map((section) => [
+    section.anchor,
+    section.units[0]?.sourceId
+  ]));
+  for (const field of Object.values(response.evidenceCard)) {
+    if (!field || !Array.isArray(field.sources)) continue;
+    field.sources = field.sources.map((sourceEntry) => ({
+      sourceId: idByAnchor.get(sourceEntry.anchor)
+    }));
+  }
+  if (!valid) {
+    response.evidenceCard.problem.sources = [{
+      sourceId: "UNKNOWN_SOURCE_ID"
+    }];
+  }
+  return response;
+};
+
+const evidenceModelResponseForPrompt = (prompt, { valid = true } = {}) => {
+  const payload = JSON.parse(prompt);
+  const paperId = payload.paper?.paperId || payload.paperId;
+  const response = evidenceModelResponseFor(paperId, { valid });
+  if (!valid && payload.task !== "weekly_report_extract_evidence") {
+    return {
+      paperId,
+      patch: { problem: response.evidenceCard.problem }
+    };
+  }
+  return response;
+};
 
 const reviewResponseFor = (paperId, {
   valid = true,
@@ -599,7 +634,7 @@ test("extract_evidence persists each model call and normalized artifacts", async
   const extracted = await extractWeeklyReportEvidence(prepared, execution.context, {
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
-      return evidenceResponseFor(payload.paper.paperId);
+      return evidenceModelResponseFor(payload.paper.paperId);
     },
     buildContext: async (paper) => evidencePacketFor(paper.id),
     networkRetryDelayMs: 0
@@ -648,8 +683,8 @@ test("Evidence failure refills from reserve through context gate and Evidence", 
     buildContext,
     networkRetryDelayMs: 0,
     callModel: async (prompt) => {
-      const paperId = JSON.parse(prompt).paper.paperId;
-      return evidenceResponseFor(paperId, { valid: paperId !== "2607.11002" });
+      const paperId = JSON.parse(prompt).paper?.paperId || JSON.parse(prompt).paperId;
+      return evidenceModelResponseForPrompt(prompt, { valid: paperId !== "2607.11002" });
     }
   });
 
@@ -659,7 +694,8 @@ test("Evidence failure refills from reserve through context gate and Evidence", 
     ["2607.11001", "2607.11003"]
   );
   assert.deepEqual(extracted.evidenceResult.excluded, []);
-  assert.deepEqual(extracted.evidenceResult.evidenceDisputes.map((item) => item.paper.id), ["2607.11002"]);
+  assert.deepEqual(extracted.evidenceResult.evidenceDisputes, []);
+  assert.deepEqual(extracted.evidenceResult.processingFailed.map((item) => item.paper.id), ["2607.11002"]);
   assert.equal(extracted.refill.contextEligible.length, 1);
   assert.equal(extracted.counts.fullTextEligible, 3);
   assert.equal(extracted.counts.excluded, 0);
@@ -680,24 +716,48 @@ test("Evidence failures without a successful paper enter manual review instead o
   const extracted = await extractWeeklyReportEvidence(prepared, execution.context, {
     buildContext: async (paper) => evidencePacketFor(paper.id),
     networkRetryDelayMs: 0,
-    callModel: async (prompt) => evidenceResponseFor(
-      JSON.parse(prompt).paper.paperId,
-      { valid: false }
-    )
+    callModel: async (prompt) => evidenceModelResponseForPrompt(prompt, { valid: false })
   });
 
   assert.equal(extracted.nextStage, "manual_review");
   assert.equal(extracted.evidenceItems.length, 0);
   assert.equal(extracted.evidenceResult.excluded.length, 0);
-  assert.equal(extracted.evidenceResult.evidenceDisputes.length, 2);
+  assert.equal(extracted.evidenceResult.evidenceDisputes.length, 0);
+  assert.equal(extracted.evidenceResult.processingFailed.length, 2);
   assert.equal(extracted.counts.excluded, 0);
   assert.deepEqual(extracted.manualReviewBacklog.map((item) => item.kind), [
-    "evidence_dispute",
-    "evidence_dispute"
+    "processing_failure",
+    "processing_failure"
   ]);
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
+
+test("证据提取的未知来源引用进入管理员处理队列", async () => {
+  const execution = fakeExecutionContext();
+  const prepared = await prepareWeeklyReportJob({
+    ...inputRange,
+    minSelectedCount: 1,
+    primaryPapers: [{ id: "2607.12011", published: inWeek }],
+    reservePapers: []
+  }, execution.context, {
+    buildContext: async (paper) => evidencePacketFor(paper.id)
+  });
+
+  const extracted = await extractWeeklyReportEvidence(prepared, execution.context, {
+    buildContext: async (paper) => evidencePacketFor(paper.id),
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => evidenceModelResponseForPrompt(prompt, { valid: false })
+  });
+
+  const failure = extracted.manualReviewBacklog[0];
+  assert.equal(failure.kind, "processing_failure");
+  assert.equal(failure.issues.some((entry) => entry.code === "schema_invalid"), true);
+  assert.equal(failure.evidenceReviews.length, 0);
+  assert.deepEqual(failure.allowedActions, ["retry_paper", "skip_paper", "exit_task"]);
+  assert.match(failure.details[0].diagnosticReason, /结构|字段类型/u);
+  assert.match(failure.details[0].responseExcerpt, /UNKNOWN_SOURCE_ID/u);
+});
 test("Evidence below target continues when at least one paper succeeds", async () => {
   const execution = fakeExecutionContext();
   const prepared = await prepareWeeklyReportJob({
@@ -714,13 +774,14 @@ test("Evidence below target continues when at least one paper succeeds", async (
   const partial = await extractWeeklyReportEvidence(prepared, execution.context, {
     networkRetryDelayMs: 0,
     callModel: async (prompt) => {
-      const paperId = JSON.parse(prompt).paper.paperId;
-      return evidenceResponseFor(paperId, { valid: paperId === "2607.12003" });
+      const paperId = JSON.parse(prompt).paper?.paperId || JSON.parse(prompt).paperId;
+      return evidenceModelResponseForPrompt(prompt, { valid: paperId === "2607.12003" });
     }
   });
 
   assert.equal(partial.evidenceItems.length, 1);
-  assert.equal(partial.evidenceResult.evidenceDisputes.length, 1);
+  assert.equal(partial.evidenceResult.evidenceDisputes.length, 0);
+  assert.equal(partial.evidenceResult.processingFailed.length, 1);
   assert.equal(partial.counts.excluded, 0);
   assert.equal(partial.warnings.some((warning) => (
     warning.code === "READING_LIST_EVIDENCE_BELOW_TARGET"
@@ -753,7 +814,7 @@ test("Evidence model transport failures preserve other papers and record process
         error.retryable = true;
         throw error;
       }
-      return evidenceResponseFor(paperId);
+      return evidenceModelResponseFor(paperId);
     }
   });
 
@@ -785,7 +846,7 @@ test("review stage persists model calls, server scores, and normalized artifacts
   });
   const evidenced = await extractWeeklyReportEvidence(prepared, execution.context, {
     networkRetryDelayMs: 0,
-    callModel: async (prompt) => evidenceResponseFor(JSON.parse(prompt).paper.paperId)
+    callModel: async (prompt) => evidenceModelResponseFor(JSON.parse(prompt).paper.paperId)
   });
   const reviewed = await reviewWeeklyReportPapers(evidenced, execution.context, {
     networkRetryDelayMs: 0,
@@ -831,7 +892,7 @@ test("Review failure refills through context, Evidence, and Review in order", as
     const id = payload.paper.paperId;
     modelTasks.push({ task: payload.task, paperId: id });
     if (payload.task.startsWith("weekly_report_extract_evidence")) {
-      return evidenceResponseFor(id);
+      return evidenceModelResponseFor(id);
     }
     return reviewResponseFor(id, { valid: id !== "2607.14002" });
   };
@@ -851,6 +912,10 @@ test("Review failure refills through context, Evidence, and Review in order", as
   assert.deepEqual(reviewed.reviewItems.map((item) => item.paper.id), ["2607.14001", "2607.14003"]);
   assert.deepEqual(reviewed.reviewResult.excluded, []);
   assert.deepEqual(reviewed.reviewResult.reviewDisputes.map((item) => item.paper.id), ["2607.14002"]);
+  assert.deepEqual(
+    reviewed.retainedPaperRetryFailures.review.map((item) => item.paper.id),
+    ["2607.14002"]
+  );
   assert.equal(reviewed.counts.fullTextEligible, 3);
   assert.equal(reviewed.counts.reviewed, 2);
   assert.equal(reviewed.counts.excluded, 0);
@@ -878,7 +943,7 @@ test("Review exhausts reserve before returning a zero-paper review backlog", asy
     const payload = JSON.parse(prompt);
     const id = payload.paper.paperId;
     if (payload.task.startsWith("weekly_report_extract_evidence")) {
-      return evidenceResponseFor(id);
+      return evidenceModelResponseFor(id);
     }
     return reviewResponseFor(id, { valid: false });
   };
@@ -911,7 +976,7 @@ test("Review exhausts reserve before returning a zero-paper review backlog", asy
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
-test("Review Evidence challenge remains an administrator warning after successful repair", async () => {
+test("Review Evidence challenge remains an administrator warning without blocking scoring", async () => {
   const execution = fakeExecutionContext();
   const buildContext = async (paper) => evidencePacketFor(paper.id);
   const prepared = await prepareWeeklyReportJob({
@@ -923,7 +988,7 @@ test("Review Evidence challenge remains an administrator warning after successfu
   const evidenced = await extractWeeklyReportEvidence(prepared, execution.context, {
     buildContext,
     networkRetryDelayMs: 0,
-    callModel: async (prompt) => evidenceResponseFor(JSON.parse(prompt).paper.paperId)
+    callModel: async (prompt) => evidenceModelResponseFor(JSON.parse(prompt).paper.paperId)
   });
   let reviewCalls = 0;
   const reviewed = await reviewWeeklyReportPapers(evidenced, execution.context, {
@@ -932,21 +997,20 @@ test("Review Evidence challenge remains an administrator warning after successfu
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
       const id = payload.paper.paperId;
-      if (payload.task === "weekly_report_extract_evidence_repair") {
-        return evidenceResponseFor(id);
-      }
       reviewCalls += 1;
-      return reviewCalls === 1
-        ? reviewResponseFor(id, { evidenceStatus: "repair_required" })
-        : reviewResponseFor(id);
+      return reviewResponseFor(id, { evidenceStatus: "repair_required" });
     }
   });
 
-  assert.equal(reviewed.reviewItems[0].evidenceRepairAttempted, true);
-  assert.equal(reviewed.warnings.some((warning) => (
+  assert.equal(reviewCalls, 1);
+  assert.equal(reviewed.reviewItems[0].evidenceRepairAttempted, false);
+  const reviewWarning = reviewed.warnings.find((warning) => (
     warning.code === "READING_LIST_EVIDENCE_CHALLENGED_BY_REVIEW"
     && warning.paperId === "2607.16001"
-  )), true);
+  ));
+  assert.ok(reviewWarning);
+  assert.match(reviewWarning.message, /评分继续完成/);
+  assert.doesNotMatch(reviewWarning.message, /触发一次定向修正/);
   assert.equal(execution.sections.get("review-artifacts").warnings.some((warning) => (
     warning.code === "READING_LIST_EVIDENCE_CHALLENGED_BY_REVIEW"
   )), true);
@@ -968,7 +1032,7 @@ test("calibrate stage persists compact cross-paper calls and calibrated artifact
   const evidenced = await extractWeeklyReportEvidence(prepared, execution.context, {
     buildContext,
     networkRetryDelayMs: 0,
-    callModel: async (prompt) => evidenceResponseFor(JSON.parse(prompt).paper.paperId)
+    callModel: async (prompt) => evidenceModelResponseFor(JSON.parse(prompt).paper.paperId)
   });
   const reviewed = await reviewWeeklyReportPapers(evidenced, execution.context, {
     buildContext,
@@ -1065,7 +1129,7 @@ test("calibrate stage refills reserves until the threshold-qualified target is m
   const callModel = async (prompt) => {
     const payload = JSON.parse(prompt);
     if (payload.task.startsWith("weekly_report_extract_evidence")) {
-      return evidenceResponseFor(payload.paper.paperId);
+      return evidenceModelResponseFor(payload.paper.paperId);
     }
     if (payload.task.startsWith("weekly_report_review")) {
       const response = reviewResponseFor(payload.paper.paperId);
@@ -1123,7 +1187,7 @@ test("calibrate excludes a paper skipped by the administrator before rebuilding 
   const evidenced = await extractWeeklyReportEvidence(prepared, execution.context, {
     buildContext,
     networkRetryDelayMs: 0,
-    callModel: async (prompt) => evidenceResponseFor(JSON.parse(prompt).paper.paperId)
+    callModel: async (prompt) => evidenceModelResponseFor(JSON.parse(prompt).paper.paperId)
   });
   const reviewed = await reviewWeeklyReportPapers(evidenced, execution.context, {
     buildContext,
@@ -1169,7 +1233,7 @@ test("Calibration unresolved paper is replaced through the full pipeline and the
   const baseCallModel = async (prompt) => {
     const payload = JSON.parse(prompt);
     if (payload.task.startsWith("weekly_report_extract_evidence")) {
-      return evidenceResponseFor(payload.paper.paperId);
+      return evidenceModelResponseFor(payload.paper.paperId);
     }
     return reviewResponseFor(payload.paper.paperId);
   };
@@ -1188,7 +1252,7 @@ test("Calibration unresolved paper is replaced through the full pipeline and the
   const callModel = async (prompt) => {
     const payload = JSON.parse(prompt);
     if (payload.task.startsWith("weekly_report_extract_evidence")) {
-      return evidenceResponseFor(payload.paper.paperId);
+      return evidenceModelResponseFor(payload.paper.paperId);
     }
     if (payload.task.startsWith("weekly_report_review")) {
       return reviewResponseFor(payload.paper.paperId);
@@ -1349,7 +1413,7 @@ test("Calibration replaces the lowest paper when a full cohort is below target a
     callModel: async (prompt) => {
       const payload = JSON.parse(prompt);
       if (payload.task.startsWith("weekly_report_extract_evidence")) {
-        return evidenceResponseFor(payload.paper.paperId);
+        return evidenceModelResponseFor(payload.paper.paperId);
       }
       if (payload.task.startsWith("weekly_report_review")) {
         const response = reviewResponseFor(payload.paper.paperId);
@@ -1633,6 +1697,64 @@ test("editorial_plan waits after three repairs and an administrator can grant on
     .map((event) => event.repairAttempt), [1, 2, 3, 4]);
 });
 
+test("editorial_plan records unresolved numeric evidence as a warning and continues", async () => {
+  const manualReviews = [];
+  const execution = fakeExecutionContext({
+    requestManualReview: async (review) => {
+      manualReviews.push(review);
+      return {
+        action: "confirm_evidence",
+        approvedIssueKeys: review.approvableIssueKeys,
+        evidenceReviews: review.evidenceReviews,
+        decidedAt: "2026-09-15T02:00:00.000Z"
+      };
+    }
+  });
+  const calibratedItems = [
+    calibratedItemFor("2607.19421", 88, "must_read"),
+    calibratedItemFor("2607.19422", 78, "worth_reading"),
+    calibratedItemFor("2607.19423", 72, "background_only")
+  ];
+  const selected = await selectWeeklyReportPapers({
+    nextStage: "select",
+    reviewScoreThreshold: 70,
+    options: { minSelectedCount: 3, maxSelectedCount: 3 },
+    calibratedItems,
+    counts: {
+      primary: 3,
+      reserve: 0,
+      fullTextEligible: 3,
+      reviewed: 3,
+      calibrated: 3,
+      selected: 0,
+      excluded: 0
+    },
+    warnings: []
+  }, execution.context);
+  const invalidPlan = editorialPlanFor(selected.selectedItems);
+  invalidPlan.singlePaperObservations[0].claim = "This paper reports that unsafe actions are reduced by 38%.";
+  invalidPlan.singlePaperObservations[0].evidenceRefs = ["2607.19423:results:0"];
+
+  const planned = await planWeeklyReportEditorial(selected, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      if (payload.task === "weekly_report_editorial_plan") return invalidPlan;
+      return {
+        patches: [{
+          path: "singlePaperObservations[0].claim",
+          value: invalidPlan.singlePaperObservations[0].claim
+        }]
+      };
+    }
+  });
+
+  assert.equal(planned.nextStage, "write_paper_sections");
+  assert.equal(manualReviews.length, 0);
+  assert.equal(planned.editorialPlan.singlePaperObservations[0].claim.includes("38%"), true);
+  assert.equal(planned.warnings.some((entry) => entry.code === "numeric_claim_not_in_evidence"), true);
+});
+
 test("editorial_plan resumes calibration when an administrator skips the blocking paper", async () => {
   const manualReviews = [];
   const execution = fakeExecutionContext({
@@ -1788,8 +1910,9 @@ test("write_paper_sections preserves valid drafts while requesting an administra
       }
     });
   assert.equal(written.nextStage, "manual_review");
-  assert.equal(written.manualReview.paperId, "2607.19602");
-  assert.deepEqual(written.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
+  assert.equal(written.manualReview.items.length, 1);
+  assert.equal(written.manualReview.items[0].paperId, "2607.19602");
+  assert.deepEqual(written.manualReview.items[0].allowedActions, ["continue_repair", "skip_paper", "exit_task"]);
   assert.equal(execution.sections.get("paper-drafts").succeeded.length, 1);
   assert.equal(execution.sections.get("paper-drafts").failed.length, 1);
   assert.equal(
@@ -1801,6 +1924,73 @@ test("write_paper_sections preserves valid drafts while requesting an administra
     true
   );
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
+});
+
+test("write_paper_sections records concrete numeric mismatches as warnings and continues", async () => {
+  const execution = fakeExecutionContext();
+  const selectedItem = {
+    ...calibratedItemFor("2607.19603", 86, "must_read"),
+    selection: { selected: true, finalScore: 86, readingTier: "must_read", rank: 1 }
+  };
+  const planned = {
+    nextStage: "write_paper_sections",
+    options: { paperConcurrency: 1 },
+    selectedItems: [selectedItem],
+    editorialPlan: editorialPlanFor([selectedItem]),
+    counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
+    warnings: []
+  };
+
+  const written = await writeWeeklyReportPaperSections(planned, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (_prompt, { attemptType } = {}) => {
+      const draft = paperDraftFor("2607.19603");
+      draft.experimentsAndResults.text = "在 121 个模拟故障场景中，不安全动作减少了 37.5%。";
+      return String(attemptType || "").startsWith("initial")
+        ? draft
+        : { patches: [{ path: "experimentsAndResults", value: draft.experimentsAndResults }] };
+    }
+  });
+
+  assert.equal(written.nextStage, "write_head_tail");
+  assert.equal(written.manualReview, undefined);
+  assert.equal(written.paperDrafts[0].experimentsAndResults.text.includes("37.5%"), true);
+  assert.equal(written.warnings.some((entry) => entry.code === "numeric_claim_not_in_evidence"), true);
+});
+
+test("write_paper_sections separates multiple failed papers into individually reviewable queue items", async () => {
+  const execution = fakeExecutionContext();
+  const selectedItems = ["2607.19604", "2607.19605"].map((paperId, index) => ({
+    ...calibratedItemFor(paperId, 84 - index, "must_read"),
+    selection: { selected: true, finalScore: 84 - index, readingTier: "must_read", rank: index + 1 }
+  }));
+  const planned = {
+    nextStage: "write_paper_sections",
+    options: { paperConcurrency: 2 },
+    selectedItems,
+    editorialPlan: editorialPlanFor(selectedItems),
+    counts: { primary: 2, reserve: 0, fullTextEligible: 2, reviewed: 2, calibrated: 2, selected: 2, excluded: 0 },
+    warnings: []
+  };
+
+  const written = await writeWeeklyReportPaperSections(planned, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt, { attemptType } = {}) => {
+      const paperId = JSON.parse(prompt).paper?.paperId || JSON.parse(prompt).paperId;
+      const draft = paperDraftFor(paperId);
+      draft.limitationsAndConstraints = [];
+      return String(attemptType || "").startsWith("initial")
+        ? draft
+        : { patches: [{ path: "limitationsAndConstraints", value: [] }] };
+    }
+  });
+
+  assert.deepEqual(
+    written.manualReview.items.map((item) => item.paperId),
+    ["2607.19604", "2607.19605"]
+  );
+  assert.equal(written.manualReview.items.every((item) => item.issues.length > 0), true);
+  assert.equal(new Set(written.manualReview.items.map((item) => item.itemId)).size, 2);
 });
 
 test("write_paper_sections retries only the failed paper and preserves completed drafts", async () => {
@@ -2134,7 +2324,7 @@ test("deterministic_qa routes failures to repair and requests manual review afte
   assert.equal(secondExecution.events.some((event) => event.type === "reject_requested"), false);
 });
 
-test("deterministic_qa presents cited local evidence and honors only the approved issue", async () => {
+test("deterministic_qa records an exact-number mismatch as a warning without manual review", async () => {
   const selectedItems = [
     calibratedItemFor("2608.50021", 88, "must_read"),
     calibratedItemFor("2608.50022", 78, "worth_reading")
@@ -2187,29 +2377,11 @@ test("deterministic_qa presents cited local evidence and honors only the approve
   };
 
   const manual = await runWeeklyReportDeterministicQa(stillInvalid, execution.context);
-  const evidenceReview = manual.manualReview.evidenceReviews[0];
-
-  assert.equal(manual.nextStage, "manual_review");
-  assert.equal(manual.manualReview.paperId, "2608.50021");
-  assert.equal(manual.manualReview.allowedActions.includes("confirm_evidence"), true);
-  assert.equal(manual.manualReview.allowedActions.includes("skip_paper"), true);
-  assert.equal(manual.qaReport.deterministicIssues[0].path, "experimentsAndResults");
-  assert.equal(evidenceReview.fieldPath, "experimentsAndResults");
-  assert.match(evidenceReview.draftExcerpt, /37\.5%/);
-  assert.equal(evidenceReview.evidenceSources.some((source) => (
-    source.ref === "results:0"
-    && source.section === "4 Results"
-    && source.excerpt === "Unsafe actions are reduced by 37%."
-  )), true);
-
-  const approved = await runWeeklyReportDeterministicQa({
-    ...stillInvalid,
-    manualEvidenceApprovals: [{ issueKey: evidenceReview.issueKey }]
-  }, execution.context);
-
-  assert.equal(approved.nextStage, "paper_semantic_qa");
-  assert.equal(approved.qaReport.status, "passed");
-  assert.equal(approved.qaReport.deterministicIssues.length, 0);
+  assert.equal(manual.nextStage, "paper_semantic_qa");
+  assert.equal(manual.manualReview, undefined);
+  assert.deepEqual(manual.qaReport.deterministicIssues, []);
+  assert.equal(manual.qaReport.warnings.some((message) => /37\.5%/u.test(message)), true);
+  assert.equal(manual.qaReport.status, "passed");
 });
 
 test("paper_semantic_qa reviews one paper per call, persists Trace, and continues only when all pass", async () => {
@@ -2288,7 +2460,7 @@ test("paper_semantic_qa reviews one paper per call, persists Trace, and continue
   )), true);
 });
 
-test("paper_semantic_qa allows three repairs and requests manual review after exhaustion", async () => {
+test("paper_semantic_qa records model semantic judgments as warnings and continues", async () => {
   const makeInput = (execution, repairCount = 0) => {
     const paperId = "2608.19931";
     const item = calibratedItemFor(paperId, 88, "must_read");
@@ -2345,43 +2517,27 @@ test("paper_semantic_qa allows three repairs and requests manual review after ex
   });
 
   const firstExecution = fakeExecutionContext();
-  const repair = await runWeeklyReportPaperSemanticQa(
+  const continued = await runWeeklyReportPaperSemanticQa(
     makeInput(firstExecution),
     firstExecution.context,
     { networkRetryDelayMs: 0, callModel: async (prompt) => issueResponse(JSON.parse(prompt).paper.paperId) }
   );
-  assert.equal(repair.nextStage, "repair_once");
-  assert.equal(repair.qaReport.status, "repair_required");
-  assert.equal(repair.qaReport.paperIssues[0].paperId, "2608.19931");
-  assert.equal(repair.qaReport.paperIssues[0].repairTarget, "paper_section");
+  assert.equal(continued.nextStage, "report_semantic_qa");
+  assert.equal(continued.qaReport.status, "passed");
+  assert.deepEqual(continued.qaReport.paperIssues, []);
+  assert.equal(continued.warnings.some((warning) => (
+    warning.code === "READING_LIST_PAPER_SEMANTIC_WARNING"
+    && warning.paperId === "2608.19931"
+  )), true);
   assert.equal(firstExecution.events.some((event) => (
     event.type === "repair_requested"
     && event.stage === "paper_semantic_qa"
-  )), true);
-
-  const secondRepair = await runWeeklyReportPaperSemanticQa(
-    makeInput(firstExecution, 1),
-    firstExecution.context,
-    { networkRetryDelayMs: 0, callModel: async (prompt) => issueResponse(JSON.parse(prompt).paper.paperId) }
-  );
-  assert.equal(secondRepair.nextStage, "repair_once");
-  const manual = await runWeeklyReportPaperSemanticQa(
-    makeInput(firstExecution, 3),
-    firstExecution.context,
-    { networkRetryDelayMs: 0, callModel: async (prompt) => issueResponse(JSON.parse(prompt).paper.paperId) }
-  );
-  assert.equal(manual.nextStage, "manual_review");
-  assert.equal(manual.manualReview.paperId, "2608.19931");
-  assert.equal(manual.manualReview.repairAttempts, 3);
-  assert.deepEqual(manual.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
+  )), false);
   assert.equal(firstExecution.sections.has("paper-semantic-qa-call-0000"), true);
-  assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-1-call-0000"), true);
-  assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-3-call-0000"), true);
   assert.equal(firstExecution.sections.has("paper-semantic-qa"), true);
-  assert.equal(firstExecution.sections.has("paper-semantic-qa-repair-3"), true);
 });
 
-test("paper_semantic_qa exposes cited excerpts and accepts a scoped evidence approval", async () => {
+test("paper_semantic_qa keeps unsupported-fact judgments in Trace without requesting approval", async () => {
   const paperId = "2608.19935";
   const item = calibratedItemFor(paperId, 88, "must_read");
   item.paper.title = "Paper semantic evidence review";
@@ -2427,35 +2583,20 @@ test("paper_semantic_qa exposes cited excerpts and accepts a scoped evidence app
     }]
   };
   const execution = fakeExecutionContext();
-  const manual = await runWeeklyReportPaperSemanticQa(makeInput(), execution.context, {
+  const continued = await runWeeklyReportPaperSemanticQa(makeInput(), execution.context, {
     networkRetryDelayMs: 0,
     callModel: async () => response
   });
-  const evidenceReview = manual.manualReview.evidenceReviews[0];
-
-  assert.equal(manual.nextStage, "manual_review");
-  assert.equal(manual.manualReview.allowedActions.includes("confirm_evidence"), true);
-  assert.equal(evidenceReview.fieldPath, "coreContribution");
-  assert.equal(evidenceReview.evidenceSources[0].ref, "method:0");
-  assert.match(evidenceReview.evidenceSources[0].excerpt, /validates every action/);
-
-  const approved = await runWeeklyReportPaperSemanticQa(
-    makeInput([{ issueKey: evidenceReview.issueKey }]),
-    execution.context,
-    {
-      networkRetryDelayMs: 0,
-      callModel: async () => ({
-        ...response,
-        issues: [{
-          ...response.issues[0],
-          claim: "文中表述暗示该机制已经覆盖生产环境。",
-          reason: "The model restated the same unsupported production-deployment concern."
-        }]
-      })
-    }
-  );
-  assert.equal(approved.nextStage, "report_semantic_qa");
-  assert.equal(approved.qaReport.status, "passed");
+  assert.equal(continued.nextStage, "report_semantic_qa");
+  assert.equal(continued.qaReport.status, "passed");
+  assert.deepEqual(continued.qaReport.paperIssues, []);
+  assert.equal(continued.warnings.some((warning) => (
+    warning.code === "READING_LIST_PAPER_SEMANTIC_WARNING"
+    && warning.paperId === paperId
+  )), true);
+  const traceArtifact = [...execution.sections.values()]
+    .find((entry) => Array.isArray(entry?.paperSemanticWarnings));
+  assert.equal(traceArtifact.paperSemanticWarnings[0].code, "unsupported_fact");
 });
 
 test("paper_semantic_qa artifact mismatch waits for an administrator instead of rejecting the whole report", async () => {
@@ -2529,7 +2670,7 @@ test("paper_semantic_qa malformed model responses still fail closed instead of o
   )), true);
 });
 
-test("report_semantic_qa allows three repairs and requests manual review after exhaustion", async () => {
+test("report_semantic_qa records model semantic judgments as warnings and publishes", async () => {
   const makeInput = (repairCount = 0) => {
     const selectedItems = [
       calibratedItemFor("2608.19941", 88, "must_read"),
@@ -2600,39 +2741,23 @@ test("report_semantic_qa allows three repairs and requests manual review after e
   });
 
   const firstExecution = fakeExecutionContext();
-  const repair = await runWeeklyReportReportSemanticQa(
+  const published = await runWeeklyReportReportSemanticQa(
     makeInput(),
     firstExecution.context,
     { networkRetryDelayMs: 0, callModel: async () => issueResponse() }
   );
-  assert.equal(repair.nextStage, "repair_once");
-  assert.equal(repair.qaReport.status, "repair_required");
-  assert.equal(repair.qaReport.reportIssues[0].repairTarget, "head_tail");
+  assert.equal(published.nextStage, "publish");
+  assert.equal(published.qaReport.status, "passed");
+  assert.deepEqual(published.qaReport.reportIssues, []);
+  assert.equal(published.warnings.some((warning) => (
+    warning.code === "READING_LIST_REPORT_SEMANTIC_WARNING"
+  )), true);
   assert.equal(firstExecution.events.some((event) => (
     event.type === "repair_requested"
     && event.stage === "report_semantic_qa"
-  )), true);
-
-  const secondRepair = await runWeeklyReportReportSemanticQa(
-    makeInput(1),
-    firstExecution.context,
-    { networkRetryDelayMs: 0, callModel: async () => issueResponse() }
-  );
-  assert.equal(secondRepair.nextStage, "repair_once");
-  const manual = await runWeeklyReportReportSemanticQa(
-    makeInput(3),
-    firstExecution.context,
-    { networkRetryDelayMs: 0, callModel: async () => issueResponse() }
-  );
-  assert.equal(manual.nextStage, "manual_review");
-  assert.equal(manual.manualReview.paperId, "");
-  assert.equal(manual.manualReview.repairAttempts, 3);
-  assert.deepEqual(manual.manualReview.allowedActions, ["continue_repair", "exit_task"]);
+  )), false);
   assert.equal(firstExecution.sections.has("report-semantic-qa-call-0000"), true);
-  assert.equal(firstExecution.sections.has("report-semantic-qa-repair-1-call-0000"), true);
-  assert.equal(firstExecution.sections.has("report-semantic-qa-repair-3-call-0000"), true);
   assert.equal(firstExecution.sections.has("report-semantic-qa"), true);
-  assert.equal(firstExecution.sections.has("report-semantic-qa-repair-3"), true);
 
   const unavailableExecution = fakeExecutionContext();
   await assert.rejects(
@@ -2914,7 +3039,7 @@ test("write_paper_sections exposes a skip decision for one unsupported selected 
   });
 
   assert.equal(written.nextStage, "manual_review");
-  assert.equal(written.manualReview.paperId, "2607.19602");
-  assert.deepEqual(written.manualReview.allowedActions, ["continue_repair", "exit_task", "skip_paper"]);
+  assert.equal(written.manualReview.items[0].paperId, "2607.19602");
+  assert.deepEqual(written.manualReview.items[0].allowedActions, ["continue_repair", "skip_paper", "exit_task"]);
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });

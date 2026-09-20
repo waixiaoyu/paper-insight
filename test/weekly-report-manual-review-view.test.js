@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { weeklyReportManualReviewView } from "../public/manual-review-view.js";
+import {
+  weeklyReportManualReviewInFlightView,
+  weeklyReportManualReviewPresentationKey,
+  weeklyReportManualReviewView
+} from "../public/manual-review-view.js";
 
 const reviewQueue = {
   stage: "select",
@@ -79,4 +83,113 @@ test("manual review view exposes score and credibility gates for below-threshold
     ["全文", "通过"], ["身份一致", "通过"], ["证据", "通过"], ["跨论文隔离", "通过"], ["敏感信息", "未记录"]
   ]);
   assert.deepEqual(view.actions.map((action) => action.action), ["include_below_threshold", "keep_excluded", "exit_task"]);
+});
+
+test("paper-section review explains the exact mismatch and distinguishes using the draft from excluding the paper", () => {
+  const issueKey = "numeric_evidence|2609.08482|experimentsAndResults|37.5|1";
+  const view = weeklyReportManualReviewView({
+    stage: "write_paper_sections",
+    activeItemId: "paper-section-2609.08482",
+    items: [{
+      itemId: "paper-section-2609.08482",
+      paperId: "2609.08482",
+      kind: "evidence_dispute",
+      scope: "paper",
+      sourceStage: "write_paper_sections",
+      summary: "逐篇稿件有一处数字表达需要核对。",
+      issues: [{
+        code: "unsupported_exact_number",
+        path: "experimentsAndResults",
+        reason: "Exact number 37.5% is not supported by bound Evidence.",
+        triggerText: "在模拟故障场景中，不安全动作减少了 37.5%。",
+        evidenceRefs: ["results:0"]
+      }],
+      evidenceReviews: [{
+        issueKey,
+        paperId: "2609.08482",
+        fieldPath: "experimentsAndResults",
+        fieldLabel: "实验与结果",
+        draftExcerpt: "在模拟故障场景中，不安全动作减少了 37.5%。",
+        evidenceSources: [{ ref: "results:0", section: "4 Results", excerpt: "Unsafe actions are reduced by 37%." }]
+      }],
+      approvableIssueKeys: [issueKey],
+      allowedActions: ["confirm_evidence", "continue_repair", "skip_paper", "exit_task"]
+    }]
+  });
+
+  assert.match(view.title, /当前稿件需要人工复核/u);
+  assert.equal(view.evidenceReviews.length, 1);
+  assert.match(view.evidenceReviews[0].draftExcerpt, /37\.5%/u);
+  assert.match(view.evidenceReviews[0].evidenceSources[0].excerpt, /37%/u);
+  assert.equal(view.actions.find((action) => action.action === "confirm_evidence").label, "保留这一处表述");
+  assert.match(view.actions.find((action) => action.action === "confirm_evidence").effect, /只确认当前这一处/u);
+  assert.match(view.actions.find((action) => action.action === "skip_paper").label, /从本期周报移除/u);
+});
+
+test("manual review presentation key changes for the next issue and for a repeated repair attempt", () => {
+  const first = {
+    jobId: "weekly-report-job-1",
+    manualReview: {
+      requestedAt: "2026-09-15T10:00:00.000Z",
+      activeItemId: "write_paper_sections:2609.00049:1:1"
+    }
+  };
+  const nextIssue = {
+    ...first,
+    manualReview: {
+      ...first.manualReview,
+      activeItemId: "write_paper_sections:2609.00049:1:2"
+    }
+  };
+  const repeatedAfterRepair = {
+    ...first,
+    manualReview: {
+      ...first.manualReview,
+      requestedAt: "2026-09-15T10:02:00.000Z"
+    }
+  };
+
+  assert.notEqual(
+    weeklyReportManualReviewPresentationKey(first),
+    weeklyReportManualReviewPresentationKey(nextIssue)
+  );
+  assert.notEqual(
+    weeklyReportManualReviewPresentationKey(first),
+    weeklyReportManualReviewPresentationKey(repeatedAfterRepair)
+  );
+});
+
+test("a targeted repair keeps the selected issue visible without offering another decision", () => {
+  const selectedItem = reviewQueue.items[1];
+  const inFlight = weeklyReportManualReviewInFlightView({
+    jobId: "weekly-report-job-1",
+    decisionId: "decision-1",
+    selectedItem,
+    startedAt: "2026-09-15T13:04:00.000Z"
+  });
+
+  assert.match(inFlight.title, /正在定向修正论文 2609\.04002/u);
+  assert.match(inFlight.summary, /只修改当前这一项/u);
+  assert.equal(inFlight.review.activeItemId, selectedItem.itemId);
+  assert.equal(inFlight.review.items.length, 1);
+  assert.deepEqual(inFlight.review.items[0].allowedActions, []);
+  assert.equal(inFlight.review.items[0].evidenceReviews[0].draftExcerpt, "系统在全部场景中优于基线。");
+  assert.match(inFlight.presentationKey, /decision-1/u);
+});
+
+test("confirming one evidence issue keeps that exact issue visible while the task continues", () => {
+  const selectedItem = reviewQueue.items[1];
+  const inFlight = weeklyReportManualReviewInFlightView({
+    jobId: "weekly-report-job-1",
+    decisionId: "decision-confirm-1",
+    action: "confirm_evidence",
+    selectedItem,
+    startedAt: "2026-09-15T13:10:43.000Z"
+  });
+
+  assert.equal(inFlight.eyebrow, "正在应用人工确认");
+  assert.match(inFlight.title, /正在保留论文 2609\.04002 的当前这一处表述/u);
+  assert.match(inFlight.summary, /不会同时确认其他问题/u);
+  assert.equal(inFlight.review.items[0].evidenceReviews[0].draftExcerpt, "系统在全部场景中优于基线。");
+  assert.deepEqual(inFlight.review.items[0].allowedActions, []);
 });

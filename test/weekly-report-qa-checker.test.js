@@ -64,6 +64,23 @@ test("deterministic QA records internal process leakage without requesting repai
   assert.match(result.warnings.join("\n"), /内部流程/);
 });
 
+test("deterministic QA reports an unmatched exact number without blocking publication", () => {
+  const tampered = markdown.replace(
+    "**实验与结果**",
+    "**实验与结果**\n\n额外精确数字 999.9%。"
+  );
+  const result = runDeterministicQa({
+    markdown: tampered,
+    publishedPapers: papers,
+    report,
+    footerNote: READING_LIST_FOOTER_NOTE
+  });
+
+  assert.equal(result.status, "passed");
+  assert.deepEqual(result.deterministicIssues, []);
+  assert.equal(result.warnings.some((entry) => String(entry).includes("999.9%")), true);
+});
+
 test("deterministic QA rejects instead of granting a second repair", () => {
   const tampered = markdown.replace("阅读价值评分：86", "阅读价值评分：96");
   const result = runDeterministicQa({

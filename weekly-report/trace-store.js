@@ -38,7 +38,11 @@ const sensitiveKey = (key) => {
 const redactString = (value) => String(value)
   .replace(/(authorization\s*[:=]\s*)([^\r\n]+)/gi, `$1${REDACTED}`)
   .replace(/(cookie\s*[:=]\s*)([^\r\n]+)/gi, `$1${REDACTED}`)
-  .replace(/((?:api[-_ ]?key|llmApiKey)\s*[:=]\s*)([^\s\r\n,;]+)/gi, `$1${REDACTED}`);
+  .replace(/\b(Bearer)\s+[^\s,;}\]]+/gi, `$1 ${REDACTED}`)
+  .replace(
+    /(["']?(?:api[-_ ]?key|llmApiKey|authorization|access[-_ ]?token|refresh[-_ ]?token|token|password|passphrase|client[-_ ]?secret|secret)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s\r\n,;}\]]+)/gi,
+    `$1${REDACTED}`
+  );
 
 export const redactTraceValue = (value, seen = new WeakSet()) => {
   if (typeof value === "string") {

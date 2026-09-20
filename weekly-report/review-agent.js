@@ -1,9 +1,10 @@
-import { runEvidenceAgent, validateEvidenceArtifacts } from "./evidence-agent.js";
+import { validateEvidenceArtifacts } from "./evidence-agent.js";
 import {
   buildReviewPrompt,
   buildReviewRepairPrompt
 } from "./prompts.js";
 import { EVIDENCE_FIELDS } from "./schema.js";
+import { applyCredibilityGatePolicy } from "./credibility-gate-policy.js";
 
 export const REVIEW_SCORE_DIMENSIONS = Object.freeze([
   "scenarioProblemValue",
@@ -177,12 +178,16 @@ export const validateReviewResult = (value, { item } = {}) => {
     }
     return { field, code, message };
   });
+  const normalizations = [];
+  let normalizedValidationStatus = validationStatus;
   if (validationStatus === "pass" && semanticIssues.length) {
-    issues.push(validationIssue(
-      "pass_with_evidence_issues",
-      "evidenceValidation.issues",
-      "A passing Evidence validation cannot include issues."
-    ));
+    normalizedValidationStatus = "repair_required";
+    normalizations.push({
+      code: "evidence_status_normalized_for_advisory_issues",
+      from: "pass",
+      to: "repair_required",
+      reason: "Semantic Evidence issues are advisory, but a non-empty issue list cannot use pass status."
+    });
   }
   if (validationStatus === "repair_required" && !semanticIssues.length) {
     issues.push(validationIssue(
@@ -225,7 +230,6 @@ export const validateReviewResult = (value, { item } = {}) => {
     ));
   }
   const inferredInterestFit = inferInterestFitFromEvidence(item);
-  const normalizations = [];
   const interestFit = modelInterestFit === "target_network_autonomy"
     && inferredInterestFit !== "target_network_autonomy"
     ? inferredInterestFit
@@ -285,7 +289,7 @@ export const validateReviewResult = (value, { item } = {}) => {
   const reviewResult = {
     paperId: String(item?.contextPacket?.paperId || value.paperId || ""),
     evidenceValidation: {
-      status: validationStatus,
+      status: normalizedValidationStatus,
       issues: semanticIssues
     },
     scores,
@@ -385,11 +389,23 @@ export const runReviewAgent = async ({
     contextPacket: item?.contextPacket,
     expectedPaperId: paperId
   });
-  if (!inputEvidenceValidation.valid) {
+  const inputEvidencePolicy = applyCredibilityGatePolicy(inputEvidenceValidation);
+  if (inputEvidencePolicy.issues.length) {
     throw new ReviewAgentError("Review input contains invalid Evidence artifacts.", {
       code: "READING_LIST_REVIEW_INPUT_INVALID",
       paperId,
-      issues: inputEvidenceValidation.issues
+      issues: inputEvidencePolicy.issues
+    });
+  }
+  if (inputEvidencePolicy.warnings.length) {
+    await onEvent?.({
+      type: "evidence_input_warning",
+      stage: "review",
+      scope: "paper",
+      paperId,
+      severity: "warning",
+      issues: inputEvidencePolicy.warnings,
+      message: "Evidence 输入存在语义差异，已记录到 Trace；Review 继续完成评分。"
     });
   }
 
@@ -550,87 +566,22 @@ export const runReviewAgent = async ({
   };
 
   const firstReview = await reviewOnce(item, "initial");
-  if (firstReview.evidenceValidation.status === "pass") {
-    return {
-      evidenceCard: item.evidenceCard,
-      valueSignals: item.valueSignals,
-      reviewResult: firstReview,
-      evidenceRepairAttempted: false,
-      reviewRepairAttempted,
-      calls: callRecords
-    };
-  }
-
-  await onEvent?.({
-    type: "evidence_challenged",
-    stage: "review",
-    paperId,
-    severity: "warning",
-    issues: firstReview.evidenceValidation.issues
-  });
-  const repairIssues = firstReview.evidenceValidation.issues.map((itemIssue) => ({
-    code: itemIssue.code,
-    path: itemIssue.field === "valueSignals"
-      ? "valueSignals"
-      : `evidenceCard.${itemIssue.field}.summary`
-  }));
-  let repairedEvidence;
-  try {
-    repairedEvidence = await runEvidenceAgent({
-      paper: item.paper,
-      contextPacket: item.contextPacket,
-      currentArtifacts: {
-        evidenceCard: item.evidenceCard,
-        valueSignals: item.valueSignals
-      },
-      callModel,
-      signal,
-      networkRetryDelayMs,
-      repairIssues,
-      onCall: emitCall,
-      onEvent
-    });
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      throw error;
-    }
-    if (error?.processingFailed === true) {
-      throw new ReviewAgentError("Review-requested Evidence repair did not return a complete structured response.", {
-        code: "READING_LIST_REVIEW_EVIDENCE_REPAIR_FAILED",
-        paperId,
-        excludePaper: false,
-        processingFailed: true,
-        issues: error?.issues || repairIssues,
-        cause: error
-      });
-    }
-    throw new ReviewAgentError("Review-requested Evidence repair failed.", {
-      code: "READING_LIST_REVIEW_EVIDENCE_REPAIR_FAILED",
+  if (firstReview.evidenceValidation.status === "repair_required") {
+    await onEvent?.({
+      type: "evidence_challenged",
+      stage: "review",
       paperId,
-      issues: error?.issues || repairIssues,
-      cause: error
-    });
-  }
-
-  const repairedItem = {
-    ...item,
-    evidenceCard: repairedEvidence.evidenceCard,
-    valueSignals: repairedEvidence.valueSignals
-  };
-  const finalReview = await reviewOnce(repairedItem, "after_evidence_repair");
-  if (finalReview.evidenceValidation.status !== "pass") {
-    throw new ReviewAgentError("Review still rejects Evidence after the single repair opportunity.", {
-      code: "READING_LIST_REVIEW_EVIDENCE_UNRESOLVED",
-      paperId,
-      issues: finalReview.evidenceValidation.issues
+      severity: "warning",
+      issues: firstReview.evidenceValidation.issues,
+      message: "Review 记录了语义一致性提示；评分继续完成，原 Evidence 不自动重写。"
     });
   }
 
   return {
-    evidenceCard: repairedItem.evidenceCard,
-    valueSignals: repairedItem.valueSignals,
-    reviewResult: finalReview,
-    evidenceRepairAttempted: true,
+    evidenceCard: item.evidenceCard,
+    valueSignals: item.valueSignals,
+    reviewResult: firstReview,
+    evidenceRepairAttempted: false,
     reviewRepairAttempted,
     calls: callRecords
   };

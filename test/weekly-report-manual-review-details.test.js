@@ -21,6 +21,125 @@ test("系统处理失败明确说明不是论文质量结论，并说明最小�
   ]);
 });
 
+test("证据响应格式失败展示中文原因和受限的最后一次模型返回", () => {
+  const result = describeWeeklyReportManualReview({
+    kind: "processing_failure",
+    sourceStage: "extract_evidence",
+    paperId: "2608.29618",
+    details: [{
+      code: "READING_LIST_EVIDENCE_RESPONSE_INVALID",
+      text: "模型连续三次返回的证据数据均未达到结构化格式要求。",
+      diagnosticReason: "最后一次模型返回不是完整的 JSON 对象，无法解析为证据卡和阅读价值信号。",
+      responseExcerpt: "{\"evidenceCard\":"
+    }],
+    allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+  });
+
+  assert.deepEqual(result.details, [
+    { label: "已完成内容", value: "其他论文的处理结果已保留，不会因本论文失败而重做。" },
+    { label: "实际失败", value: "模型连续三次返回的证据数据均未达到结构化格式要求。" },
+    { label: "为什么不完整", value: "最后一次模型返回不是完整的 JSON 对象，无法解析为证据卡和阅读价值信号。" },
+    { label: "最后一次模型返回（受限片段）", value: "{\"evidenceCard\":" },
+    { label: "重试范围", value: "只重试论文 2608.29618 的证据提取，不会重新处理其他论文。" }
+  ]);
+});
+
+test("历史证据处理失败根据保存的校验项说明缺失字段", () => {
+  const result = describeWeeklyReportManualReview({
+    kind: "processing_failure",
+    sourceStage: "extract_evidence",
+    paperId: "2510.01359",
+    details: [{
+      code: "READING_LIST_EVIDENCE_RESPONSE_INVALID",
+      text: "模型连续三次返回的证据数据均未达到结构化格式要求。"
+    }],
+    issues: [{
+      code: "invalid_json",
+      path: "response",
+      detail: "evidenceCard.systemDesign must be an object."
+    }],
+    allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+  });
+
+  assert.deepEqual(result.details.slice(1, 4), [
+    { label: "实际失败", value: "模型连续三次返回的证据数据均未达到结构化格式要求。" },
+    { label: "为什么不完整", value: "最后一次模型返回缺少“系统设计”证据对象。" },
+    { label: "最后一次模型返回（受限片段）", value: "本次任务创建时未保存可展示的模型返回；重新执行该论文后会记录受限片段。" }
+  ]);
+});
+
+test("证据提取争议以中文说明失败字段、原文核对内容和不可人工放行的引用错误", () => {
+  const result = describeWeeklyReportManualReview({
+    kind: "evidence_dispute",
+    sourceStage: "extract_evidence",
+    paperId: "2609.01779",
+    details: [{
+      code: "READING_LIST_EVIDENCE_UNSUPPORTED",
+      text: "Evidence artifacts remain unsupported after three targeted repairs."
+    }],
+    issues: [
+      { code: "problem_excerpt_not_problem_statement", path: "evidenceCard.problem.sources" },
+      {
+        code: "evidence_ref_not_found",
+        path: "valueSignals.signals[1].evidenceRefs[2]",
+        detail: "Evidence reference method:2 does not exist."
+      },
+      {
+        code: "evidence_ref_not_found",
+        path: "valueSignals.signals[3].evidenceRefs[1]",
+        detail: "Evidence reference systemDesign:1 does not exist."
+      }
+    ],
+    evidenceReviews: [{
+      issueKey: "problem_excerpt_not_problem_statement|2609.01779|problem|1",
+      paperId: "2609.01779",
+      fieldPath: "evidenceCard.problem.sources",
+      fieldLabel: "研究问题的原文依据",
+      reviewContext: "evidence_extraction",
+      draftExcerpt: "本文提出一种新的归因方法。",
+      evidenceSources: [{
+        ref: "problem:0",
+        section: "Introduction",
+        anchor: "S1",
+        excerpt: "本文提出一种新的归因方法。"
+      }]
+    }],
+    allowedActions: ["continue_repair", "skip_paper", "exit_task"]
+  });
+
+  assert.equal(result.title, "论文 2609.01779 的证据提取需要处理");
+  assert.match(result.summary, /不代表论文质量不足/);
+  assert.equal(result.details[0].label, "研究问题的原文依据");
+  assert.match(result.details[0].value, /没有直接说明研究问题、缺口、挑战、需求或待验证能力/);
+  assert.equal(result.details[1].label, "阅读价值判断的证据引用");
+  assert.match(result.details[1].value, /method:2/);
+  assert.match(result.details[1].value, /不能由人工确认放行/);
+  assert.match(result.details[2].value, /systemDesign:1/);
+  assert.equal(result.evidenceReviews[0].reviewContext, "evidence_extraction");
+  assert.doesNotMatch(JSON.stringify({ title: result.title, summary: result.summary, details: result.details }), /READING_LIST_EVIDENCE_UNSUPPORTED|problem_excerpt_not_problem_statement|evidence_ref_not_found|Evidence artifacts|Evidence reference/);
+});
+
+test("Review 输入存在真正结构错误时展示具体中文原因而不是空白详情", () => {
+  const result = describeWeeklyReportManualReview({
+    kind: "evidence_dispute",
+    sourceStage: "review",
+    paperId: "2608.23473",
+    issues: [{
+      code: "pass_with_evidence_issues",
+      path: "evidenceValidation.status",
+      detail: "Evidence status cannot be pass while issues remain."
+    }],
+    allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+  });
+
+  assert.equal(result.title, "论文 2608.23473 的 Evidence 结构需要处理");
+  assert.match(result.summary, /不代表论文质量不足/);
+  assert.deepEqual(result.details, [{
+    label: "Evidence 校验状态",
+    value: "当前结果同时标记为“通过”并保留失败问题，两种状态互相矛盾。需要重新生成该论文的 Evidence 状态。"
+  }]);
+  assert.doesNotMatch(JSON.stringify(result), /pass_with_evidence_issues|Evidence status cannot be pass/);
+});
 test("低于默认入选线的论文展示真实分数和人工纳入约束", () => {
   const result = describeWeeklyReportManualReview({
     kind: "quality_below_threshold",
@@ -108,7 +227,7 @@ test("逐篇稿件人工决策逐项说明嵌套的证据校验失败", () => {
   });
 
   assert.equal(result.title, "论文 2608.50003 的逐篇稿件未通过校验");
-  assert.equal(result.summary, "自动修正后，以下校验项仍未通过。可选择：跳过该论文并重新校准其余候选、退出任务。");
+  assert.equal(result.summary, "自动修正后，以下校验项仍未通过。可选择：从本期周报移除这篇论文并重新校准其余候选、退出任务。");
   assert.equal(result.details[0].label, "未通过校验 1");
   assert.match(result.details[0].value, /字段：实验与结果/);
   assert.match(result.details[0].value, /每个数字必须能在其引用的原文摘录中找到/);
@@ -174,9 +293,9 @@ test("逐篇稿件人工决策展示全部校验失败，不截断为前五项",
 test("逐篇稿件人工决策只说明当前可用的处理操作", () => {
   const summaries = [
     [["continue_repair"], "自动修正后，以下校验项仍未通过。可选择：继续修正这些问题。"],
-    [["skip_paper"], "自动修正后，以下校验项仍未通过。可选择：跳过该论文并重新校准其余候选。"],
+    [["skip_paper"], "自动修正后，以下校验项仍未通过。可选择：从本期周报移除这篇论文并重新校准其余候选。"],
     [["exit_task"], "自动修正后，以下校验项仍未通过。可选择：退出任务。"],
-    [["continue_repair", "skip_paper", "exit_task"], "自动修正后，以下校验项仍未通过。可选择：继续修正这些问题、跳过该论文并重新校准其余候选、退出任务。"]
+    [["continue_repair", "skip_paper", "exit_task"], "自动修正后，以下校验项仍未通过。可选择：继续修正这些问题、从本期周报移除这篇论文并重新校准其余候选、退出任务。"]
   ];
 
   summaries.forEach(([allowedActions, expected]) => {
@@ -302,4 +421,44 @@ test("编辑计划人工决策使用中文业务说明而不暴露规则码", ()
   assert.match(result.title, /编辑计划需要修正/);
   assert.match(result.details.map((item) => item.value).join(" "), /评估工作负载/);
   assert.doesNotMatch(JSON.stringify(result), /rhetorical_prose_style|Editorial Plan text/);
+});
+
+test("编辑计划数字证据争议展示逐篇表述、原文和全部问题", () => {
+  const evidenceReviews = [{
+    issueKey: "numeric_claim_not_in_evidence|2608.09312|singlePaperObservations[0].claim|100",
+    paperId: "2608.09312",
+    fieldPath: "singlePaperObservations[0].claim",
+    fieldLabel: "逐篇观察",
+    draftExcerpt: "该系统保持 100 微秒时限。",
+    evidenceSources: [{
+      ref: "results:0",
+      section: "Results",
+      anchor: "S8",
+      excerpt: "The verified contract keeps a 120 microsecond deadline."
+    }]
+  }];
+  const result = describeWeeklyReportManualReview({
+    kind: "evidence_dispute",
+    stage: "editorial_plan",
+    relatedPaperIds: ["2608.09312", "2608.27296"],
+    allowedActions: ["confirm_evidence", "continue_repair", "exit_task"],
+    issues: [{
+      code: "numeric_claim_not_in_evidence",
+      path: "singlePaperObservations[0].claim",
+      detail: "Exact number 100 does not occur in the cited Evidence.",
+      triggerText: "该系统保持 100 微秒时限。"
+    }, {
+      code: "rhetorical_prose_style",
+      path: "singlePaperObservations[1].caveat",
+      triggerText: "该方法实现了突破性提升。"
+    }],
+    evidenceReviews
+  });
+
+  assert.match(result.title, /编辑计划的数字证据需要人工复核/);
+  assert.match(result.summary, /逐条对照/);
+  assert.deepEqual(result.evidenceReviews, evidenceReviews);
+  assert.equal(result.details.length >= 2, true);
+  assert.match(result.details.map((item) => item.value).join(" "), /100/);
+  assert.match(result.details.map((item) => item.value).join(" "), /突破性提升/);
 });

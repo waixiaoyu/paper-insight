@@ -7,10 +7,19 @@ import {
   buildEvidenceRepairPrompt,
   buildEvidenceResponseRepairPrompt
 } from "./prompts.js";
+import { parseModelJsonObject } from "./model-json.js";
+import {
+  buildEvidenceSourceRegistry,
+  materializeEvidenceSources
+} from "./evidence-source-registry.js";
+import { redactTraceValue } from "./trace-store.js";
+import { acceptCredibilityAdvisories } from "./credibility-gate-policy.js";
 
 const RESPONSE_CONTRACT_ISSUE_CODES = new Set(["invalid_json", "schema_invalid"]);
 const MAX_EVIDENCE_RESPONSE_REPAIRS = 2;
 const MAX_EVIDENCE_CONTENT_REPAIRS = 3;
+const MAX_RESPONSE_DIAGNOSTIC_CHARS = 1_200;
+const MAX_REPAIR_VALUE_CHARS = 1_200;
 
 const hasOnlyResponseContractIssues = (validation) => (
   validation?.valid === false
@@ -27,6 +36,165 @@ const normalizeText = (value) => String(value || "")
   .replace(/\s+/g, " ")
   .trim();
 
+const evidenceTokensWithOffsets = (value) => {
+  const text = String(value || "");
+  const tokens = [...text.matchAll(/[\p{L}\p{N}]+(?:[._/-][\p{L}\p{N}]+)*%?/gu)]
+    .map((match) => ({
+      value: String(match[0] || "").toLowerCase(),
+      start: match.index,
+      end: Number(match.index) + String(match[0] || "").length
+    }));
+  return tokens.filter((token, index) => {
+    const previous = tokens[index - 1];
+    return !previous
+      || token.value !== previous.value
+      || !/^\d+(?:[.,]\d+)?%?$/u.test(token.value);
+  });
+};
+
+const uniquelyReboundEvidenceExcerpt = (sectionText, excerpt) => {
+  const sourceTokens = evidenceTokensWithOffsets(sectionText);
+  const excerptTokens = evidenceTokensWithOffsets(excerpt);
+  if (excerptTokens.length < 6 || excerptTokens.length > sourceTokens.length) return "";
+
+  const matches = [];
+  for (let start = 0; start <= sourceTokens.length - excerptTokens.length; start += 1) {
+    if (excerptTokens.every((token, offset) => token.value === sourceTokens[start + offset].value)) {
+      matches.push(start);
+      if (matches.length > 1) return "";
+    }
+  }
+  if (matches.length !== 1) return "";
+  const startToken = sourceTokens[matches[0]];
+  const endToken = sourceTokens[matches[0] + excerptTokens.length - 1];
+  let end = endToken.end;
+  const sourceText = String(sectionText || "");
+  while (end < sourceText.length && /[.!?。！？;；:：\x22\x27”’)]/u.test(sourceText[end])) end += 1;
+  return sourceText.slice(startToken.start, end).trim();
+};
+
+const repairValuePreview = (value) => {
+  let preview;
+  if (typeof value === "string") {
+    preview = value.length > MAX_REPAIR_VALUE_CHARS
+      ? value.slice(0, MAX_REPAIR_VALUE_CHARS) + "…（已截断）"
+      : value;
+  } else if (Array.isArray(value)) {
+    preview = value.slice(0, 4).map((entry) => repairValuePreview(entry));
+  } else if (value && typeof value === "object") {
+    preview = Object.fromEntries(Object.entries(value)
+      .slice(0, 12)
+      .map(([key, entry]) => [key, repairValuePreview(entry)]));
+  } else {
+    preview = value;
+  }
+  if (preview && typeof preview === "object") {
+    const serialized = JSON.stringify(preview);
+    return serialized.length > MAX_REPAIR_VALUE_CHARS
+      ? serialized.slice(0, MAX_REPAIR_VALUE_CHARS) + "…（已截断）"
+      : preview;
+  }
+  return preview;
+};
+
+const valueAtEvidencePath = (artifacts, path) => {
+  const parts = String(path || "")
+    .replace(/\[(\d+)\]/g, ".$1")
+    .split(".")
+    .filter(Boolean);
+  let current = artifacts;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || !Object.hasOwn(current, part)) {
+      return undefined;
+    }
+    current = current[part];
+  }
+  return current;
+};
+
+const repairIssuesWithContext = (issues, artifacts) => (Array.isArray(issues) ? issues : [])
+  .map((entry) => {
+    const isPaperIdMismatch = String(entry?.code || "") === "paper_id_mismatch";
+    const previousValue = isPaperIdMismatch ? undefined : valueAtEvidencePath(artifacts, entry?.path);
+    return {
+      ...entry,
+      detail: isPaperIdMismatch
+        ? "Paper identifier must match the requested paper."
+        : String(entry?.detail || "").slice(0, MAX_REPAIR_VALUE_CHARS),
+      ...(previousValue === undefined ? {} : { previousValue: repairValuePreview(previousValue) })
+    };
+  });
+
+const redactedResponseExcerpt = (value) => {
+  let text;
+  if (typeof value === "string") {
+    text = value;
+  } else if (value && typeof value === "object") {
+    if (typeof value.text === "string") {
+      text = value.text;
+    } else if (Array.isArray(value.content)) {
+      text = value.content
+        .filter((block) => block?.type === "text")
+        .map((block) => String(block.text || ""))
+        .join("\n");
+    } else {
+      try {
+        text = JSON.stringify(value);
+      } catch {
+        text = "";
+      }
+    }
+  } else {
+    text = String(value || "");
+  }
+
+  const redacted = String(text || "")
+    .replace(/\u0000/g, "")
+    .replace(/([\x22\x27]?(?:api[_-]?key|authorization|token|password|secret)[\x22\x27]?\s*[:=]\s*[\x22\x27]?)([^\x22\x27\s,}\]]+)([\x22\x27]?)/giu, "$1（已隐藏）$3")
+    .trim();
+  if (!redacted) {
+    return "（模型没有返回可显示的文本内容。）";
+  }
+  return redacted.length > MAX_RESPONSE_DIAGNOSTIC_CHARS
+    ? redacted.slice(0, MAX_RESPONSE_DIAGNOSTIC_CHARS) + "…（已截断）"
+    : redacted;
+};
+
+const responseDiagnosticForValidation = (validation, rawOutput) => {
+  const issues = Array.isArray(validation?.issues) ? validation.issues : [];
+  const invalidJson = issues.find((entry) => String(entry?.code || "") === "invalid_json");
+  const schemaInvalid = issues.find((entry) => String(entry?.code || "") === "schema_invalid");
+  let reason = "最后一次模型返回未能满足证据数据的结构要求。";
+
+  if (invalidJson) {
+    reason = "最后一次模型返回不是完整的 JSON 对象，无法解析为证据卡和阅读价值信号。";
+  } else if (schemaInvalid) {
+    const detail = String(schemaInvalid.detail || "");
+    if (/evidenceCard\.paperId is required/iu.test(detail)) {
+      reason = "最后一次模型返回缺少证据卡中的论文编号。";
+    } else if (/valueSignals\.paperId is required/iu.test(detail)) {
+      reason = "最后一次模型返回缺少阅读价值信号中的论文编号。";
+    } else if (/evidenceCard must be an object/iu.test(detail)) {
+      reason = "最后一次模型返回缺少完整的证据卡对象。";
+    } else if (/valueSignals must be an object/iu.test(detail)) {
+      reason = "最后一次模型返回缺少完整的阅读价值信号对象。";
+    } else {
+      reason = "最后一次模型返回可以解析为 JSON，但缺少必填字段或字段类型不符合证据数据要求。";
+    }
+  }
+
+  return {
+    reason,
+    responseExcerpt: redactedResponseExcerpt(rawOutput)
+  };
+};
+
+const normalizeResponseDiagnostic = (value) => {
+  const reason = normalizeText(value?.reason);
+  const responseExcerpt = redactedResponseExcerpt(value?.responseExcerpt);
+  return reason ? { reason, responseExcerpt } : null;
+};
+
 const normalizedPaperId = (value) => {
   const text = String(value || "").trim().toLowerCase();
   const match = text.match(/(?:^|\/)(\d{4}\.\d{4,5})(?:v\d+)?(?:$|[?#/])/i);
@@ -34,13 +202,40 @@ const normalizedPaperId = (value) => {
 };
 
 export const extractEvidenceNumericTokens = (value) => {
-  const matches = normalizeText(value).match(/(?<![A-Za-z0-9_])\d+(?:,\d{3})*(?:\.\d+)?\s*%?(?![A-Za-z0-9_])/g) || [];
-  return [...new Set(matches.map((token) => token.replace(/[\s,]/g, "").toLowerCase()))];
+  const textWithoutIdentifierCodes = normalizeText(value).replace(
+    /\b[A-Za-z][A-Za-z0-9_]*(?:-\d+(?:\/\d+)*(?:\/[A-Za-z][A-Za-z0-9_]*)?)+\b/g,
+    ""
+  );
+  const matches = textWithoutIdentifierCodes.match(
+    /(?<![A-Za-z0-9_])\d+(?:,\d{3})*(?:\.\d+)?(?![\d,.])\s*%?(?:\s*(?:[xX×](?![A-Za-z0-9_])|times\b))?(?![A-Za-z0-9_])/g
+  ) || [];
+  return [...new Set(matches.map((token) => token
+    .replace(/\s*(?:[xX×]|times)$/i, "")
+    .replace(/[\s,]/g, "")
+    .toLowerCase()))];
 };
 
 export const normalizeEvidenceResponseShape = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { value, normalized: false, reason: "" };
+  }
+  const keys = Object.keys(value);
+  if (keys.length === 1 && keys[0] === "answer" && typeof value.answer === "string") {
+    try {
+      const answer = JSON.parse(value.answer);
+      if (answer && typeof answer === "object" && !Array.isArray(answer)) {
+        const normalizedAnswer = normalizeEvidenceResponseShape(answer);
+        return {
+          value: normalizedAnswer.value,
+          normalized: true,
+          reason: normalizedAnswer.reason
+            ? `stringified_answer_envelope:${normalizedAnswer.reason}`
+            : "stringified_answer_envelope"
+        };
+      }
+    } catch {
+      // Keep the original value so the normal Schema error and repair path remain in control.
+    }
   }
   if (value.evidenceCard && value.valueSignals) {
     return { value, normalized: false, reason: "" };
@@ -62,7 +257,7 @@ export const normalizeEvidenceResponseShape = (value) => {
 };
 
 const UNRESOLVED_LEADING_ANAPHORA_PATTERN = /^(?:it|they)\s+also\b/iu;
-const PROBLEM_EVIDENCE_SIGNAL_PATTERN = /\b(?:problem|challenge|gap|issue|risk|unsafe|under[-\s]?test|fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|limitation|limited|cannot|can't|need(?:s|ed)?|require(?:s|d)?|ability\s+to|we\s+(?:study|consider|investigate|ask)|(?:we|this\s+(?:paper|work|study))\s+(?:assess(?:es|ed|ing)?|evaluate(?:s|d|ing)?|examine(?:s|d|ing)?))\b|问题|挑战|不足|缺乏|风险|不安全|无法|需要|要求|研究.{0,16}(?:问题|能力)/iu;
+const PROBLEM_EVIDENCE_SIGNAL_PATTERN = /\b(?:problem|challenge|gap|issue|risk|unsafe|bias(?:es|ed)?|sensitivity|homogeni[sz]ation|error\s+cascade(?:s)?|amplif(?:y|ies|ied)\s+unreliable|under[-\s]?test|under[-\s]?characteri[sz]ed|fail(?:s|ed|ing)?|lack(?:s|ed|ing)?|limitation|limited|cannot|can't|do(?:es)?\s+not\s+(?:assess|evaluate|examine|measure|test)|remain(?:s|ed)?\s+under[-\s]?characteri[sz]ed|largely\s+stop(?:s|ped)?\s+at|need(?:s|ed)?|require(?:s|d)?|ability\s+to|we\s+(?:study|consider|investigate|ask)|(?:we|this\s+(?:paper|work|study))\s+(?:assess(?:es|ed|ing)?|evaluate(?:s|d|ing)?|examine(?:s|d|ing)?))\b|问题|挑战|不足|缺乏|风险|不安全|偏置|敏感|错误级联|放大不可靠|无法|需要|要求|研究.{0,16}(?:问题|能力)/iu;
 const LIMITED_NEGATIVE_RESULT_SOURCE_PATTERN = /\b(?:Gemini|GPT|Claude|DeepSeek|Grok|Reducto|LlamaExtract)\b|\bbest\s+(?:overall|method|model|system)\b/iu;
 const BROAD_METHOD_SYSTEM_SUBJECT_PATTERN = /(?:当前|现有|多数|大多数)(?:抽取)?(?:系统|方法|模型)|\bmost\s+(?:systems?|methods?|models?)\b/iu;
 const NEGATIVE_PERFORMANCE_PATTERN = /显著不足|明显不足|性能.{0,8}下降|表现.{0,8}下降|退化|较差|不佳|\b(?:shortcoming|failure|degrad(?:e|es|ed|ation)|underperform(?:s|ed|ing)?)\b/iu;
@@ -71,33 +266,13 @@ const COMMERCIAL_VLM_PATTERN = /商业\s*VLM|\bcommercial\s+VLMs?\b/iu;
 const LONG_DOCUMENT_PATTERN = /长文档|\blong\s+documents?\b/iu;
 
 const parseModelJson = (raw) => {
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    if (raw.evidenceCard && raw.valueSignals) {
-      return raw;
-    }
-    if (typeof raw.text === "string") {
-      return parseModelJson(raw.text);
-    }
-    if (Array.isArray(raw.content)) {
-      const text = raw.content
-        .filter((block) => block?.type === "text")
-        .map((block) => block.text || "")
-        .join("\n");
-      return parseModelJson(text);
-    }
-  }
-
-  const text = String(raw || "").trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/i, "");
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-
-  if (start < 0 || end <= start) {
-    throw new TypeError("Evidence Agent did not return a JSON object.");
-  }
-
-  return JSON.parse(text.slice(start, end + 1));
+  // Do not extract a preferred object from surrounding text or duplicate objects.
+  // Only harmless trailing closing delimiters are handled by the shared parser.
+  return parseModelJsonObject(raw, {
+    label: "Evidence Agent",
+    maxTrailingClosures: 3,
+    allowTrailingProse: true
+  }).value;
 };
 
 const issue = (code, path, detail) => ({ code, path, detail });
@@ -116,7 +291,7 @@ const uniqueIssues = (issues) => {
 
 const evidenceRepairScope = ({ issues = [], baseArtifacts = null } = {}) => {
   const evidenceFields = new Set();
-  let rebuildValueSignals = false;
+  let valueSignalsTargeted = false;
   let recognizedTarget = false;
   let requiresFullResponse = !baseArtifacts;
 
@@ -126,12 +301,11 @@ const evidenceRepairScope = ({ issues = [], baseArtifacts = null } = {}) => {
     const fieldMatch = path.match(/^evidenceCard\.([^.\[]+)/);
     if (fieldMatch && EVIDENCE_FIELDS.includes(fieldMatch[1])) {
       evidenceFields.add(fieldMatch[1]);
-      rebuildValueSignals = true;
       recognizedTarget = true;
       return;
     }
     if (path === "valueSignals" || path.startsWith("valueSignals.")) {
-      rebuildValueSignals = true;
+      valueSignalsTargeted = true;
       recognizedTarget = true;
       return;
     }
@@ -150,8 +324,21 @@ const evidenceRepairScope = ({ issues = [], baseArtifacts = null } = {}) => {
   return {
     mode: requiresFullResponse ? "full_response" : "field_scoped_merge",
     evidenceFields: requiresFullResponse ? [] : [...evidenceFields],
-    rebuildValueSignals: requiresFullResponse ? true : rebuildValueSignals
+    rebuildValueSignals: requiresFullResponse
+      ? true
+      : evidenceFields.size === 0 && valueSignalsTargeted
   };
+};
+
+const repairFieldsFor = (repairScope = {}) => [...new Set((Array.isArray(repairScope.evidenceFields)
+  ? repairScope.evidenceFields
+  : []).map(String).filter((field) => EVIDENCE_FIELDS.includes(field)))];
+
+const requireObject = (value, label) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`${label} must be an object.`);
+  }
+  return value;
 };
 
 const mergeEvidenceRepairArtifacts = ({
@@ -159,27 +346,49 @@ const mergeEvidenceRepairArtifacts = ({
   repairedValue,
   repairScope
 }) => {
-  const repairedArtifacts = normalizeEvidenceArtifacts(
-    normalizeEvidenceResponseShape(repairedValue).value
-  );
   if (repairScope?.mode !== "field_scoped_merge") {
-    return repairedArtifacts;
+    return normalizeEvidenceArtifacts(normalizeEvidenceResponseShape(repairedValue).value);
   }
 
   const retainedArtifacts = normalizeEvidenceArtifacts(
     normalizeEvidenceResponseShape(baseArtifacts).value
   );
-  const merged = structuredClone(retainedArtifacts);
-  (Array.isArray(repairScope.evidenceFields) ? repairScope.evidenceFields : [])
-    .forEach((field) => {
-      if (EVIDENCE_FIELDS.includes(field)) {
-        merged.evidenceCard[field] = structuredClone(repairedArtifacts.evidenceCard[field]);
-      }
+  if (repairedValue?.evidenceCard && repairedValue?.valueSignals) {
+    // Compatibility for a complete, independently valid response from an older
+    // prompt. Partial flat responses are intentionally not accepted here.
+    const repairedArtifacts = normalizeEvidenceArtifacts(
+      normalizeEvidenceResponseShape(repairedValue).value
+    );
+    const merged = structuredClone(retainedArtifacts);
+    repairFieldsFor(repairScope).forEach((field) => {
+      merged.evidenceCard[field] = structuredClone(repairedArtifacts.evidenceCard[field]);
     });
-  if (repairScope.rebuildValueSignals) {
-    merged.valueSignals = structuredClone(repairedArtifacts.valueSignals);
+    if (repairScope.rebuildValueSignals) {
+      merged.valueSignals = structuredClone(repairedArtifacts.valueSignals);
+    }
+    return merged;
   }
-  return merged;
+  const patchResponse = requireObject(repairedValue, "Evidence patch");
+  const fields = repairFieldsFor(repairScope);
+  if (normalizedPaperId(patchResponse.paperId) !== normalizedPaperId(retainedArtifacts.evidenceCard.paperId)) {
+    throw new TypeError("Evidence patch paperId does not match the retained Evidence.");
+  }
+  const patch = requireObject(patchResponse.patch, "Evidence patch.patch");
+  if (fields.some((field) => !Object.hasOwn(patch, field))) {
+    throw new TypeError("Evidence patch must include every requested Evidence field.");
+  }
+  if (repairScope.rebuildValueSignals && !Object.hasOwn(patchResponse, "valueSignals")) {
+    throw new TypeError("Evidence patch must include valueSignals for this repair scope.");
+  }
+
+  const merged = structuredClone(retainedArtifacts);
+  fields.forEach((field) => {
+    merged.evidenceCard[field] = structuredClone(patch[field]);
+  });
+  if (repairScope.rebuildValueSignals) {
+    merged.valueSignals = structuredClone(patchResponse.valueSignals);
+  }
+  return normalizeEvidenceArtifacts(merged);
 };
 
 const validateResultCohortScope = ({ summary, sourceText, issues }) => {
@@ -314,6 +523,12 @@ export const validateEvidenceArtifacts = (value, {
 
   const sections = new Map((Array.isArray(contextPacket?.inputSections) ? contextPacket.inputSections : [])
     .map((section) => [String(section?.anchor || ""), section]));
+  let sourceRegistry = null;
+  try {
+    sourceRegistry = buildEvidenceSourceRegistry(contextPacket);
+  } catch {
+    sourceRegistry = null;
+  }
   const evidenceRefs = new Map();
 
   EVIDENCE_FIELDS.forEach((field) => {
@@ -322,6 +537,20 @@ export const validateEvidenceArtifacts = (value, {
 
     fieldValue.sources.forEach((sourceValue, sourceIndex) => {
       const path = `evidenceCard.${field}.sources[${sourceIndex}]`;
+      const registryUnit = sourceValue.sourceId ? sourceRegistry?.byId.get(sourceValue.sourceId) : null;
+      if (sourceValue.sourceId && !registryUnit) {
+        issues.push(issue(
+          "unknown_source_id",
+          `${path}.sourceId`,
+          `Source ID ${sourceValue.sourceId} is not present in the current paper registry.`
+        ));
+      }
+      if (registryUnit) {
+        sourceValue.anchor = registryUnit.anchor;
+        sourceValue.section = registryUnit.section;
+        sourceValue.excerpt = registryUnit.text;
+        sourceValue.rawExcerpt = registryUnit.rawText;
+      }
       const section = sections.get(sourceValue.anchor);
 
       if (!section) {
@@ -331,8 +560,13 @@ export const validateEvidenceArtifacts = (value, {
         // heading even when the anchor and excerpt are correct, so canonicalize this metadata
         // instead of discarding otherwise verifiable Evidence.
         sourceValue.section = normalizeText(section.heading);
-        if (!normalizeText(section.text).includes(normalizeText(sourceValue.excerpt))) {
+        if (!registryUnit && !normalizeText(section.text).includes(normalizeText(sourceValue.excerpt))) {
+          const reboundExcerpt = uniquelyReboundEvidenceExcerpt(section.text, sourceValue.excerpt);
+          if (reboundExcerpt) {
+            sourceValue.excerpt = reboundExcerpt;
+          } else {
           issues.push(issue("excerpt_not_in_source", `${path}.excerpt`, "Excerpt is not a verbatim substring of the bound source section."));
+          }
         }
         if (field === "affiliations" && String(section.kind || "") !== "metadata") {
           issues.push(issue(
@@ -426,6 +660,56 @@ export const validateEvidenceArtifacts = (value, {
   };
 };
 
+const evidenceReferenceExists = (artifacts, reference) => {
+  const match = String(reference || "").match(/^([A-Za-z]+):(\d+)$/u);
+  if (!match || !EVIDENCE_FIELDS.includes(match[1])) return false;
+  const sources = artifacts?.evidenceCard?.[match[1]]?.sources;
+  return Array.isArray(sources) && Number(match[2]) < sources.length;
+};
+
+const sanitizedValueSignalEvidence = (validation, { contextPacket, expectedPaperId } = {}) => {
+  const issues = Array.isArray(validation?.issues) ? validation.issues : [];
+  if (!validation?.artifacts || !issues.length || issues.some((entry) => (
+    !["evidence_ref_not_found", "numeric_claim_not_in_excerpt"].includes(entry.code)
+    || !/^valueSignals\.signals\[\d+\]/u.test(String(entry.path || ""))
+  ))) {
+    return null;
+  }
+
+  const artifacts = structuredClone(validation.artifacts);
+  let changed = false;
+  artifacts.valueSignals.signals = artifacts.valueSignals.signals.flatMap((signal) => {
+    const retainedRefs = signal.evidenceRefs.filter((reference) => (
+      evidenceReferenceExists(artifacts, reference)
+    ));
+    if (retainedRefs.length !== signal.evidenceRefs.length) changed = true;
+    if (!retainedRefs.length) {
+      changed = true;
+      return [];
+    }
+    return [{ ...signal, evidenceRefs: retainedRefs }];
+  });
+  if (!changed) return null;
+
+  let sanitized = validateEvidenceArtifacts(artifacts, { contextPacket, expectedPaperId });
+  if (sanitized.valid) return sanitized;
+  if (sanitized.issues.some((entry) => (
+    entry.code !== "numeric_claim_not_in_excerpt"
+    || !/^valueSignals\.signals\[\d+\]\.claim$/u.test(String(entry.path || ""))
+  ))) {
+    return null;
+  }
+
+  const unsupportedSignalIndexes = new Set(sanitized.issues.map((entry) => Number(
+    String(entry.path).match(/^valueSignals\.signals\[(\d+)\]/u)?.[1]
+  )));
+  const withoutUnsupportedClaims = structuredClone(sanitized.artifacts);
+  withoutUnsupportedClaims.valueSignals.signals = withoutUnsupportedClaims.valueSignals.signals
+    .filter((_, index) => !unsupportedSignalIndexes.has(index));
+  sanitized = validateEvidenceArtifacts(withoutUnsupportedClaims, { contextPacket, expectedPaperId });
+  return sanitized.valid ? sanitized : null;
+};
+
 export class EvidenceAgentError extends Error {
   constructor(message, {
     code = "READING_LIST_EVIDENCE_FAILED",
@@ -434,6 +718,8 @@ export class EvidenceAgentError extends Error {
     excludePaper = true,
     processingFailed = false,
     issues = [],
+    artifacts = null,
+    responseDiagnostic = null,
     cause
   } = {}) {
     super(message, cause ? { cause } : undefined);
@@ -445,6 +731,8 @@ export class EvidenceAgentError extends Error {
     this.excludePaper = Boolean(excludePaper);
     this.processingFailed = Boolean(processingFailed);
     this.issues = issues;
+    this.artifacts = artifacts && typeof artifacts === "object" ? artifacts : null;
+    this.responseDiagnostic = normalizeResponseDiagnostic(responseDiagnostic);
   }
 }
 
@@ -472,7 +760,15 @@ const waitForRetry = (milliseconds, signal) => new Promise((resolve, reject) => 
   }, { once: true });
 });
 
-const serializedError = (error) => ({
+const retryWaitForPaper = (paperId, requestedBaseDelayMs) => {
+  const baseDelayMs = Math.max(0, Math.trunc(Number(requestedBaseDelayMs) || 0));
+  const hash = [...String(paperId || "")]
+    .reduce((total, char) => ((total * 31) + char.charCodeAt(0)) >>> 0, 0);
+  const offsetRange = Math.min(1_000, baseDelayMs + 1);
+  return baseDelayMs + (hash % offsetRange);
+};
+
+const serializedError = (error) => redactTraceValue({
   code: String(error?.code || "READING_LIST_EVIDENCE_FAILED"),
   message: String(error?.message || "Evidence extraction failed."),
   stage: String(error?.stage || "extract_evidence"),
@@ -480,7 +776,9 @@ const serializedError = (error) => ({
   retryable: Boolean(error?.retryable),
   stopReason: String(error?.stopReason || ""),
   excludePaper: Boolean(error?.excludePaper),
-  issues: Array.isArray(error?.issues) ? error.issues : []
+  issues: Array.isArray(error?.issues) ? error.issues : [],
+  artifacts: error?.artifacts && typeof error.artifacts === "object" ? error.artifacts : null,
+  responseDiagnostic: normalizeResponseDiagnostic(error?.responseDiagnostic)
 });
 
 export const runEvidenceAgent = async ({
@@ -492,7 +790,8 @@ export const runEvidenceAgent = async ({
   onCall,
   onEvent,
   networkRetryDelayMs = 50,
-  repairIssues = []
+  repairIssues = [],
+  allowLegacyModelSources = false
 } = {}) => {
   const expectedPaperId = String(contextPacket?.paperId || paper?.id || paper?.absLink || paper?.link || "").trim();
 
@@ -509,6 +808,7 @@ export const runEvidenceAgent = async ({
       excludePaper: true
     });
   }
+  const sourceRegistry = buildEvidenceSourceRegistry(contextPacket);
 
   const callRecords = [];
   const invoke = async (prompt, attemptType, repairContext = null) => {
@@ -561,14 +861,6 @@ export const runEvidenceAgent = async ({
 
     try {
       parsed = parseModelJson(rawOutput);
-      const validationValue = repairContext
-        ? mergeEvidenceRepairArtifacts({
-          baseArtifacts: repairContext.baseArtifacts,
-          repairedValue: parsed,
-          repairScope: repairContext.repairScope
-        })
-        : parsed;
-      validation = validateEvidenceArtifacts(validationValue, { contextPacket, expectedPaperId });
     } catch (error) {
       validation = {
         valid: false,
@@ -577,6 +869,31 @@ export const runEvidenceAgent = async ({
         artifacts: null
       };
     }
+
+    if (!validation) {
+      try {
+      parsed = materializeEvidenceSources(parsed, sourceRegistry, {
+        allowLegacySources: allowLegacyModelSources
+      });
+      const validationValue = repairContext
+        ? mergeEvidenceRepairArtifacts({
+          baseArtifacts: repairContext.baseArtifacts,
+          repairedValue: parsed,
+          repairScope: repairContext.repairScope
+        })
+        : parsed;
+      validation = validateEvidenceArtifacts(validationValue, { contextPacket, expectedPaperId });
+      } catch (error) {
+        validation = {
+          valid: false,
+          issues: [issue("schema_invalid", "response", error.message)],
+          evidenceRefCount: 0,
+          artifacts: null
+        };
+      }
+    }
+
+    validation = acceptCredibilityAdvisories(validation);
 
     const record = {
       role: "evidence_extraction",
@@ -588,6 +905,7 @@ export const runEvidenceAgent = async ({
       validation: {
         valid: validation.valid,
         issues: validation.issues,
+        warnings: validation.warnings || [],
         evidenceRefCount: validation.evidenceRefCount,
         ...(repairContext ? { repairScope: repairContext.repairScope } : {})
       },
@@ -613,17 +931,18 @@ export const runEvidenceAgent = async ({
       if (!error?.modelCallFailed || error?.name === "AbortError" || signal?.aborted) {
         throw error;
       }
+      const retryWaitMs = retryWaitForPaper(expectedPaperId, networkRetryDelayMs);
 
       if (typeof onEvent === "function") {
         await onEvent({
           type: "network_retry",
           stage: "extract_evidence",
           paperId: expectedPaperId,
-          waitMs: networkRetryDelayMs,
+          waitMs: retryWaitMs,
           error: serializedError(error)
         });
       }
-      await waitForRetry(networkRetryDelayMs, signal);
+      await waitForRetry(retryWaitMs, signal);
 
       try {
         return await invoke(prompt, retryAttemptType, repairContext);
@@ -649,8 +968,10 @@ export const runEvidenceAgent = async ({
   let responseRepairCount = 0;
   const repairResponseContract = async (validation, repairContext = null) => {
     let currentValidation = validation;
+    let responseRepairsForCurrentAttempt = 0;
     while (hasOnlyResponseContractIssues(currentValidation)
-      && responseRepairCount < MAX_EVIDENCE_RESPONSE_REPAIRS) {
+      && responseRepairsForCurrentAttempt < MAX_EVIDENCE_RESPONSE_REPAIRS) {
+      responseRepairsForCurrentAttempt += 1;
       responseRepairCount += 1;
       await onEvent?.({
         type: "evidence_response_repair_requested",
@@ -664,8 +985,12 @@ export const runEvidenceAgent = async ({
         buildEvidenceResponseRepairPrompt({
           paper,
           contextPacket,
+          currentArtifacts: currentValidation.artifacts || repairContext?.baseArtifacts,
           repairTargets: repairContext?.repairScope || null,
-          issues: currentValidation.issues
+          issues: repairIssuesWithContext(
+            currentValidation.issues,
+            currentValidation.artifacts || repairContext?.baseArtifacts
+          )
         }),
         `response_repair_${responseRepairCount}`,
         `response_repair_${responseRepairCount}_network_retry`,
@@ -679,13 +1004,14 @@ export const runEvidenceAgent = async ({
     responseRepairCount
   });
   const throwResponseProcessingFailure = (validation) => {
-    throw new EvidenceAgentError("Evidence Agent could not return a complete structured response after two response-format repairs.", {
+    throw new EvidenceAgentError("模型连续三次返回的证据数据均未达到结构化格式要求。", {
       code: "READING_LIST_EVIDENCE_RESPONSE_INVALID",
       paperId: expectedPaperId,
       retryable: false,
       excludePaper: false,
       processingFailed: true,
-      issues: validation.issues
+      issues: validation.issues,
+      responseDiagnostic: responseDiagnosticForValidation(validation, callRecords.at(-1)?.rawOutput)
     });
   };
 
@@ -719,8 +1045,9 @@ export const runEvidenceAgent = async ({
       buildEvidenceRepairPrompt({
         paper,
         contextPacket,
+        currentArtifacts: reviewBaseArtifacts,
         repairTargets: reviewRepairScope,
-        issues: repairIssues
+        issues: repairIssuesWithContext(repairIssues, reviewBaseArtifacts)
       }),
       "review_evidence_repair",
       "review_evidence_repair_network_retry",
@@ -744,10 +1071,11 @@ export const runEvidenceAgent = async ({
       });
       reviewRepaired = await invokeWithNetworkRetry(
         buildEvidenceRepairPrompt({
-          paper,
-          contextPacket,
-          repairTargets: reviewRepairScope,
-          issues: reviewRepaired.issues
+        paper,
+        contextPacket,
+        currentArtifacts: reviewRepaired.artifacts || reviewBaseArtifacts,
+        repairTargets: reviewRepairScope,
+        issues: repairIssuesWithContext(reviewRepaired.issues, reviewRepaired.artifacts || reviewBaseArtifacts)
         }),
         `review_evidence_repair_${reviewRepairCount}`,
         `review_evidence_repair_${reviewRepairCount}_network_retry`,
@@ -765,7 +1093,8 @@ export const runEvidenceAgent = async ({
         paperId: expectedPaperId,
         retryable: false,
         excludePaper: true,
-        issues: reviewRepaired.issues
+        issues: reviewRepaired.issues,
+        artifacts: reviewRepaired.artifacts
       });
     }
 
@@ -824,8 +1153,9 @@ export const runEvidenceAgent = async ({
       buildEvidenceRepairPrompt({
         paper,
         contextPacket,
+        currentArtifacts: repaired.artifacts,
         repairTargets: plannedRepairScope,
-        issues: repaired.issues
+        issues: repairIssuesWithContext(repaired.issues, repaired.artifacts)
       }),
       `repair_${repairCount}`,
       `repair_${repairCount}_network_retry`,
@@ -834,6 +1164,26 @@ export const runEvidenceAgent = async ({
     repaired = await repairResponseContract(repaired, repairContext);
     if (hasOnlyResponseContractIssues(repaired)) {
       throwResponseProcessingFailure(repaired);
+    }
+
+    const signalSanitized = sanitizedValueSignalEvidence(repaired, { contextPacket, expectedPaperId });
+    if (signalSanitized) {
+      await onEvent?.({
+        type: "evidence_value_signals_sanitized",
+        stage: "extract_evidence",
+        paperId: expectedPaperId,
+        issues: repaired.issues
+      });
+      return {
+        ...signalSanitized.artifacts,
+        validation: signalSanitized,
+        repairAttempted: true,
+        repairCount,
+        repairScope: plannedRepairScope,
+        deterministicValueSignalSanitizationApplied: true,
+        ...responseRepairFields(),
+        calls: callRecords
+      };
     }
 
     const sanitized = sanitizedNumericEvidence(repaired, { contextPacket, expectedPaperId });
@@ -863,7 +1213,8 @@ export const runEvidenceAgent = async ({
       paperId: expectedPaperId,
       retryable: false,
       excludePaper: true,
-      issues: repaired.issues
+      issues: repaired.issues,
+      artifacts: repaired.artifacts
     });
   }
 
@@ -898,7 +1249,8 @@ export const extractEvidenceBatch = async (items, {
   signal,
   onCall,
   onEvent,
-  networkRetryDelayMs = 50
+  networkRetryDelayMs = 50,
+  allowLegacyModelSources = false
 } = {}) => {
   const candidates = Array.isArray(items) ? items : [];
   const concurrency = Math.min(Math.max(Math.trunc(Number(paperConcurrency) || 2), 1), 5);
@@ -920,6 +1272,7 @@ export const extractEvidenceBatch = async (items, {
         callModel,
         signal,
         networkRetryDelayMs,
+        allowLegacyModelSources,
         onCall: (record) => onCall?.(record),
         onEvent: (event) => onEvent?.(event)
       });

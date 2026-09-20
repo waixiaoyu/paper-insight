@@ -38,6 +38,29 @@ test("model JSON completes missing trailing delimiters in reverse order", () => 
     });
   }
 });
+test("model JSON can safely ignore plain prose after one complete object when explicitly enabled", () => {
+  const raw = '{"paperId":"2608.29530","value":{"status":"supported"}}\n*Note: response complete.*';
+  const result = parseModelJsonObject(raw, { allowTrailingProse: true });
+  assert.deepEqual(result.value, {
+    paperId: "2608.29530",
+    value: { status: "supported" }
+  });
+  assert.deepEqual(result.normalization, {
+    kind: "trailing_prose_ignored",
+    ignoredCharacters: 27,
+    originalErrorCategory: "trailing_non_json_text"
+  });
+});
+for (const raw of [
+  '{"x":"y"}{"z":"second"}',
+  '{"x":"y"}\n```json\n{"z":"second"}\n```',
+  '{"x":"y"}\n["second"]',
+  '{"x":"y"}} trailing'
+]) {
+  test(`model JSON still rejects ambiguous trailing content ${raw}`, () => {
+    assert.throws(() => parseModelJsonObject(raw, { allowTrailingProse: true }), /模型响应/);
+  });
+}
 for (const raw of [
   '{"text":"未结束', '{"text":"escape\\', '{"value":', '{"x":"y",',
   '{"x":"y"]', '{"x":"y"}}', '{"x":{"y":{"z":["a"',

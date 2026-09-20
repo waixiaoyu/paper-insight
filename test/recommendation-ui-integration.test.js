@@ -99,3 +99,17 @@ test("historical analyses without a scope decision are reanalyzed instead of reu
   assert.ok(start >= 0 && end > start);
   assert.match(functionSource, /typeof item\.analysis\.recommendationEligible\s*!==\s*"boolean"/);
 });
+
+test("API settings default to GLM-5.3 on the BigModel Coding OpenAI endpoint", () => {
+  assert.match(appSource, /GLM-5\.3 \(BigModel Coding OpenAI · low\)/);
+  assert.match(appSource, /defaultModel:\s*"glm-5\.3"/);
+  assert.match(appSource, /const llmModelDefaultsVersion\s*=\s*"glm-5\.3-coding-openai-low-v3"/);
+  assert.match(appSource, /sessionStorage\.getItem\(modelKey\) === "glm-5\.3-flash"/);
+  assert.match(appSource, /sessionStorage\.setItem\(modelKey, "glm-5\.3"\)/);
+  assert.match(appSource, /migrateStoredModelDefaults\(\)/);
+  assert.match(appSource, /请输入 BigModel API Key/);
+  assert.doesNotMatch(appSource, /Volc API Key/);
+  assert.match(htmlSource, /GLM-5\.3 \(BigModel Coding OpenAI · low\)/);
+  assert.match(serverSource, /thinkingType:\s*"enabled"/);
+  assert.match(serverSource, /reasoningEffort:\s*"low"/);
+});

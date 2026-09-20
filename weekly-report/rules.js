@@ -134,7 +134,7 @@ export const prepareReadingListCandidatePool = ({
 export const selectReadingListPapers = (papers, {
   threshold = 70,
   minSelectedCount = 3,
-  maxSelectedCount = 10
+  maxSelectedCount = 5
 } = {}) => {
   const sorted = [...(Array.isArray(papers) ? papers : [])].sort((a, b) => (
     Number(b?.readingListReview?.score || 0) - Number(a?.readingListReview?.score || 0)
@@ -158,7 +158,7 @@ export const selectReadingListPapers = (papers, {
   const requestedMaximum = Number(maxSelectedCount);
   const normalizedMaximum = Number.isFinite(requestedMaximum)
     ? Math.min(Math.max(Math.trunc(requestedMaximum), 3), 20)
-    : 10;
+    : 5;
   const requestedMinimum = Number(minSelectedCount);
   const normalizedMinimum = Number.isFinite(requestedMinimum)
     ? Math.min(Math.max(Math.trunc(requestedMinimum), 1), 20)
@@ -221,7 +221,7 @@ const finalSelectionTier = (item, selectionReason) => {
 export const selectCalibratedPapers = (items, {
   threshold = 70,
   minSelectedCount = 3,
-  maxSelectedCount = 10,
+  maxSelectedCount = 5,
   adminSelectionOverrides = []
 } = {}) => {
   const candidates = Array.isArray(items) ? items : [];
@@ -232,7 +232,7 @@ export const selectCalibratedPapers = (items, {
   const requestedMaximum = Number(maxSelectedCount);
   const normalizedMaximum = Number.isFinite(requestedMaximum)
     ? Math.min(Math.max(Math.trunc(requestedMaximum), 3), 20)
-    : 10;
+    : 5;
   const requestedMinimum = Number(minSelectedCount);
   const normalizedMinimum = Number.isFinite(requestedMinimum)
     ? Math.min(Math.max(Math.trunc(requestedMinimum), 1), normalizedMaximum)

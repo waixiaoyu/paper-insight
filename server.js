@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { setDefaultAutoSelectFamily } from "node:net";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   readingListWeekRange,
   selectReadingListPapers
@@ -2208,6 +2208,15 @@ const validateAnalysis = (paper, analysis) => {
 };
 
 const llmProviderDefaults = {
+  "glm-coding-openai": {
+    mode: "glm-coding-openai",
+    protocol: "openai",
+    model: "glm-5.3",
+    endpoint: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+    apiKey: () => process.env.GLM_CODING_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
+    modelEnv: () => process.env.GLM_CODING_MODEL || process.env.ANTHROPIC_MODEL,
+    disableThinking: false
+  },
   "glm-coding-anthropic": {
     mode: "glm-coding-anthropic",
     protocol: "anthropic",
@@ -2215,18 +2224,41 @@ const llmProviderDefaults = {
     endpoint: "https://open.bigmodel.cn/api/anthropic/v1/messages",
     apiKey: () => process.env.GLM_CODING_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN,
     modelEnv: () => process.env.GLM_CODING_MODEL || process.env.ANTHROPIC_MODEL,
-    endpointEnv: () => process.env.GLM_CODING_ANTHROPIC_API_URL || process.env.ANTHROPIC_BASE_URL || process.env.GLM_CODING_API_URL,
     disableThinking: false
   }
 };
 
-const normalizeLlmProvider = () => "glm-coding-anthropic";
+const normalizeLlmProvider = (_provider, endpoint = "") => (
+  /\/api\/anthropic(?:\/|$)|\/v1\/messages\/?$/i.test(String(endpoint || "").trim())
+    ? "glm-coding-anthropic"
+    : "glm-coding-openai"
+);
 
-const inferLlmProvider = () => normalizeLlmProvider();
+const inferLlmProvider = (overrides = {}) => normalizeLlmProvider(
+  overrides.provider,
+  overrides.endpoint
+);
 
 const getLlmConfig = (overrides = {}) => {
-  const provider = inferLlmProvider(overrides);
-  const defaults = llmProviderDefaults[provider] || llmProviderDefaults.openai;
+  const primaryEndpoint = String(
+    overrides.endpoint
+      || process.env.LLM_API_URL
+      || process.env.GLM_CODING_OPENAI_API_URL
+      || process.env.GLM_CODING_API_URL
+      || ""
+  ).trim();
+  const legacyAnthropicEndpoint = primaryEndpoint
+    ? ""
+    : String(
+        process.env.GLM_CODING_ANTHROPIC_API_URL
+          || process.env.ANTHROPIC_BASE_URL
+          || ""
+      ).trim();
+  const configuredEndpoint = primaryEndpoint || legacyAnthropicEndpoint;
+  const provider = legacyAnthropicEndpoint
+    ? "glm-coding-anthropic"
+    : inferLlmProvider({ ...overrides, endpoint: configuredEndpoint });
+  const defaults = llmProviderDefaults[provider] || llmProviderDefaults["glm-coding-openai"];
   const apiKey = String(overrides.apiKey || "").trim()
     || process.env.LLM_API_KEY
     || defaults.apiKey()
@@ -2236,10 +2268,7 @@ const getLlmConfig = (overrides = {}) => {
     || process.env.LLM_MODEL
     || defaults.modelEnv()
     || defaults.model;
-  const rawEndpoint = String(overrides.endpoint || "").trim()
-    || defaults.endpointEnv()
-    || process.env.LLM_API_URL
-    || defaults.endpoint;
+  const rawEndpoint = configuredEndpoint || defaults.endpoint;
   let endpoint = rawEndpoint;
   if (defaults.protocol === "anthropic" && !/\/v1\/messages\/?$/i.test(rawEndpoint)) {
     endpoint = `${rawEndpoint.replace(/\/+$/, "")}/v1/messages`;
@@ -2277,6 +2306,94 @@ const llmTextFromResponse = (data, protocol = "openai") => {
   return data.choices?.[0]?.message?.content || data.output_text || "";
 };
 
+const parseOpenAiEventStream = async (response) => {
+  const body = await response.text();
+  let content = "";
+  let reasoningContent = "";
+  let finishReason = "";
+  let usage = null;
+
+  for (const event of body.split(/\r?\n\r?\n/)) {
+    const payloadText = event
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+
+    if (!payloadText || payloadText === "[DONE]") {
+      continue;
+    }
+
+    const chunk = JSON.parse(payloadText);
+    const choice = chunk?.choices?.[0] || {};
+    const delta = choice?.delta || choice?.message || {};
+    content += typeof delta.content === "string" ? delta.content : "";
+    reasoningContent += typeof delta.reasoning_content === "string"
+      ? delta.reasoning_content
+      : "";
+    finishReason = choice.finish_reason || finishReason;
+    usage = chunk.usage || usage;
+  }
+
+  return {
+    choices: [{
+      message: {
+        content,
+        reasoning_content: reasoningContent
+      },
+      finish_reason: finishReason
+    }],
+    usage
+  };
+};
+
+const readLlmResponse = async (response, protocol) => {
+  const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
+  if (protocol === "openai" && contentType.includes("text/event-stream")) {
+    try {
+      return await parseOpenAiEventStream(response);
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw error;
+      }
+      const interrupted = error instanceof TypeError;
+      const streamError = new Error(
+        interrupted
+          ? `周报 Agent 模型流式响应读取中断：${error.message}`
+          : "周报 Agent 模型流式响应不完整，无法解析完整 JSON。"
+      );
+      streamError.code = interrupted
+        ? "READING_LIST_AGENT_CALL_FAILED"
+        : "READING_LIST_AGENT_RESPONSE_INCOMPLETE";
+      streamError.retryable = true;
+      streamError.stopReason = interrupted ? "stream_interrupted" : "invalid_stream";
+      streamError.cause = error;
+      throw streamError;
+    }
+  }
+  return response.json();
+};
+
+const normalizedLlmUsage = (data, finishReason = "") => {
+  const usage = data?.usage || {};
+  const integer = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0;
+  };
+
+  return {
+    promptTokens: integer(usage.prompt_tokens ?? usage.input_tokens),
+    completionTokens: integer(usage.completion_tokens ?? usage.output_tokens),
+    reasoningTokens: integer(
+      usage.completion_tokens_details?.reasoning_tokens
+        ?? usage.output_tokens_details?.reasoning_tokens
+        ?? usage.reasoning_tokens
+    ),
+    finishReason: String(finishReason || "")
+  };
+};
+
 const llmHeaders = (config) => config.protocol === "anthropic"
   ? {
       "authorization": `Bearer ${config.apiKey}`,
@@ -2289,10 +2406,29 @@ const llmHeaders = (config) => config.protocol === "anthropic"
       "content-type": "application/json"
     };
 
+const withGlmThinkingControls = (payload, model) => {
+  if (/^glm-5\.3(?:-|$)/i.test(model)) {
+    payload.thinking = { type: "enabled" };
+    payload.reasoning_effort = "low";
+  }
+  return payload;
+};
+
+const createModelUsageTraceNameFactory = () => {
+  const executionId = randomUUID();
+  let sequence = 0;
+  return () => {
+    const traceName = `model-usage-${executionId}-${String(sequence).padStart(4, "0")}`;
+    sequence += 1;
+    return traceName;
+  };
+};
+
 const callWeeklyReportAgentModel = async (prompt, {
   signal,
   role = "weekly_report_agent",
   attemptType = "initial",
+  onUsage,
   llm = {}
 } = {}) => {
   const config = getLlmConfig(llm);
@@ -2335,11 +2471,15 @@ const callWeeklyReportAgentModel = async (prompt, {
       ]
     };
 
-    if (protocol === "anthropic") {
+    if (protocol === "openai") {
+      payload.response_format = { type: "json_object" };
+      payload.stream = true;
+      payload.stream_options = { include_usage: true };
+    } else if (protocol === "anthropic") {
+
       const [systemMessage, userMessage] = payload.messages;
       payload.system = systemMessage.content;
       payload.messages = [userMessage];
-      payload.thinking = { type: "disabled" };
     }
     let llmResponse;
     try {
@@ -2347,7 +2487,7 @@ const callWeeklyReportAgentModel = async (prompt, {
         method: "POST",
         signal: controller.signal,
         headers: llmHeaders(config),
-        body: JSON.stringify(payload)
+        body: JSON.stringify(withGlmThinkingControls(payload, model))
       });
     } catch (error) {
       if (error instanceof TypeError && !error?.code) {
@@ -2367,9 +2507,12 @@ const callWeeklyReportAgentModel = async (prompt, {
       throw error;
     }
 
-    const data = await llmResponse.json();
+    const data = await readLlmResponse(llmResponse, protocol);
     const content = ensureLlmResponseWithinLimit(llmTextFromResponse(data, protocol));
     const stopReason = String(data?.stop_reason || data?.choices?.[0]?.finish_reason || "").toLowerCase();
+    if (typeof onUsage === "function") {
+      await onUsage(normalizedLlmUsage(data, stopReason));
+    }
 
     if (!content || ["max_tokens", "length"].includes(stopReason)) {
       const error = new Error(
@@ -2516,7 +2659,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
         method: "POST",
         signal: controller.signal,
         headers: llmHeaders(config),
-        body: JSON.stringify(payload)
+        body: JSON.stringify(withGlmThinkingControls(payload, model))
       });
 
       if (!llmResponse.ok) {
@@ -2690,7 +2833,7 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
       method: "POST",
       signal: controller.signal,
       headers: llmHeaders(config),
-      body: JSON.stringify(payload)
+      body: JSON.stringify(withGlmThinkingControls(payload, model))
     });
 
     if (!llmResponse.ok) {
@@ -2760,7 +2903,7 @@ const callLlmTranslation = async ({ title, summary, llm }) => {
       method: "POST",
       signal: controller.signal,
       headers: llmHeaders(config),
-      body: JSON.stringify(payload)
+      body: JSON.stringify(withGlmThinkingControls(payload, model))
     });
 
     if (!llmResponse.ok) {
@@ -2949,7 +3092,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
       method: "POST",
       signal: controller.signal,
       headers: llmHeaders(config),
-      body: JSON.stringify(payload)
+      body: JSON.stringify(withGlmThinkingControls(payload, model))
     });
 
     if (!llmResponse.ok) {
@@ -3103,7 +3246,7 @@ const callLlmWeeklyReportSemanticReview = async ({ report, papers, markdown, llm
       method: "POST",
       signal: controller.signal,
       headers: llmHeaders(config),
-      body: JSON.stringify(payload)
+      body: JSON.stringify(withGlmThinkingControls(payload, model))
     });
 
     if (!llmResponse.ok) {
@@ -4230,6 +4373,7 @@ const weeklyReportJobManager = new WeeklyReportJobManager({
   jobsDir: weeklyReportJobsDir,
   traceStore: weeklyReportTraceStore,
   execute: async (input, context) => {
+    const nextModelUsageTraceName = createModelUsageTraceNameFactory();
     const requestLlm = {
       apiKey: input.llmApiKey,
       provider: input.llmProvider,
@@ -4237,6 +4381,10 @@ const weeklyReportJobManager = new WeeklyReportJobManager({
     };
     const config = getLlmConfig(requestLlm);
     await context.writeTrace("model-config", config ? {
+      thinkingType: "enabled",
+      reasoningEffort: "low",
+      reasoningEffortSource: "request",
+      usageSource: "server_response",
       provider: config.provider,
       model: config.model,
       endpoint: config.endpoint,
@@ -4261,8 +4409,15 @@ const weeklyReportJobManager = new WeeklyReportJobManager({
           }
         };
       },
-      callModel: (prompt, options) => callWeeklyReportAgentModel(prompt, {
+      callModel: (prompt, options = {}) => callWeeklyReportAgentModel(prompt, {
         ...options,
+        onUsage: async (usage) => {
+          await context.writeTrace(nextModelUsageTraceName(), {
+            role: options.role || "weekly_report_agent",
+            attemptType: options.attemptType || "initial",
+            ...usage
+          });
+        },
         llm: requestLlm
       })
     });
@@ -4512,6 +4667,7 @@ if (isMainModule) {
 export {
   callLlmAnalyzer,
   callWeeklyReportAgentModel,
+  createModelUsageTraceNameFactory,
   normalizeWeeklyReportAgentMaxOutputTokens,
   server
 };

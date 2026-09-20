@@ -414,7 +414,7 @@ export const validateWeeklyReportMarkdown = ({
       .filter((token) => !evidenceMeasurements.has(measurementTokenKey(token)));
 
     if (unsupportedMeasurements.length) {
-      errors.push(`论文「${paper.title || paper.id}」包含无法从输入证据核对的精确数字：${unsupportedMeasurements.join("、")}。`);
+      warnings.push(`论文「${paper.title || paper.id}」包含无法从输入证据字面核对的精确数字：${unsupportedMeasurements.join("、")}。请在运维 Trace 中复核，但不阻止发布。`);
     }
 
     const limitations = boldSectionBody(block, "局限与适用约束");

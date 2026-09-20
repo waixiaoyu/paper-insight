@@ -14,7 +14,7 @@ const actionCopy = Object.freeze({
   confirm_evidence: { label: "确认证据充分，继续任务", effect: "只放行当前展示的证据问题，其他检查仍会继续执行。" },
   include_below_threshold: { label: "人工纳入本期", effect: "保留真实分数，重新执行选稿之后的全部阶段。" },
   keep_excluded: { label: "保持不入选", effect: "不纳入该论文，并重新校准其余候选。" },
-  skip_paper: { label: "跳过这篇论文", effect: "移除该论文后重新校准其余候选。" },
+  skip_paper: { label: "从本期周报移除这篇论文", effect: "不采用当前稿件，并从本期周报中移除该论文，然后重新校准其余候选。" },
   ignore_warning: { label: "忽略本次提醒", effect: "记录本次处理后继续任务。" },
   exit_task: { label: "退出任务", effect: "结束本次任务，不发布新周报；现有 Trace 和草稿会保留。" }
 });
@@ -64,6 +64,13 @@ const actionView = (action, item = {}) => {
       ? `只重试论文 ${paperId} 的${sourceStage}，不会重新生成其他论文。`
       : "只重试当前失败论文，不会重新生成其他论文。";
   }
+  if (action === "confirm_evidence" && sourceStage === "write_paper_sections") {
+    return {
+      action,
+      label: "保留这一处表述",
+      effect: "只确认当前这一处表述，不确认同一稿件的其他问题；全部问题处理完后才会采用整篇稿件。"
+    };
+  }
   return { action, label: copy.label, effect };
 };
 
@@ -89,6 +96,103 @@ const gateRows = (status = {}) => Object.entries(gateLabels).map(([key, label]) 
   label,
   status: gateStatusText(status?.[key])
 }));
+
+export const weeklyReportManualReviewPresentationKey = (job = {}) => {
+  const review = job?.manualReview;
+  if (!review || typeof review !== "object") return "";
+  return [
+    String(job?.jobId || ""),
+    String(review.activeItemId || ""),
+    String(review.requestedAt || "")
+  ].join("|");
+};
+
+export const weeklyReportManualReviewInFlightView = ({
+  jobId = "",
+  decisionId = "",
+  action = "continue_repair",
+  selectedItem = {},
+  startedAt = ""
+} = {}) => {
+  const paperId = String(selectedItem?.paperId || "").trim();
+  const itemId = String(selectedItem?.itemId || "").trim();
+  const sourceStage = String(selectedItem?.sourceStage || selectedItem?.stage || "manual_review").trim();
+  const repairItem = {
+    ...selectedItem,
+    itemId,
+    paperId,
+    sourceStage,
+    allowedActions: []
+  };
+  const subject = paperId ? `论文 ${paperId}` : "当前任务";
+  const copy = {
+    continue_repair: {
+      eyebrow: "正在执行定向修正",
+      title: `正在定向修正${subject} 的当前问题`,
+      summary: "本次只修改当前这一项，其他已通过内容保持不变。修正完成后，系统会重新检查；如仍有问题，将再次显示人工复核。"
+    },
+    confirm_evidence: {
+      eyebrow: "正在应用人工确认",
+      title: `正在保留${subject} 的当前这一处表述`,
+      summary: "本次只确认并保留当前展示的这一处表述，不会同时确认其他问题。系统将记录本次决定并继续后续检查。"
+    },
+    retry_job: {
+      eyebrow: "正在重新执行任务",
+      title: "正在重新执行当前周报任务",
+      summary: "管理员决定已经记录，系统正在重新执行任务。已有 Trace 会继续保留。"
+    },
+    retry_paper: {
+      eyebrow: "正在重试当前论文",
+      title: `正在重新处理${subject}`,
+      summary: "本次只重新处理当前论文，其他已完成论文的产物保持不变。"
+    },
+    retry_stage: {
+      eyebrow: "正在重试当前阶段",
+      title: "正在重新执行当前阶段",
+      summary: "管理员决定已经记录，系统正在重新执行当前失败阶段。"
+    },
+    include_below_threshold: {
+      eyebrow: "正在应用人工纳入",
+      title: `正在将${subject}纳入本期候选`,
+      summary: "论文真实分数保持不变，系统正在按管理员决定重新执行选稿后的阶段。"
+    },
+    keep_excluded: {
+      eyebrow: "正在应用不入选决定",
+      title: `正在保持${subject}不入选`,
+      summary: "管理员决定已经记录，系统将基于其余候选继续执行。"
+    },
+    skip_paper: {
+      eyebrow: "正在移除当前论文",
+      title: `正在从本期周报移除${subject}`,
+      summary: "当前稿件不会被采用，系统正在重新校准其余候选。"
+    },
+    ignore_warning: {
+      eyebrow: "正在继续任务",
+      title: "正在记录本次提醒并继续",
+      summary: "管理员决定已经记录，系统正在继续后续检查。"
+    }
+  }[String(action || "continue_repair")] || {
+    eyebrow: "正在应用管理员决定",
+    title: "正在继续当前任务",
+    summary: "管理员决定已经记录，系统正在继续执行。"
+  };
+  return {
+    presentationKey: [
+      String(jobId),
+      String(action || "admin_action"),
+      String(decisionId || itemId),
+      String(startedAt)
+    ].join("|"),
+    ...copy,
+    review: {
+      stage: sourceStage,
+      status: "repairing",
+      requestedAt: String(startedAt),
+      activeItemId: itemId,
+      items: [repairItem]
+    }
+  };
+};
 
 export const weeklyReportManualReviewView = (review = {}, selectedItemId = "") => {
   const items = queueItems(review);

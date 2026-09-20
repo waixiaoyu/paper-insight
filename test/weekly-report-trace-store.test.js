@@ -46,6 +46,19 @@ test("Trace 深度脱敏认证字段和嵌入字符串，但保留模型 token �
   assert.equal(redacted.model.maxTokens, 4096);
 });
 
+test("Trace 字符串脱敏覆盖独立 Bearer、token、password 和 secret 参数", () => {
+  const secrets = ["bearer-private", "token-private", "password-private", "secret-private"];
+  const redacted = redactTraceValue([
+    `provider rejected Bearer ${secrets[0]}`,
+    `request failed token=${secrets[1]}`,
+    `request failed password: ${secrets[2]}`,
+    `request failed secret='${secrets[3]}'`
+  ]);
+
+  assert.doesNotMatch(JSON.stringify(redacted), new RegExp(secrets.join("|")));
+  assert.equal(redacted.every((entry) => entry.includes("[REDACTED]")), true);
+});
+
 test("Trace 所有落盘入口都执行脱敏，reject 也保存最终稿", async () => {
   const rootDir = await makeTempDirectory();
   const store = new WeeklyReportTraceStore({

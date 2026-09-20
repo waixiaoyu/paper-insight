@@ -12,7 +12,7 @@ test("Job 配置按规格限制并发、校准规模和最终篇数", () => {
     paperConcurrency: 2,
     calibrationMaxPapers: 30,
     minSelectedCount: 3,
-    maxSelectedCount: 10
+    maxSelectedCount: 5
   });
 
   assert.deepEqual(normalizeWeeklyReportJobOptions({

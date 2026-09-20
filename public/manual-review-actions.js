@@ -6,7 +6,7 @@ const manualReviewActionLabels = Object.freeze({
   exit_task: "退出任务",
   include_below_threshold: "人工纳入本期",
   keep_excluded: "保持不入选",
-  skip_paper: "跳过这篇论文",
+  skip_paper: "从本期周报移除这篇论文",
   ignore_warning: "忽略本次提醒",
   confirm_evidence: "确认证据充分，继续任务"
 });

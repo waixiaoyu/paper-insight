@@ -100,6 +100,24 @@ test("发布正文出现内部流程词时只记录管理员提示", () => {
   assert.match(result.warnings.join("\n"), /内部流程/);
 });
 
+test("发布正文含无法字面核对的精确数字时只记录提示", () => {
+  const warned = markdown.replace(
+    "**实验与结果**",
+    "**实验与结果**\n\n额外精确数字 999.9%。"
+  );
+
+  const result = assertWeeklyReportPublishable({
+    markdown: warned,
+    papers,
+    report,
+    useOriginalText: false,
+    footerNote
+  });
+
+  assert.equal(result.valid, true, result.errors.join("\n"));
+  assert.match(result.warnings.join("\n"), /999\.9%/);
+});
+
 test("发布元数据或固定尾注不符合约定时阻止发布", () => {
   const invalid = markdown
     .replace('month: "2026-07"', 'month: "2026-06"')
@@ -281,15 +299,16 @@ test("论文只出现在完整清单、没有独立正文条目时阻止发布",
   assert.match(result.errors.join("\n"), /论文缺少独立的逐篇正文条目/);
 });
 
-test("无法从该论文输入证据核对的精确数字会被视为语义幻觉", () => {
+test("无法从该论文输入证据核对的精确数字会被记录为告警", () => {
   const invalid = markdown.replace(
     "验证层降低了危险动作比例，但真实部署证据仍有限。",
     "验证层将危险动作比例降低了 37.5%，但真实部署证据仍有限。"
   );
   const result = validate(invalid);
 
-  assert.equal(result.valid, false);
-  assert.match(result.errors.join("\n"), /无法从输入证据核对的精确数字：37.5%/);
+  assert.equal(result.valid, true);
+  assert.doesNotMatch(result.errors.join("\n"), /37.5%/);
+  assert.match(result.warnings.join("\n"), /无法从输入证据字面核对的精确数字：37.5%/);
 });
 
 test("精确数字能在对应论文证据中找到时允许发布", () => {

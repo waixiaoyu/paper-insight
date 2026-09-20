@@ -20,7 +20,7 @@
         <label class="field">
           <span>服务商</span>
           <select id="apiProvider">
-            <option value="glm-coding-anthropic" selected>GLM-5.3 (Anthropic)</option>
+            <option value="glm-coding-openai" selected>GLM-5.3 (BigModel Coding OpenAI · low)</option>
           </select>
         </label>
         <label class="field">
@@ -226,9 +226,9 @@
               <em>达标不足时继续评审增补候选；不会用低于阈值的论文补足</em>
             </label>
             <label class="reading-list-number">
-              <span>最多入选篇数</span>
-              <input id="readingListMaxSelected" type="number" min="3" max="20" value="10" step="1">
-              <em>最终发布稿最多收录 3–20 篇</em>
+              <span>本期最多发布几篇</span>
+              <input id="readingListMaxSelected" type="number" min="3" max="20" value="5" step="1">
+              <em>默认 5 篇；达到阈值的论文超过上限时只发布最终评分最高的论文</em>
             </label>
           </div>
           <p id="readingListReviewPreview" class="reading-list-review-preview">等待选择周报候选。</p>
@@ -302,7 +302,7 @@
         </section>
         <section id="weeklyReportManualReview" class="weekly-report-manual-review" aria-live="assertive" hidden>
           <header class="weekly-report-manual-review-header">
-            <p class="eyebrow">等待管理员决策</p>
+            <p id="weeklyReportManualReviewEyebrow" class="eyebrow">等待管理员决策</p>
             <p id="weeklyReportManualReviewMeta" class="weekly-report-manual-review-meta"></p>
           </header>
           <nav id="weeklyReportManualReviewQueue" class="weekly-report-manual-review-queue" aria-label="待复核论文"></nav>
@@ -557,6 +557,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=weekly-report-trace-summary-v2026-08-31" type="module"></script>
+    <script src="/app.js?v=glm-5.3-default-v2026-09-14" type="module"></script>
   </body>
 </html>

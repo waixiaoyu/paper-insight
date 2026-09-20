@@ -4,6 +4,7 @@ import {
   buildPaperSectionResponseRepairPrompt
 } from "./prompts.js";
 import { internalProcessWarnings } from "./internal-process-policy.js";
+import { acceptCredibilityAdvisories } from "./credibility-gate-policy.js";
 import {
   applyPaperDraftPatch,
   paperDraftRepairPaths,
@@ -875,6 +876,7 @@ export const runPaperSectionWriter = async ({
         paperDraft: patchContext?.paperDraft || null
       };
     }
+    validation = acceptCredibilityAdvisories(validation);
     if (normalization) {
       await onEvent?.({ type: "paper_section_json_normalized", stage: "write_paper_sections",
         scope: "paper", paperId, attemptType, ...normalization, validationPassed: validation.valid,
