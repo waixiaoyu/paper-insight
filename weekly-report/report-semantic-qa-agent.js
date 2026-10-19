@@ -48,7 +48,7 @@ const reportReaderText = ({ report = {}, headTailDraft = {} } = {}) => [
   ...(Array.isArray(headTailDraft?.tags) ? headTailDraft.tags : []),
   headTailDraft?.reportIntroduction,
   ...(Array.isArray(headTailDraft?.trendJudgments)
-    ? headTailDraft.trendJudgments.flatMap((entry) => [entry?.claim, entry?.caveat])
+    ? headTailDraft.trendJudgments.flatMap((entry) => [entry?.title, entry?.claim, entry?.caveat])
     : []),
   ...(Array.isArray(headTailDraft?.singlePaperObservations)
     ? headTailDraft.singlePaperObservations.flatMap((entry) => [entry?.claim, entry?.caveat])

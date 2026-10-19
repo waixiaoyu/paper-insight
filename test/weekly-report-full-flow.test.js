@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,8 +11,8 @@ const fixtureUrl = (name) => new URL(`./fixtures/weekly-report/${name}`, import.
 const papers = JSON.parse(await readFile(fixtureUrl("papers.json"), "utf8"));
 const validMarkdown = await readFile(fixtureUrl("valid-summary-report.md"), "utf8");
 const reviewedMarkdown = validMarkdown
-  .replace("阅读价值评分：86", "阅读价值评分：83")
-  .replace("阅读价值评分：68", "阅读价值评分：77")
+  .replace("阅读价值评分：86", "阅读价值评分：79")
+  .replace("阅读价值评分：68", "阅读价值评分：75")
   .replace("符合维度：研究问题价值 72、系统价值 70", "符合维度：研究问题价值 75、方法新意 75、系统价值 75、证据强度 75");
 
 const passingSemanticReview = JSON.stringify({
@@ -178,6 +179,19 @@ test("Agent Loop 在单篇恢复和人工纳入后保留真实分数并完成发
 
 test("完整主流程经过原文、复评、选文、生成、质量门和语义评审", async () => {
   const cacheDir = await mkdtemp(join(tmpdir(), "paper-insight-full-flow-"));
+  for (const id of ["2607.11111", "2607.22222"]) {
+    const key = createHash("sha256").update(`paper-original-text:${id}`).digest("hex");
+    await writeFile(join(cacheDir, `${key}.json`), JSON.stringify({
+      version: 2,
+      paperId: id,
+      source: "arxiv-html",
+      url: `https://arxiv.org/html/${id}`,
+      fetchedAt: Date.now(),
+      textChars: 18,
+      text: "stale legacy cache"
+    }), "utf8");
+  }
+
   const nativeFetch = globalThis.fetch;
   const arxivRequests = [];
   const llmRequests = [];
@@ -274,7 +288,10 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
         )).join("");
         const html = `<html><body><article>
           <h1>${paperTopic}</h1>
-          <p>Example authors, Example institution.</p>
+          <div class="ltx_authors"><span class="ltx_creator ltx_role_author">
+            <span class="ltx_personname">Example Author</span>
+            <span class="ltx_contact ltx_role_affiliation"><span class="ltx_contact_name">Affiliation:</span> Example University</span>
+          </span></div>
           <h2>1 Introduction</h2>${evidenceParagraphs("introduction", 3)}
           <h2>2 Method and System Architecture</h2>${evidenceParagraphs("method", 3)}
           <h2>3 Experimental Evaluation</h2>${evidenceParagraphs("experiment", 3)}
@@ -332,9 +349,20 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
     assert.equal(payload.publishValidation.valid, true);
     assert.equal(payload.semanticReview.verdict, "pass");
     assert.equal(payload.requiresManualReview, false);
-    assert.match(payload.markdown, /阅读价值评分：83/);
-    assert.match(payload.markdown, /阅读价值评分：77/);
+    assert.match(payload.markdown, /阅读价值评分：79/);
+    assert.match(payload.markdown, /阅读价值评分：75/);
     assert.equal(arxivRequests.length, 2);
+    const cacheFiles = (await readdir(cacheDir)).filter((name) => name.endsWith(".json"));
+    assert.equal(cacheFiles.length, 2);
+    const cacheEntries = await Promise.all(cacheFiles.map(async (name) => (
+      JSON.parse(await readFile(join(cacheDir, name), "utf8"))
+    )));
+    assert.equal(cacheEntries.every((entry) => entry.version === 3), true);
+    assert.equal(cacheEntries.every((entry) => (
+      entry.publicationMetadata?.status === "extracted"
+      && entry.publicationMetadata.affiliations[0]?.originalName === "Example University"
+    )), true);
+
     assert.deepEqual(llmRequests.map((item) => item.task), [
       "review",
       "review",
@@ -355,7 +383,7 @@ test("完整主流程经过原文、复评、选文、生成、质量门和语�
     assert.equal(generationRequest.payload.report.reviewBeforeGenerate, true);
     assert.deepEqual(
       generationRequest.payload.papers.map((paper) => paper.readingListReview.score),
-      [83, 77]
+      [79, 75]
     );
 
     const semanticRequest = llmRequests.find((item) => item.task === "semantic-review");

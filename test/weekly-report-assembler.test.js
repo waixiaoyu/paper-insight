@@ -187,6 +187,7 @@ const headTailDraft = {
   reportIntroduction: "本周入选论文共同关注自主动作执行前的验证机制及其部署边界。",
   trendJudgments: [{
     trendIndex: 0,
+    title: "专业工具开始承担关键结果核验",
     claim: "安全验证正在前移到自主动作执行之前。",
     caveat: "现有评估仍以仿真为主。",
     supportingPaperIds: ["2607.70001", "2607.70002"],
@@ -221,8 +222,8 @@ test("assemble deterministically produces publishable Markdown from trusted arti
   assert.deepEqual(input, snapshot);
   assert.match(result.markdown, /^---\ntitle: "【精选论文】26年8月第1周阅读清单：Verifiable action constraints"/);
   assert.match(result.markdown, /## 报告导读/);
-  assert.match(result.markdown, /## 本周趋势判断/);
-  assert.match(result.markdown, /### 单篇补充观察/);
+  assert.match(result.markdown, /## 本周研究观察/);
+  assert.doesNotMatch(result.markdown, /### 单篇补充观察/);
   assert.match(result.markdown, /## 本周必读/);
   assert.match(result.markdown, /## 背景参考/);
   assert.match(result.markdown, /- 阅读价值评分：88/);
@@ -235,9 +236,12 @@ test("assemble deterministically produces publishable Markdown from trusted arti
   assert.equal(result.markdown.endsWith(READING_LIST_FOOTER_NOTE), true);
   assert.doesNotMatch(result.markdown, /。；/);
   assert.doesNotMatch(result.markdown, /[。！？]\s+边界：/u);
-  assert.match(result.markdown, /安全验证正在前移到自主动作执行之前；边界：现有评估仍以仿真为主。/u);
-  assert.match(result.markdown, /第二篇论文适合作为部署边界的补充观察；边界：不应将其单篇结论扩展为周趋势。/u);
-  assert.match(result.markdown, /它提供了具体的动作验证机制；优先阅读验证机制及其执行位置。/);
+  assert.match(result.markdown, /- \*\*观察 1｜专业工具开始承担关键结果核验\*\*/u);
+  assert.match(result.markdown, /  - 发现：安全验证正在前移到自主动作执行之前。/u);
+  assert.match(result.markdown, /  - 适用边界：现有评估仍以仿真为主。/u);
+  assert.doesNotMatch(result.markdown, /安全验证正在前移到自主动作执行之前；边界：/u);
+  assert.doesNotMatch(result.markdown, /第二篇论文适合作为部署边界的补充观察/u);
+  assert.match(result.markdown, /建议重点阅读：优先阅读验证机制及其执行位置。/);
   assert.doesNotMatch(result.markdown, /fallback|threshold|selectionReason|TAMPERED MODEL TITLE|9999\.99999|串写单位|OLD_ABSTRACT/);
 
   const validation = validateWeeklyReportMarkdown({
@@ -248,6 +252,102 @@ test("assemble deterministically produces publishable Markdown from trusted arti
     footerNote: result.footerNote
   });
   assert.equal(validation.valid, true, validation.errors.join("\n"));
+});
+
+test("public report presents research observations and a paper's reader value before technical detail", () => {
+  const result = assembleWeeklyReportMarkdown({ reportMeta, selectedItems, paperDrafts, headTailDraft });
+  const firstPaper = result.markdown.slice(
+    result.markdown.indexOf("### 1. Guardrail Validation"),
+    result.markdown.indexOf("### 2. Evaluation Boundaries")
+  );
+
+  assert.match(result.markdown, /## 本周研究观察/);
+  assert.match(result.markdown, /\*\*观察 1｜专业工具开始承担关键结果核验\*\*/);
+  assert.doesNotMatch(result.markdown, /无标签异常检测趋成熟|（发展中）/);
+  assert.match(firstPaper, /\*\*一句话看点\*\*[\s\S]*FIRST_PAPER_ONLY/);
+  assert.equal(firstPaper.indexOf("**一句话看点**") < firstPaper.indexOf("**研究问题**"), true);
+  assert.match(firstPaper, /\*\*实验结论\*\*/);
+  assert.doesNotMatch(firstPaper, /\*\*实验与结果\*\*/);
+  assert.equal((firstPaper.match(/它提供了具体的动作验证机制。/g) || []).length, 0);
+  assert.match(firstPaper, /优先阅读验证机制及其执行位置。/);
+});
+
+test("legacy cross-paper artifact without a title uses its finding as the public label", () => {
+  const legacyHeadTail = structuredClone(headTailDraft);
+  delete legacyHeadTail.trendJudgments[0].title;
+  legacyHeadTail.trendJudgments[0].claim = "两篇论文都对执行前验证进行了评估。";
+
+  const result = assembleWeeklyReportMarkdown({
+    reportMeta,
+    selectedItems,
+    paperDrafts,
+    headTailDraft: legacyHeadTail
+  });
+
+  assert.match(result.markdown, /\*\*观察 1｜两篇论文都对执行前验证进行了评估\*\*/u);
+  assert.doesNotMatch(result.markdown, /第 1 条技术变化/u);
+});
+
+test("publication displays original affiliation names without processing wrappers", () => {
+  const wrappedItems = structuredClone(selectedItems);
+  wrappedItems[0].reviewResult.affiliations = ["原文单位（Example University）"];
+  wrappedItems[1].reviewResult.affiliations = [];
+  const result = assembleWeeklyReportMarkdown({
+    reportMeta,
+    selectedItems: wrappedItems,
+    paperDrafts,
+    headTailDraft
+  });
+
+  assert.match(result.markdown, /- 发表单位：Example University/);
+  assert.match(result.markdown, /- 发表单位：原文未提供可核实的作者单位/);
+  assert.doesNotMatch(result.markdown, /原文单位（|单位线索不足/);
+  assert.equal(result.publishedPapers[0].readingListReview.affiliations[0], "Example University");
+});
+
+test("paper research about agent loops does not become an internal-process warning", () => {
+  const researchDrafts = structuredClone(paperDrafts);
+  researchDrafts[0].coreContribution.text = "论文研究智能体循环与进化搜索。";
+  const result = assembleWeeklyReportMarkdown({
+    reportMeta,
+    selectedItems,
+    paperDrafts: researchDrafts,
+    headTailDraft
+  });
+
+  assert.equal(result.warnings.some((entry) => entry.code === "internal_process_leak"), false);
+});
+
+test("reading order avoids a blanket superiority claim when the paper records an exception", () => {
+  const drafts = structuredClone(paperDrafts);
+  drafts[0].limitationsAndConstraints[0].text = "部分 AUROC 指标低于基线。";
+  const guidance = structuredClone(headTailDraft);
+  guidance.readingOrder[0].reason = "该方法在全部指标上一致优于基线。";
+
+  const result = assembleWeeklyReportMarkdown({
+    reportMeta,
+    selectedItems,
+    paperDrafts: drafts,
+    headTailDraft: guidance
+  });
+
+  assert.doesNotMatch(result.markdown, /全部指标上一致优于基线/);
+  assert.match(result.markdown, /重点核对该论文的主要结果与例外情况/);
+  assert.equal(result.warnings.some((entry) => entry.code === "reading_order_overstates_result"), true);
+});
+
+test("assemble accepts a concise academic title without filler wording", () => {
+  const conciseHeadTail = structuredClone(headTailDraft);
+  conciseHeadTail.titleAngle = "自主动作执行前的约束验证方法";
+
+  const result = assembleWeeklyReportMarkdown({
+    reportMeta,
+    selectedItems,
+    paperDrafts,
+    headTailDraft: conciseHeadTail
+  });
+
+  assert.match(result.markdown, /阅读清单：自主动作执行前的约束验证方法/);
 });
 
 test("assemble follows Selection rank even when paperDraft input order is shuffled", () => {

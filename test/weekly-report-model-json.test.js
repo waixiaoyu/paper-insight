@@ -24,6 +24,23 @@ test("model JSON keeps structured objects and text envelopes", () => {
     assert.deepEqual(parseModelJsonObject(raw), { value, normalization: null });
   }
 });
+
+test("model JSON unwraps a single answer field containing the structured response", () => {
+  const value = {
+    paperId: "2609.27337",
+    oneSentenceTakeaway: { text: "完整稿件", evidenceRefs: ["method:0"] }
+  };
+  const wrapped = { answer: JSON.stringify(value) };
+
+  for (const raw of [wrapped, JSON.stringify(wrapped)]) {
+    const result = parseModelJsonObject(raw);
+    assert.deepEqual(result.value, value);
+    assert.deepEqual(result.normalization, {
+      kind: "answer_wrapper_unwrapped",
+      innerNormalization: null
+    });
+  }
+});
 test("model JSON completes missing trailing delimiters in reverse order", () => {
   for (const [raw, added] of [
     ['{"readingValue":{"evidenceBoundary":{"text":"完整"}}', '}'],

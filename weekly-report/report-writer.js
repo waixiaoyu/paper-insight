@@ -4,6 +4,7 @@ import {
   buildPaperSectionResponseRepairPrompt
 } from "./prompts.js";
 import { internalProcessWarnings } from "./internal-process-policy.js";
+import { readingGuidanceOverstatesResult } from "./reading-guidance-policy.js";
 import { acceptCredibilityAdvisories } from "./credibility-gate-policy.js";
 import {
   applyPaperDraftPatch,
@@ -34,6 +35,11 @@ const REQUIRED_READING_VALUE_FIELDS = [
   "evidenceBoundary"
 ];
 const RESPONSE_CONTRACT_ISSUE_CODES = new Set(["invalid_json", "schema_invalid"]);
+const READER_SECTION_MAXIMUM_CHARACTERS = Object.freeze({
+  methodFramework: 260,
+  experimentsAndResults: 280
+});
+const READABILITY_ISSUE_CODES = new Set(["paper_section_too_long"]);
 const hasOnlyResponseContractIssues = (validation) => (
   validation?.valid === false
   && Array.isArray(validation?.issues)
@@ -612,6 +618,19 @@ export const validatePaperDraft = (value, { item } = {}) => {
       warnings
     });
   });
+  Object.entries(READER_SECTION_MAXIMUM_CHARACTERS).forEach(([field, maximum]) => {
+    const text = normalized[field]?.text || "";
+    const characterCount = Array.from(text).length;
+    if (characterCount > maximum) {
+      const validationIssue = issue(
+        "paper_section_too_long",
+        `${field}.text`,
+        `${field} contains ${characterCount} Unicode characters and must not exceed ${maximum}.`
+      );
+      validationIssue.repairKinds = ["compact_reader_section"];
+      issues.push(validationIssue);
+    }
+  });
 
   if (!Array.isArray(value.limitationsAndConstraints)
     || value.limitationsAndConstraints.length < 2) {
@@ -756,6 +775,28 @@ const serializedError = (error, paperId = "") => ({
     ? error.paperDraft
     : null
 });
+
+const acceptExhaustedReadabilityIssues = (validation = {}) => {
+  const remainingIssues = Array.isArray(validation?.issues) ? validation.issues : [];
+  if (!validation?.paperDraft
+    || !remainingIssues.length
+    || !remainingIssues.every((entry) => READABILITY_ISSUE_CODES.has(String(entry?.code || "")))) {
+    return validation;
+  }
+  return {
+    ...validation,
+    valid: true,
+    issues: [],
+    warnings: [
+      ...(Array.isArray(validation?.warnings) ? validation.warnings : []),
+      ...remainingIssues.map((entry) => ({
+        ...entry,
+        severity: "warning",
+        blocking: false
+      }))
+    ]
+  };
+};
 
 export const repairablePaperDraft = (paperDraft) => {
   if (!paperDraft || typeof paperDraft !== "object" || Array.isArray(paperDraft)) {
@@ -1114,6 +1155,9 @@ export const runPaperSectionWriter = async ({
     );
   }
   if (!validation.valid) {
+    validation = acceptExhaustedReadabilityIssues(validation);
+  }
+  if (!validation.valid) {
     throw new PaperSectionWriterError("paperDraft remains unsupported after one structured repair.", {
       code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
       paperId,
@@ -1255,13 +1299,6 @@ const VALUE_DIMENSION_PRESENTATION = {
   evidence: "证据评估"
 };
 
-const MATURITY_PRESENTATION = {
-  emerging: "新兴",
-  developing: "发展中",
-  mature: "较成熟",
-  uncertain: "尚不确定"
-};
-
 const INTEREST_FIT_PRESENTATION = {
   target_network_autonomy: "网络自治与可信评估",
   general_ai_system: "通用智能系统",
@@ -1270,13 +1307,6 @@ const INTEREST_FIT_PRESENTATION = {
 };
 
 const assemblyText = (value, maximum = 6000) => normalizeText(value, maximum);
-const assemblyClaimBoundary = (claim, caveat) => {
-  const normalizedClaim = assemblyText(claim, 3000).replace(/[\s。！？；;!?]+$/gu, "");
-  const normalizedCaveat = assemblyText(caveat, 2400).replace(/^[\s；;:：]+/gu, "");
-  return `${normalizedClaim}；边界：${normalizedCaveat}`;
-};
-const trimJoinPunctuation = (value, maximum = 2400) => assemblyText(value, maximum)
-  .replace(/[。；;]+$/u, "");
 const yamlQuoted = (value) => `"${assemblyText(value, 2000)
   .replace(/\\/g, "\\\\")
   .replace(/"/g, "\\\"")}"`;
@@ -1311,8 +1341,9 @@ const rankedSelectedItems = (selectedItems) => (Array.isArray(selectedItems) ? s
 const affiliationsForItem = (item) => {
   const affiliations = (Array.isArray(item?.reviewResult?.affiliations)
     ? item.reviewResult.affiliations
-    : []).map((entry) => assemblyText(entry, 500)).filter(Boolean);
-  return affiliations.length ? affiliations : ["单位线索不足"];
+    : []).map((entry) => assemblyText(entry, 500)
+    .replace(/^原文单位（(.+)）$/u, "$1")).filter(Boolean);
+  return affiliations.length ? affiliations : ["原文未提供可核实的作者单位"];
 };
 
 const reviewDimensionsForItem = (item) => REVIEW_DIMENSION_PRESENTATION.map(([key, label]) => {
@@ -1444,13 +1475,12 @@ const paperMarkdownBlock = (item, draft, displayRank) => {
   const affiliations = affiliationsForItem(item).join("、");
   const mainDomain = INTEREST_FIT_PRESENTATION[String(item?.reviewResult?.interestFit || "")]
     || "方向待确认";
-  const adnBullets = [
-    draft?.adnInsight?.text,
-    [draft?.readingValue?.whyWorthReading?.text, draft?.readingValue?.recommendedFocus?.text]
-      .map((entry) => trimJoinPunctuation(entry, 2400)).filter(Boolean).join("；"),
-    draft?.readingValue?.evidenceBoundary?.text
-  ].map((entry) => assemblyText(entry, 3000)).filter(Boolean)
-    .map((entry) => /[。！？.!?]$/u.test(entry) ? entry : `${entry}。`);
+  const readingBullets = [
+    ["可借鉴之处", draft?.adnInsight?.text],
+    ["建议重点阅读", draft?.readingValue?.recommendedFocus?.text]
+  ].map(([label, value]) => [label, assemblyText(value, 3000)])
+    .filter(([, value]) => value)
+    .map(([label, value]) => `- ${label}：${/[。！？.!?]$/u.test(value) ? value : `${value}。`}`);
   return [
     `### ${displayRank}. ${title}`,
     "",
@@ -1460,6 +1490,10 @@ const paperMarkdownBlock = (item, draft, displayRank) => {
     `- 主问题域：${mainDomain}`,
     `- 关键支撑技术：${supportingTechnologiesForItem(item)}`,
     `- 链接：https://arxiv.org/abs/${paperId}`,
+    "",
+    "**一句话看点**",
+    "",
+    assemblyText(draft?.oneSentenceTakeaway?.text, 5000),
     "",
     "**研究问题**",
     "",
@@ -1473,7 +1507,7 @@ const paperMarkdownBlock = (item, draft, displayRank) => {
     "",
     assemblyText(draft?.methodFramework?.text, 5000),
     "",
-    "**实验与结果**",
+    "**实验结论**",
     "",
     assemblyText(draft?.experimentsAndResults?.text, 5000),
     "",
@@ -1483,9 +1517,9 @@ const paperMarkdownBlock = (item, draft, displayRank) => {
       ? draft.limitationsAndConstraints.map((entry) => `- ${assemblyText(entry?.text, 3000)}`)
       : []),
     "",
-    "**ADN 启发与阅读价值**",
+    "**阅读价值与借鉴**",
     "",
-    ...adnBullets.map((entry) => `- ${entry}`)
+    ...readingBullets
   ].join("\n");
 };
 
@@ -1510,7 +1544,7 @@ export const assembleWeeklyReportMarkdown = ({
   const description = assemblyText(headTailDraft?.description, 500);
   const tags = (Array.isArray(headTailDraft?.tags) ? headTailDraft.tags : [])
     .map((tag) => assemblyText(tag, 80)).filter(Boolean);
-  if (!titleAngle || Array.from(titleAngle).length < 18 || Array.from(titleAngle).length > 32
+  if (!titleAngle || Array.from(titleAngle).length < 12 || Array.from(titleAngle).length > 32
     || !description || Array.from(description).length > 55 || !tags.length) {
     throw new WeeklyReportAssemblyError("Head/Tail publication metadata is invalid.", {
       code: "READING_LIST_ASSEMBLY_ARTIFACT_MISMATCH"
@@ -1536,29 +1570,24 @@ export const assembleWeeklyReportMarkdown = ({
     "",
     assemblyText(headTailDraft?.reportIntroduction, 6000),
     "",
-    "## 本周趋势判断",
+    "## 本周研究观察",
     ""
   ];
   const trends = Array.isArray(headTailDraft?.trendJudgments) ? headTailDraft.trendJudgments : [];
   if (trends.length) {
     trends.forEach((trend, index) => {
-      const maturity = MATURITY_PRESENTATION[String(trend?.maturity || "")] || "尚不确定";
-      lines.push(`- **趋势 ${index + 1}（${maturity}）**：${assemblyClaimBoundary(trend?.claim, trend?.caveat)}`);
+      const legacyClaimTitle = Array.from(assemblyText(trend?.claim, 2400)
+        .split(/[。！？；.!?;]/u)[0]).slice(0, 32).join("");
+      const trendTitle = assemblyText(trend?.title, 120) || legacyClaimTitle || "共同发现";
+      lines.push(
+        `- **观察 ${index + 1}｜${trendTitle}**`,
+        `  - 发现：${assemblyText(trend?.claim, 3000)}`,
+        `  - 适用边界：${assemblyText(trend?.caveat, 2400)}`
+      );
     });
   } else {
-    lines.push("- 本周入选论文数量有限，暂不形成跨论文趋势判断。");
+    lines.push("- 本期论文涉及不同研究问题，暂无证据充分的跨论文观察。");
   }
-  const observations = Array.isArray(headTailDraft?.singlePaperObservations)
-    ? headTailDraft.singlePaperObservations
-    : [];
-  if (observations.length) {
-    lines.push("", "### 单篇补充观察", "");
-    observations.forEach((observation) => {
-      const item = rankedItems.find((candidate) => paperIdForItem(candidate) === normalizedPaperId(observation?.paperId));
-      lines.push(`- **${assemblyText(item?.paper?.title || observation?.paperId, 800)}**：${assemblyClaimBoundary(observation?.claim, observation?.caveat)}`);
-    });
-  }
-
   Object.entries(READING_TIER_PRESENTATION).forEach(([tier, presentation]) => {
     const tierItems = rankedItems.filter((item) => item?.selection?.readingTier === tier);
     if (!tierItems.length) {
@@ -1576,12 +1605,26 @@ export const assembleWeeklyReportMarkdown = ({
   });
 
   lines.push("## 推荐阅读顺序", "");
+  const readingOrderWarnings = [];
   headTailDraft.readingOrder.forEach((entry, index) => {
     const paperId = normalizedPaperId(entry?.paperId);
     const item = rankedItems.find((candidate) => paperIdForItem(candidate) === paperId);
-    lines.push(`${index + 1}. **${assemblyText(item?.paper?.title, 800)}**：${assemblyText(entry?.reason, 2400)}`);
+    const overstates = readingGuidanceOverstatesResult(entry?.reason, draftById.get(paperId));
+    const reason = overstates
+      ? "建议重点核对该论文的主要结果与例外情况。"
+      : assemblyText(entry?.reason, 2400);
+    if (overstates) {
+      readingOrderWarnings.push({
+        code: "reading_order_overstates_result",
+        path: `readingOrder[${index}].reason`,
+        paperId,
+        message: "阅读顺序的概括与逐篇稿件中的例外结果不一致，公开稿已改用中性阅读提示。",
+        severity: "warning"
+      });
+    }
+    lines.push(`${index + 1}. **${assemblyText(item?.paper?.title, 800)}**：${reason}`);
   });
-  lines.push("", assemblyText(headTailDraft?.closingSummary, 5000), "", "## 完整论文清单", "", "| 论文 | 一句话介绍 | 阅读级别 | 链接 |", "| --- | --- | --- | --- |");
+  lines.push("", "## 完整论文清单", "", "| 论文 | 一句话介绍 | 阅读级别 | 链接 |", "| --- | --- | --- | --- |");
   rankedItems.forEach((item) => {
     const paperId = paperIdForItem(item);
     const draft = draftById.get(paperId);
@@ -1590,7 +1633,10 @@ export const assembleWeeklyReportMarkdown = ({
   });
   lines.push("", READING_LIST_FOOTER_NOTE);
   const markdown = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  const warnings = internalProcessWarnings(markdown, { path: "report.markdown" });
+  const warnings = [
+    ...internalProcessWarnings(markdown, { path: "report.markdown" }),
+    ...readingOrderWarnings
+  ];
   const publishedPapers = rankedItems.map(publishedPaperForItem);
   return {
     markdown,

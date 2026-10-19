@@ -30,6 +30,7 @@ const BLOCKING_CREDIBILITY_CODES = new Set([
   "head_tail_field_forbidden",
   "title_angle_length_invalid",
   "description_too_long",
+  "paper_section_too_long",
   "tags_invalid",
   "tag_too_long",
   "tag_duplicate",

@@ -1,5 +1,10 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+import {
+  inferResearchFocus,
+  isPreferredResearchFocus
+} from "../public/research-focus.js";
+
 const normalizePaperKey = (paper = {}) => {
   const raw = String(
     paper.id
@@ -218,6 +223,36 @@ const finalSelectionTier = (item, selectionReason) => {
   return tier === "background_only" ? "background_only" : tier;
 };
 
+const calibratedResearchFocus = (item = {}) => inferResearchFocus({
+  paper: item.paper,
+  analysis: item.paper?.analysis
+});
+
+const calibratedScopeDecision = (item = {}) => {
+  const initialInterestFit = String(item?.paper?.analysis?.interestFit || "").trim().toLowerCase();
+  const reviewInterestFit = String(item?.reviewResult?.interestFit || "").trim().toLowerCase();
+  const methodNovelty = Number(item?.reviewResult?.scores?.methodNovelty);
+  const outOfScope = initialInterestFit === "out_of_scope_domain"
+    || reviewInterestFit === "out_of_scope_domain";
+  const exceptionalGeneralMethod = outOfScope
+    && reviewInterestFit === "general_ai_system"
+    && Number.isFinite(methodNovelty)
+    && methodNovelty >= 95;
+
+  return {
+    outOfScope,
+    automaticSelectionEligible: !outOfScope || exceptionalGeneralMethod
+  };
+};
+
+const compareCalibratedItems = (left, right) => (
+  Number(right.reviewResult.rawScore) - Number(left.reviewResult.rawScore)
+  || readingTierPriority(left.calibrationResult.readingTier)
+    - readingTierPriority(right.calibrationResult.readingTier)
+  || (paperPublicationTime(right.paper) || 0) - (paperPublicationTime(left.paper) || 0)
+  || calibratedPaperKey(left).localeCompare(calibratedPaperKey(right), "en")
+);
+
 export const selectCalibratedPapers = (items, {
   threshold = 70,
   minSelectedCount = 3,
@@ -283,19 +318,29 @@ export const selectCalibratedPapers = (items, {
     eligible.push(item);
   });
 
-  eligible.sort((left, right) => (
-    Number(right.reviewResult.rawScore) - Number(left.reviewResult.rawScore)
-    || readingTierPriority(left.calibrationResult.readingTier)
-      - readingTierPriority(right.calibrationResult.readingTier)
-    || (paperPublicationTime(right.paper) || 0) - (paperPublicationTime(left.paper) || 0)
-    || calibratedPaperKey(left).localeCompare(calibratedPaperKey(right), "en")
-  ));
+  eligible.sort(compareCalibratedItems);
 
   const maximum = Math.min(normalizedMaximum, eligible.length);
   const minimum = Math.min(normalizedMinimum, maximum);
   const thresholdCandidates = eligible.filter((item) => (
     Number(item.reviewResult.rawScore) >= normalizedThreshold
+    && calibratedScopeDecision(item).automaticSelectionEligible
   ));
+  const preferredThresholdCandidates = thresholdCandidates.filter((item) => (
+    isPreferredResearchFocus(calibratedResearchFocus(item).focus)
+  ));
+  const preferredFocusTarget = Math.min(3, maximum, preferredThresholdCandidates.length);
+  const preferredKeys = new Set(
+    preferredThresholdCandidates
+      .slice(0, preferredFocusTarget)
+      .map((item) => calibratedPaperKey(item))
+  );
+  const thresholdPortfolio = [
+    ...preferredThresholdCandidates.slice(0, preferredFocusTarget),
+    ...thresholdCandidates.filter((item) => !preferredKeys.has(calibratedPaperKey(item)))
+  ]
+    .slice(0, maximum)
+    .sort(compareCalibratedItems);
   const overridesByPaperId = new Map();
   const rejectedOverridePaperIds = [];
   (Array.isArray(adminSelectionOverrides) ? adminSelectionOverrides : []).forEach((entry) => {
@@ -338,9 +383,10 @@ export const selectCalibratedPapers = (items, {
     });
   };
 
-  thresholdCandidates.slice(0, maximum).forEach((item) => addSelected(item, "threshold"));
+  thresholdPortfolio.forEach((item) => addSelected(item, "threshold"));
   eligible
     .filter((item) => Number(item.reviewResult.rawScore) < normalizedThreshold)
+    .filter((item) => calibratedScopeDecision(item).automaticSelectionEligible)
     .filter((item) => !selectedKeys.has(calibratedPaperKey(item)))
     .filter((item) => overridesByPaperId.has(calibratedPaperKey(item)))
     .slice(0, Math.max(0, maximum - selected.length))
@@ -360,9 +406,11 @@ export const selectCalibratedPapers = (items, {
       ...item,
       selection: {
         selected: false,
-        selectionReason: Number(item.reviewResult.rawScore) >= normalizedThreshold
-          ? "max_selected_count"
-          : "below_threshold",
+        selectionReason: !calibratedScopeDecision(item).automaticSelectionEligible
+          ? "out_of_scope_domain"
+          : Number(item.reviewResult.rawScore) >= normalizedThreshold
+            ? "max_selected_count"
+            : "below_threshold",
         finalScore: Number(item.reviewResult.rawScore),
         readingTier: String(item.calibrationResult.readingTier || ""),
         originalCalibrationReadingTier: String(item.calibrationResult.readingTier || ""),
@@ -387,6 +435,14 @@ export const selectCalibratedPapers = (items, {
     minSelectedCount: minimum,
     maxSelectedCount: maximum,
     availableCount: eligible.length,
+    outOfScopeCount: eligible.filter((item) => (
+      !calibratedScopeDecision(item).automaticSelectionEligible
+    )).length,
+    preferredFocusTarget,
+    preferredFocusSelectedCount: selected.filter((item) => (
+      item.selection.selectionReason === "threshold"
+      && isPreferredResearchFocus(calibratedResearchFocus(item).focus)
+    )).length,
     rejectedOverridePaperIds: [...new Set(rejectedOverridePaperIds)]
   };
 };

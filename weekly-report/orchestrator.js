@@ -62,6 +62,24 @@ const repairTraceSuffix = (qaReport = {}) => {
   return count > 0 ? `-repair-${count}` : "";
 };
 
+const paperDraftHasReaderContent = (paperDraft = {}) => {
+  const groundedTexts = [
+    paperDraft?.oneSentenceTakeaway?.text,
+    paperDraft?.researchProblem?.text,
+    paperDraft?.coreContribution?.text,
+    paperDraft?.methodFramework?.text,
+    paperDraft?.experimentsAndResults?.text,
+    paperDraft?.adnInsight?.text,
+    paperDraft?.readingValue?.whyWorthReading?.text,
+    paperDraft?.readingValue?.recommendedFocus?.text,
+    paperDraft?.readingValue?.evidenceBoundary?.text,
+    ...(Array.isArray(paperDraft?.limitationsAndConstraints)
+      ? paperDraft.limitationsAndConstraints.map((entry) => entry?.text)
+      : [])
+  ];
+  return groundedTexts.some((text) => String(text || "").trim());
+};
+
 const normalizedReviewScoreThreshold = (value) => {
   const numeric = Number(value);
   return Number.isFinite(numeric)
@@ -1975,7 +1993,14 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
     const failureDetail = firstFailure.error.message || "A selected paper did not produce a valid paperDraft.";
     const reviewItems = failed.flatMap((entry, failureIndex) => {
       const targetPaperId = entry.error.paperId || paperIdForStage(entry.item);
-      const rawIssues = Array.isArray(entry.error.issues) && entry.error.issues.length
+      const writerResponseUnavailable = !paperDraftHasReaderContent(entry.error.paperDraft);
+      const rawIssues = writerResponseUnavailable
+        ? [{
+            code: "writer_response_unavailable",
+            path: "response",
+            detail: "模型响应没有形成可用的逐篇稿件。系统不会把空稿拆成多个字段问题；请重试本论文或将其从本期周报移除。"
+          }]
+        : Array.isArray(entry.error.issues) && entry.error.issues.length
         ? entry.error.issues
         : [{
             code: entry.error.code || "READING_LIST_PAPER_SECTION_FAILED",
@@ -1998,10 +2023,12 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
         return {
           itemId: `write_paper_sections:${targetPaperId}:${failureIndex + 1}:${issueIndex + 1}`,
           paperId: targetPaperId,
-          kind: "evidence_dispute",
+          kind: writerResponseUnavailable ? "processing_failure" : "evidence_dispute",
           scope: "paper",
           sourceStage: "write_paper_sections",
-          summary: evidenceReviews.length
+          summary: writerResponseUnavailable
+            ? `论文 ${targetPaperId} 的模型响应没有形成可用稿件。`
+            : evidenceReviews.length
             ? `当前稿件第 ${issueIndex + 1} 处表述需要与原文证据核对。`
             : `当前稿件第 ${issueIndex + 1} 处校验问题需要处理。`,
           issues: [issue],
@@ -2009,8 +2036,10 @@ export const writeWeeklyReportPaperSections = async (planned, context = {}, {
           approvableIssueKeys: evidenceReviews.map((review) => review.issueKey),
           repairAttempts: Math.max(1, Math.trunc(Number(paperSectionRepairAttempts[targetPaperId]) || 1)),
           allowedActions: [
-            ...(canKeepCurrentStatement ? ["confirm_evidence"] : []),
-            "continue_repair",
+            ...(writerResponseUnavailable ? ["retry_paper"] : [
+              ...(canKeepCurrentStatement ? ["confirm_evidence"] : []),
+              "continue_repair"
+            ]),
             "skip_paper",
             "exit_task"
           ]
@@ -2525,10 +2554,32 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     Math.trunc(Number(checked.options?.paperConcurrency) || 2),
     1
   ), 5);
-  const selectedItems = Array.isArray(checked.selectedItems) ? checked.selectedItems : [];
-  const paperDrafts = Array.isArray(checked.paperDrafts) ? checked.paperDrafts : [];
+  const allSelectedItems = Array.isArray(checked.selectedItems) ? checked.selectedItems : [];
+  const allPaperDrafts = Array.isArray(checked.paperDrafts) ? checked.paperDrafts : [];
+  const retryPaperId = String(checked.paperSemanticQaRetry?.paperId || "").trim().replace(/v\d+$/i, "");
+  const matchesRetryPaper = (value) => String(value || "").trim().replace(/v\d+$/i, "") === retryPaperId;
+  const selectedItems = retryPaperId
+    ? allSelectedItems.filter((item) => matchesRetryPaper(paperIdForStage(item)))
+    : allSelectedItems;
+  const paperDrafts = retryPaperId
+    ? allPaperDrafts.filter((draft) => matchesRetryPaper(draft?.paperId))
+    : allPaperDrafts;
+  if (retryPaperId && (selectedItems.length !== 1 || paperDrafts.length !== 1)) {
+    throw new TypeError(`paper_semantic_qa retry requires retained artifacts for paper ${retryPaperId}.`);
+  }
+  const retainedPaperSemanticResults = retryPaperId
+    ? (Array.isArray(checked.qaReport?.paperSemanticResults)
+      ? checked.qaReport.paperSemanticResults.filter((entry) => !matchesRetryPaper(entry?.paperId))
+      : [])
+    : [];
   const repairCount = repairCountFor(checked.qaReport);
-  const traceSuffix = repairTraceSuffix(checked.qaReport);
+  const retryAttempt = retryPaperId
+    ? Math.max(1, Math.trunc(Number(checked.paperSemanticQaRetry?.attempt) || 1))
+    : 0;
+  const tracePaperId = retryPaperId.replace(/[^a-z0-9.-]/giu, "_");
+  const traceSuffix = retryPaperId
+    ? `-admin-${tracePaperId}-${String(retryAttempt).padStart(4, "0")}`
+    : repairTraceSuffix(checked.qaReport);
   let callSequence = 0;
 
   await context.updateStage("paper_semantic_qa", {
@@ -2589,11 +2640,73 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     throw error;
   }
 
-  const paperSemanticResults = result.succeeded.map((entry) => entry.qaResult);
+  const resultByPaperId = new Map([
+    ...retainedPaperSemanticResults,
+    ...result.succeeded.map((entry) => entry.qaResult)
+  ].map((entry) => [String(entry?.paperId || "").replace(/v\d+$/i, ""), entry]));
+  const paperSemanticResults = allSelectedItems
+    .map((item) => resultByPaperId.get(paperIdForStage(item).replace(/v\d+$/i, "")))
+    .filter(Boolean);
+  const expectedPaperIds = allSelectedItems.map((item) => paperIdForStage(item).replace(/v\d+$/i, ""));
+  const completedPaperIds = new Set(paperSemanticResults.map((entry) => String(entry?.paperId || "").replace(/v\d+$/i, "")));
+  const missingPaperIds = expectedPaperIds.filter((paperId) => !completedPaperIds.has(paperId));
+  const existingReviewItems = Array.isArray(checked.manualReview?.items)
+    ? checked.manualReview.items
+    : [];
+  const failureReviewItem = (entry, failureIndex) => {
+    const paperId = String(entry?.error?.paperId || paperIdForStage(entry?.item)).replace(/v\d+$/i, "");
+    const issues = Array.isArray(entry?.error?.issues) && entry.error.issues.length
+      ? entry.error.issues
+      : [{
+          code: entry?.error?.code || "READING_LIST_PAPER_QA_FAILED",
+          path: "response",
+          message: entry?.error?.message || "Paper Semantic QA did not complete."
+        }];
+    const identityMismatch = issues.some((issue) => issue?.code === "input_identity_mismatch");
+    const responseInvalid = issues.some((issue) => [
+      "invalid_json",
+      "schema_invalid",
+      "unknown_field",
+      "verdict_invalid",
+      "summary_required",
+      "checks_required",
+      "check_required",
+      "issues_required",
+      "issue_invalid",
+      "issue_incomplete",
+      "false_check_without_issue",
+      "repair_without_issue"
+    ].includes(issue?.code));
+    return {
+      itemId: `paper_semantic_qa:${paperId}:${failureIndex + 1}`,
+      paperId,
+      kind: "processing_failure",
+      scope: "paper",
+      sourceStage: "paper_semantic_qa",
+      summary: identityMismatch
+        ? `论文 ${paperId} 的入选产物与逐篇稿件标识不一致，无法安全重试。`
+        : responseInvalid
+          ? `论文 ${paperId} 的语义 QA 连续两次未返回符合结构要求的结果。`
+          : `论文 ${paperId} 的语义 QA 模型调用在自动重试后仍未完成。`,
+      issues,
+      repairAttempts: retryAttempt,
+      allowedActions: [
+        ...(!identityMismatch ? ["retry_paper"] : []),
+        "skip_paper",
+        "exit_task"
+      ]
+    };
+  };
+  const failedReviewItems = result.failed.map(failureReviewItem);
+  const failedPaperIds = new Set(failedReviewItems.map((item) => item.paperId));
+  const pendingReviewItems = [
+    ...existingReviewItems.filter((item) => !failedPaperIds.has(String(item?.paperId || "").replace(/v\d+$/i, ""))),
+    ...failedReviewItems
+  ];
   const enrichedPaperIssues = enrichEvidenceReviewIssues({
     issues: paperSemanticResults.flatMap((entry) => entry.issues),
-    selectedItems,
-    paperDrafts
+    selectedItems: allSelectedItems,
+    paperDrafts: allPaperDrafts
   });
   const reviewedPaperIssues = removeApprovedEvidenceIssues(
     enrichedPaperIssues,
@@ -2627,47 +2740,10 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     const failureCode = firstFailure.error.code || "READING_LIST_PAPER_QA_FAILED";
     const failedPaperId = firstFailure.error.paperId || paperIdForStage(firstFailure.item);
     const failureDetail = firstFailure.error.message || "Paper Semantic QA failed closed.";
-    const isArtifactIdentityMismatch = Array.isArray(firstFailure.error.issues)
-      && firstFailure.error.issues.some((issue) => issue?.code === "input_identity_mismatch");
-    if (!isArtifactIdentityMismatch) {
-      const rejected = new WeeklyReportOrchestratorError(
-        "At least one selected paper could not complete semantic QA.",
-        {
-          code: failureCode,
-          stage: "paper_semantic_qa",
-          paperId: failedPaperId,
-          retryable: false,
-          traceId: context.traceId,
-          detail: failureDetail,
-          rejectJob: true
-        }
-      );
-      await context.recordTrace({
-        type: "stage_failed",
-        stage: "paper_semantic_qa",
-        scope: "job",
-        durationMs: elapsed(stageStartedAt),
-        code: rejected.code,
-        paperId: rejected.paperId,
-        failedPaperIds: result.failed.map((entry) => paperIdForStage(entry.item)),
-        reason: rejected.detail
-      });
-      await context.recordTrace({
-        type: "reject_requested",
-        stage: "paper_semantic_qa",
-        scope: "job",
-        code: rejected.code,
-        paperId: rejected.paperId,
-        reason: rejected.detail
-      });
-      throw rejected;
-    }
-    const failureIssues = [{
-      code: failureCode,
-      paperId: failedPaperId,
-      reason: failureDetail,
-      details: Array.isArray(firstFailure.error.issues) ? firstFailure.error.issues : []
-    }];
+    const failureIssues = pendingReviewItems.flatMap((item) => item.issues.map((issue) => ({
+      ...issue,
+      paperId: item.paperId
+    })));
     await context.recordTrace({
       type: "stage_failed",
       stage: "paper_semantic_qa",
@@ -2675,12 +2751,13 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
       durationMs: elapsed(stageStartedAt),
       code: failureCode,
       paperId: failedPaperId,
-      failedPaperIds: result.failed.map((entry) => paperIdForStage(entry.item)),
+      failedPaperIds: pendingReviewItems.map((item) => item.paperId),
       reason: failureDetail,
       decision: "manual_review"
     });
     return {
       ...checked,
+      paperSemanticQaRetry: null,
       nextStage: "manual_review",
       qaReport: {
         ...checked.qaReport,
@@ -2692,11 +2769,66 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
       },
       manualReview: {
         stage: "paper_semantic_qa",
-        paperId: failedPaperId,
-        summary: "单篇论文的语义 QA 无法完成，请查看错误详情后决定是否跳过该论文或退出任务。",
-        issues: failureIssues,
-        repairAttempts: repairCount,
-        allowedActions: failedPaperId ? ["exit_task", "skip_paper"] : ["exit_task"]
+        resumeStage: "paper_semantic_qa",
+        activeItemId: pendingReviewItems[0].itemId,
+        items: pendingReviewItems
+      }
+    };
+  }
+
+  if (missingPaperIds.length) {
+    const pendingPaperIds = new Set(pendingReviewItems.map((item) => item.paperId));
+    const missingReviewItems = missingPaperIds
+      .filter((paperId) => !pendingPaperIds.has(paperId))
+      .map((paperId, index) => ({
+        itemId: `paper_semantic_qa:${paperId}:missing:${index + 1}`,
+        paperId,
+        kind: "processing_failure",
+        scope: "paper",
+        sourceStage: "paper_semantic_qa",
+        summary: `论文 ${paperId} 尚未取得有效的语义 QA 结果。`,
+        issues: [{
+          code: "READING_LIST_PAPER_QA_RESULT_MISSING",
+          path: "qaResult",
+          message: "当前入选论文缺少成功的 Paper Semantic QA 结果。"
+        }],
+        repairAttempts: retryAttempt,
+        allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+      }));
+    const reviewItems = [...pendingReviewItems, ...missingReviewItems];
+    const qaReport = {
+      ...checked.qaReport,
+      status: "rejected",
+      paperSemanticResults,
+      paperIssues: reviewItems.flatMap((item) => item.issues.map((issue) => ({
+        ...issue,
+        paperId: item.paperId
+      })))
+    };
+    await context.writeTrace(`paper-semantic-qa${traceSuffix}`, {
+      ...baseArtifact,
+      status: "waiting_admin",
+      missingPaperIds
+    });
+    await context.recordTrace({
+      type: "stage_completed",
+      stage: "paper_semantic_qa",
+      scope: "job",
+      durationMs: elapsed(stageStartedAt),
+      completed: paperSemanticResults.length,
+      missingPaperIds,
+      decision: "manual_review"
+    });
+    return {
+      ...checked,
+      paperSemanticQaRetry: null,
+      nextStage: "manual_review",
+      qaReport,
+      manualReview: {
+        stage: "paper_semantic_qa",
+        resumeStage: "paper_semantic_qa",
+        activeItemId: reviewItems[0].itemId,
+        items: reviewItems
       }
     };
   }
@@ -2730,6 +2862,8 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     });
     return {
       ...checked,
+      paperSemanticQaRetry: null,
+      manualReview: null,
       nextStage: "report_semantic_qa",
       qaReport,
       warnings
@@ -2781,6 +2915,7 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
     });
     return {
       ...checked,
+      paperSemanticQaRetry: null,
       nextStage: "repair_once",
       qaReport,
       warnings
@@ -2804,6 +2939,7 @@ export const runWeeklyReportPaperSemanticQa = async (checked, context = {}, {
   });
   return {
     ...checked,
+    paperSemanticQaRetry: null,
     nextStage: "manual_review",
     qaReport,
     manualReview: {

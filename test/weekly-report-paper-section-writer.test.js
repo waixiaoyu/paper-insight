@@ -206,7 +206,16 @@ test("Paper Section prompt contains one paper's bound artifacts and never carrie
   assert.match(payload.rules.join(" "), /editorial aids, not factual Evidence/i);
   assert.match(payload.rules.join(" "), /Preserve cohort, track, dataset, and model-version scope/i);
   assert.match(payload.rules.join(" "), /plain, neutral technical prose/i);
+  assert.match(payload.rules.join(" "), /experimentsAndResults.*lead with the main finding/i);
+  assert.match(payload.rules.join(" "), /explain an indispensable benchmark or metric term/i);
+  assert.match(payload.rules.join(" "), /oneSentenceTakeaway.*plain-language reading entry/i);
   assert.match(payload.rules.join(" "), /揭示\/reveal/);
+  assert.deepEqual(payload.publicationConstraints.readerSectionUnicodeCharacters, {
+    methodFramework: { targetMinimum: 180, maximum: 260 },
+    experimentsAndResults: { maximum: 280 }
+  });
+  assert.match(payload.rules.join(" "), /at most three decisive exact numbers/i);
+  assert.match(payload.rules.join(" "), /hardware details, runtime settings, and minor ablations/i);
   assert.match(prompt, /The method validates actions against explicit constraints/);
   assert.equal(payload.evidence.method.summary, undefined);
   assert.equal(payload.valueSignals[0].claim, undefined);
@@ -225,6 +234,85 @@ test("a grounded paperDraft passes and receives server-owned publication metadat
   assert.equal(validation.paperDraft.publicationMeta.finalScore, item.selection.finalScore);
   assert.equal(validation.paperDraft.publicationMeta.readingTier, "must_read");
   assert.equal(validation.paperDraft.publicationMeta.title, item.paper.title);
+});
+
+test("overlong reader sections request field-level compaction", () => {
+  const draft = validDraft();
+  draft.methodFramework.text = "该方法在规划与执行之间检查候选动作，并根据显式约束决定是否执行。".repeat(12);
+  draft.experimentsAndResults.text = "实验在模拟故障场景中评估动作安全性，并报告主要结果和适用边界。".repeat(12);
+
+  const validation = validatePaperDraft(draft, { item });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "paper_section_too_long" && entry.path === "methodFramework.text"
+  )), true);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "paper_section_too_long" && entry.path === "experimentsAndResults.text"
+  )), true);
+});
+
+test("Paper Section Writer compacts only the overlong field", async () => {
+  const overlong = validDraft();
+  overlong.methodFramework.text = "该方法在规划与执行之间检查候选动作，并根据显式约束决定是否执行。".repeat(12);
+  const prompts = [];
+
+  const result = await runPaperSectionWriter({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      prompts.push(payload);
+      return payload.task === "weekly_report_write_paper_section"
+        ? overlong
+        : {
+          patches: [{
+            path: "methodFramework",
+            value: validDraft().methodFramework
+          }]
+        };
+    }
+  });
+
+  assert.deepEqual(prompts.map((payload) => payload.task), [
+    "weekly_report_write_paper_section",
+    "weekly_report_write_paper_section_repair"
+  ]);
+  assert.deepEqual(prompts[1].repairPaths, ["methodFramework"]);
+  assert.match(prompts[1].issues[0].repairHints.join(" "), /compress only this reader section/i);
+  assert.deepEqual(result.paperDraft.methodFramework, validDraft().methodFramework);
+  assert.deepEqual(result.paperDraft.experimentsAndResults, overlong.experimentsAndResults);
+});
+
+test("Paper Section Writer keeps an overlong section as a non-blocking warning after compaction is exhausted", async () => {
+  const overlong = validDraft();
+  overlong.methodFramework.text = "该方法在规划与执行之间检查候选动作，并根据显式约束决定是否执行。".repeat(12);
+  let calls = 0;
+
+  const result = await runPaperSectionWriter({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      calls += 1;
+      const payload = JSON.parse(prompt);
+      return payload.task === "weekly_report_write_paper_section"
+        ? overlong
+        : {
+          patches: [{
+            path: "methodFramework",
+            value: overlong.methodFramework
+          }]
+        };
+    }
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.paperDraft.paperId, item.paper.id);
+  assert.equal(result.warnings.some((entry) => (
+    entry.code === "paper_section_too_long"
+    && entry.path === "methodFramework.text"
+    && entry.blocking === false
+  )), true);
 });
 
 test("unknown Evidence refs and exact numbers absent from cited Evidence are rejected", () => {

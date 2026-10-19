@@ -20,6 +20,10 @@ import { WeeklyReportJobManager } from "./weekly-report/job-manager.js";
 import { runWeeklyReportAgentLoop } from "./weekly-report/pipeline-runner.js";
 import { WeeklyReportTraceStore } from "./weekly-report/trace-store.js";
 import { defaultQuery } from "./public/query-defaults.js";
+import {
+  inferResearchFocus,
+  researchFocusAdjustment
+} from "./public/research-focus.js";
 
 if (process.platform === "win32") {
   setDefaultAutoSelectFamily(false);
@@ -144,7 +148,7 @@ const dimensions = [
 
 const scoringRubric = [
   "总分档位：0-49 表示基本不达标，概念模糊、贡献弱、证据不足或只是产业/实践/流程性内容；50-59 表示弱相关、弱贡献或专用非目标领域论文；60-69 表示一般候选，方向或问题有价值，但创新、系统完整性、证据至少有一项明显短板，或方向相关性还不明确；70-79 表示值得扫读，问题清楚，有一定研究贡献或系统价值，但还不是强论文；80-89 表示重点关注，问题、方法、系统或证据中至少两项比较强，值得深入读；90-100 表示少数高价值论文，问题重要，方法有实质贡献，证据扎实，结论边界清楚，且和目标方向高度相关。",
-  "维度打分必须使用同样的档位含义，不能把一般相关论文集中打到 70 分以上；方向匹配、产业价值或 ICT/ADN 相关性不能提高四维分，只能通过独立的 interestFit 影响最终推荐分。",
+  "维度打分必须使用同样的档位含义，不能把一般相关论文集中打到 70 分以上；方向匹配、产业价值或 ICT/ADN 相关性不能提高四维分。服务端会根据论文实际研究层次独立识别 Agent/Harness、AI 应用、网络 AI、基础模型、模型内部优化和硬件方向，并只用该分类轻度校准最终排序。",
   "研究问题价值：0-49 表示问题不清楚或只是愿景/场景口号；50-59 表示有问题意识，但定义宽泛，缺少可验证目标；60-69 表示问题有意义，但边界、假设或研究难点不够清楚；70-79 表示问题清晰，研究价值明确，值得扫读；80-89 表示问题重要且定义好，对领域有推进意义；90-100 只给非常关键、可泛化、能牵引后续研究的问题。",
   "方法新意：0-49 表示无实质方法，只是宣传、流程总结、概念框架、标准解读或新名词包装；50-59 表示主要套用已有方法，只有轻微场景包装；60-69 表示有组合或适配，但新机制有限；70-79 表示有明确的技术适配、约束建模、状态表示、工具调用、安全验证、流程或评测设计；80-89 表示提出可复用的新机制、新算法、新任务定义、新评测协议或新的 agent 协同/验证机制；90-100 只给方法贡献显著，别人可以实现、比较、迁移的论文。",
   "系统价值：0-49 表示只有概念图、愿景或不可执行流程；50-59 表示有系统想法，但模块、接口、运行条件不清楚；60-69 表示系统结构基本清楚，但可复用性、闭环机制或失败处理有限；70-79 表示模块、数据流、流程较清晰，有实现路径；80-89 表示架构完整，关键机制、部署约束、风险处理比较清楚；90-100 只给系统设计成熟，可迁移、可验证、可复用的论文。",
@@ -180,23 +184,23 @@ const clamp = (value, min = 0, max = 100) => Math.max(min, Math.min(max, Number(
 const interestFitRules = {
   target_network_autonomy: {
     label: "网络自治/电信方向",
-    adjustment: 4,
-    reason: "方向适配：命中网络自治、电信网络、ADN 或网络基础设施问题，小幅提升本轮排序优先级。"
+    adjustment: 0,
+    reason: "方向分类：论文主问题属于网络自治、电信网络、ADN 或网络基础设施。"
   },
   general_ai_system: {
     label: "通用 AI/Agent 方法",
-    adjustment: 2,
-    reason: "方向适配：属于通用 AI/Agent/系统方法，保留阅读价值，但需要进一步判断能否迁移到网络自治场景。"
+    adjustment: 0,
+    reason: "方向分类：论文属于通用 AI、Agent 或系统方法，需要另行判断能否迁移到网络自治场景。"
   },
   out_of_scope_domain: {
     label: "专用非目标领域",
-    adjustment: -6,
-    reason: "方向适配：主问题属于医学、生命科学、地理、游戏、社科、推荐等专用非目标领域，小幅降低本轮推荐优先级。"
+    adjustment: 0,
+    reason: "方向分类：论文主问题属于医学、生命科学、地理、游戏、社科、推荐等专用非目标领域。"
   },
   unclear: {
     label: "方向相关性不明",
-    adjustment: -2,
-    reason: "方向适配：暂时没有看到明确的网络自治/电信网络信号，也缺少足够清楚的通用可迁移方法，仅轻微后移。"
+    adjustment: 0,
+    reason: "方向分类：暂时没有看到明确的网络自治、电信网络或通用可迁移方法信号。"
   }
 };
 
@@ -318,10 +322,9 @@ const researchQualityScore = (scores = {}) => {
   ), 0) / totalWeight);
 };
 
-const weightedScore = (scores = {}, interestFit = "general_ai_system") => {
+const weightedScore = (scores = {}, researchFocus = "other") => {
   const quality = researchQualityScore(scores);
-  const rule = interestFitRules[normalizeInterestFit(interestFit, "general_ai_system")] || interestFitRules.general_ai_system;
-  return clamp(quality + rule.adjustment);
+  return clamp(quality + researchFocusAdjustment(researchFocus));
 };
 
 const normalizeTags = (items, max = 8) => (
@@ -1057,6 +1060,12 @@ const writeArxivCache = async (key, entry) => {
 const arxivCacheAgeSeconds = (entry) => Math.max(0, Math.round((Date.now() - Number(entry.fetchedAt)) / 1000));
 
 const paperOriginalTextCacheAgeMs = (entry) => Math.max(0, Date.now() - Number(entry?.fetchedAt || 0));
+const paperOriginalTextCacheEntryUsable = (entry) => (
+  Number(entry?.version) >= 3
+  && Boolean(entry?.text)
+  && Number.isFinite(Number(entry?.fetchedAt))
+  && Boolean(entry?.publicationMetadata && typeof entry.publicationMetadata === "object")
+);
 
 const paperOriginalTextResult = (entry, maxChars) => {
   const contextPacket = buildContextPacket({
@@ -1065,6 +1074,7 @@ const paperOriginalTextResult = (entry, maxChars) => {
     url: entry.url || "",
     httpStatus: 200,
     text: entry.text || "",
+    publicationMetadata: entry.publicationMetadata,
     compatibility: {
       legacyOriginalText: Number(entry.version) < 2
     }
@@ -1095,14 +1105,14 @@ const paperOriginalTextResult = (entry, maxChars) => {
 const readPaperOriginalTextCache = async (key, maxChars) => {
   const memoryEntry = paperOriginalTextMemoryCache.get(key);
 
-  if (memoryEntry && paperOriginalTextCacheAgeMs(memoryEntry) < paperOriginalTextCacheTtlMs) {
+  if (paperOriginalTextCacheEntryUsable(memoryEntry) && paperOriginalTextCacheAgeMs(memoryEntry) < paperOriginalTextCacheTtlMs) {
     return paperOriginalTextResult(memoryEntry, maxChars);
   }
 
   try {
     const entry = JSON.parse(await readFile(paperOriginalTextCachePath(key), "utf8"));
 
-    if (entry?.text && Number.isFinite(Number(entry.fetchedAt)) && paperOriginalTextCacheAgeMs(entry) < paperOriginalTextCacheTtlMs) {
+    if (paperOriginalTextCacheEntryUsable(entry) && paperOriginalTextCacheAgeMs(entry) < paperOriginalTextCacheTtlMs) {
       paperOriginalTextMemoryCache.set(key, entry);
       return paperOriginalTextResult(entry, maxChars);
     }
@@ -1196,13 +1206,14 @@ const fetchPaperOriginalText = async (paper, maxChars) => {
       }
 
       const entry = {
-        version: 2,
+        version: 3,
         paperId: arxivId,
         source: "arxiv-html",
         url: resolvedUrl,
         fetchedAt: Date.now(),
         textChars: contextPacket.cleanChars,
-        text: contextPacket.cleanText
+        text: contextPacket.cleanText,
+        publicationMetadata: contextPacket.publicationMetadata
       };
       await writePaperOriginalTextCache(cacheKey, entry);
       return entry;
@@ -2051,7 +2062,8 @@ const sanitizeReadingListPaper = (paper) => {
     dimensions.map((dimension) => [dimension.key, clamp(analysis.scores?.[dimension.key] ?? 0)])
   );
   const interest = interestCalibrationForPaper(sanitized, analysis);
-  const score = weightedScore(scores, interest.fit);
+  const researchFocus = inferResearchFocus({ paper: sanitized, analysis });
+  const score = weightedScore(scores, researchFocus.focus);
   const interestReason = normalizeText(analysis.interestReason) || interest.reason;
 
   return {
@@ -2063,6 +2075,10 @@ const sanitizeReadingListPaper = (paper) => {
       interestLabel: interest.label,
       interestAdjustment: interest.adjustment,
       interestReason,
+      researchFocus: researchFocus.focus,
+      researchFocusLabel: researchFocus.label,
+      researchFocusAdjustment: researchFocus.adjustment,
+      researchFocusReason: researchFocus.reason,
       dimensionDetails: dimensions.map((dimension) => ({
         key: dimension.key,
         label: dimension.label,
@@ -2581,7 +2597,7 @@ const callLlmAnalyzer = async ({ query, papers, llm }) => {
             "tldr 不是普通摘要，必须是论文价值判断的一句话。推荐分 70 及以上时，tldr 必须写出它相对普通候选更值得读的具体原因，包含核心贡献、最强维度和可核验信号，不能只写“提出了一个框架/方法”。推荐分低于 70 时，tldr 要说明主要价值和主要短板。",
             "推荐分 70 及以上必须填写 valueHighlight，用 60-120 个中文字符写出显性高分信号：强项来自研究问题、方法新意、系统价值还是证据强度，具体强在哪里。不要重复标题，不要使用“具有重要意义”“值得关注”这类空泛表达。",
             "如果根据分项分计算后的推荐分低于 60，必须填写 notRecommendReason。它必须是具体评审意见，不是分数解释：不要写“总分低于 60”“某维度多少分”“建议只在后续补充背景时再读”这类模板话；要直接说明这篇论文具体差在哪里，例如方法只是流程拼装、没有可复用机制，系统接口/闭环/失败处理没说清，实验缺少数据集/基线/消融/真实场景，或摘要只能看到愿景而看不到可验证假设。必须引用论文内容中的具体短板。",
-            "ICT、电信、ADN、O-RAN 等产业和业务方向匹配只能写入 industryTags、matchedKeywords、interestFit 和 interestReason，不能作为四维 scores 的加分依据；服务端会先按四维分计算研究质量，再按 interestFit 做最终推荐分校准。",
+            "ICT、电信、ADN、O-RAN 等产业和业务方向匹配只能写入 industryTags、matchedKeywords、interestFit 和 interestReason，不能作为四维 scores 的加分依据；服务端会先按四维分计算研究质量，再根据论文实际研究层次做轻度排序校准。",
             "只有当论文的主问题域是通信/电信/网络基础设施时，才能在 industryTags 中写 ICT，例如 5G/6G、RAN/O-RAN、无线/蜂窝/移动/核心/边缘/光/卫星网络、网络切片、路由、QoS、频谱、切换、业务保障、告警关联或故障诊断。泛 AI agent、泛多智能体系统、泛 graph/neural network、社交网络、一般 computer network 或只出现 network 一词，都不要标 ICT。",
             "对于产业宣介、实践总结、框架愿景或标准化流程型论文，要按实际研究贡献、可验证机制和证据强度打分，不要因为业务方向高度匹配而抬高研究问题价值、方法新意或系统价值。",
             "非目标领域的定义是：论文主问题、评价对象或主要应用场景明确落在医学、生命科学、脑科学、基因组、地理、游戏、教育、金融、法律、社科、推荐系统等专用垂直领域，且摘要没有展示可迁移的通用 AI/Agent/系统方法。若论文只是使用这些垂直数据做验证，但主要贡献是通用机制、架构、评测或 agent 方法，应设为 general_ai_system，而不是 out_of_scope_domain。",
@@ -2744,8 +2760,8 @@ const callLlmReadingListReview = async ({ papers, llm, useOriginalText, scoreThr
               : "本次未启用全文复评，只能基于摘要和已有分析复评，并在 reviewReason 里明确证据边界。",
             "评分维度、权重和分数档位沿用下面的研究质量标准，但这次分数只服务于周报筛选和排序，不回写原始列表。",
             ...scoringRubric,
-            "ICT、电信、ADN 等产业方向匹配只能作为标签或兴趣适配信号，不能给四维分数加分；服务端会先按四维分计算研究质量，再按 interestFit 做最终周报分校准。",
-            "总分必须主要由四维分数反映：研究问题价值、方法新意、系统价值、证据强度。产业契合但研究贡献一般的论文，要在方法新意和证据强度上拉开差距；专用非目标领域论文要通过 interestFit 降低入选优先级。",
+            "ICT、电信、ADN 等产业方向匹配只能作为标签或兴趣适配信号，不能给四维分数加分；服务端会先按四维分计算研究质量，再根据论文实际研究层次做轻度排序校准。",
+            "总分必须由四维分数反映：研究问题价值、方法新意、系统价值、证据强度。产业契合但研究贡献一般的论文，要在方法新意和证据强度上拉开差距；interestFit 只记录方向分类，不直接修改周报复评分。",
             "每篇论文必须提取发表单位/作者机构线索，并把机构名称翻译成中文。优先从 originalText.excerpt 的作者区、机构脚注、标题页、邮箱域名、致谢、项目页说明和摘要上下文判断；可以返回多个机构。affiliations 必须使用中文机构名，例如 Stanford University 写「斯坦福大学」、MIT 写「麻省理工学院」、University of Cambridge 写「剑桥大学」；不确定标准译名时用「英文原名（中文意译）」格式。无法确认时 affiliations 返回「单位线索不足」，并在 affiliationEvidence 里说明缺少哪些依据。不要凭作者姓名或国家刻板印象硬猜机构。",
             "reviewReason 必须写成具体复评判断：说明为什么它适合或不适合进入本次周报，点出方法、证据、系统落地或问题价值中的关键依据。",
             "只返回 JSON，不要输出 Markdown。"
@@ -2980,13 +2996,13 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
             },
             instruction: [
               `请生成以「${titleBase}」开头的标题。`,
-              "标题格式固定为：【精选论文】{yy}年{month}月第{weekOfMonth}周阅读清单：{一句话观点}。",
+              "标题格式固定为：【精选论文】{yy}年{month}月第{weekOfMonth}周阅读清单：{学术主题}。",
               "输入论文来自当前推荐列表的已选候选；只可依据输入论文和其原文证据写作，不要引入列表外论文或未提供的事实。",
-              `标题冒号后必须直接写一句本周核心趋势或观点，控制在 18-32 个中文字符以内；必须绑定本周入选论文的具体主题，优先使用这些主题提示：${titleTopicHints.join("、") || "从入选论文标题和证据中提取具体主题"}。`,
-              "标题不要只写“智能体赋能网络自治”“新范式”“值得关注”“重要趋势”“加速落地”“多点开花”这类每天都能套用的泛化表述。标题必须让读者看出本周具体在讨论什么问题或技术信号。",
+              `标题冒号后使用 12-32 个字符的学术描述性短语，优先控制在 14-24 个字符；直接说明研究领域及具体对象、方法或评估问题，不使用问句、新闻标题或为凑长度添加抽象词。标题必须绑定本周入选论文，优先使用这些主题提示：${titleTopicHints.join("、") || "从入选论文标题和证据中提取具体主题"}。`,
+              "标题不要只写“智能体赋能网络自治”“新范式”“值得关注”“重要趋势”“加速落地”“多点开花”这类每天都能套用的泛化表述。标题必须让读者看出本周具体讨论的研究对象；论文方向不一致时可以概括主要研究方向，不得强行创造一个共同结论。",
               "输出必须包含 YAML front matter 和正文标题；YAML title 和正文一级标题必须完全一致，且都使用完整标题。",
-              "YAML front matter 必须包含 description 字段，内容可以与标题冒号后的观点一致或略微展开，控制在 55 个中文字符以内。",
-              "报告导读要说明本周收录概况、最值得关注的 2-4 篇论文、以及对 ADN 网络研究最有价值的研究信号。不要在导读里再写一组独立的阅读建议，避免和后面的阅读顺序重复。",
+              "YAML front matter 必须包含 description 字段，内容可以与标题冒号后的学术主题一致或略微展开，控制在 55 个中文字符以内。",
+              "报告导读先说明本周收录范围；论文方向不一致时按 1-3 个真实主题分组，每组用一句话说明具体研究对象和问题，不得为了串联全部论文而创造抽象的共同结论。首次出现的不常用技术术语要解释。模型仓库语境中的 distributed artifacts 写成“公开分发的模型文件”，不要写成“分布式模型构件”。不要在导读里再写一组独立的阅读建议，避免和后面的阅读顺序重复。",
               "增加「本周趋势判断」章节，提炼 3-5 条趋势。每条趋势都要说明：技术信号是什么、为什么值得关注、成熟度或风险如何、它和华为 ADN 的意图驱动、闭环自治、网络数字孪生、网络智能体、跨域协同、自治运维或评估体系有什么关系。",
               "方向标签要尽量正交，不要把系统架构/工程化集成和网络数字孪生、网络智能体、自治闭环混作同一层级。每篇论文的方向用「主问题域 / 关键支撑技术」表达：主问题域优先从自治闭环与意图驱动、网络数字孪生与仿真评估、网络智能体与多智能体协同、网络基础模型与表征学习、系统架构与工程化集成、可信评估与安全可靠中选择；关键支撑技术再补充 LLM、Agent、RAG、工具调用、仿真平台、评测基准等。",
               "每篇入选论文正文条目都必须展示「阅读价值评分」，并说明分别符合哪些评分维度。阅读价值评分来自输入 readingListReview.score；评分维度来自输入 readingListReview 或 analysis.dimensionDetails / analysis.scores，包括研究问题价值、方法新意、系统价值、证据强度；写出高匹配维度及其分项分，必要时指出较弱维度。analysis.industryTags 里的 ICT、电信、网络自治等产业/方向标签可以作为标签或方向信号展示，但不要写成评分维度，也不要把方向匹配解释为高分依据。",
@@ -3017,8 +3033,8 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
             ].join("\n"),
             outputTemplate: [
               "---",
-              `title: \"${titleBase}一句话观点\"`,
-              "description: \"一句话提炼本周核心趋势或观点，不超过 55 个中文字符\"",
+              `title: \"${titleBase}学术主题\"`,
+              "description: \"概括本周研究主题与范围，不超过 55 个中文字符\"",
               `date: \"${report.date}\"`,
               `month: \"${report.month}\"`,
               `week_of_month: ${report.weekOfMonth}`,
@@ -3034,7 +3050,7 @@ const callLlmReadingList = async ({ report, papers, llm }) => {
               `paper_count: ${papers.length}`,
               "---",
               "",
-              `# ${titleBase}一句话观点`,
+              `# ${titleBase}学术主题`,
               "",
               "## 报告导读",
               "",
@@ -3287,7 +3303,8 @@ const normalizeAnalysis = (paper, analysis) => {
   const interestReason = scope.eligible
     ? normalizeText(analysis.interestReason) || interest.reason
     : scope.reason;
-  const score = weightedScore(scores, interest.fit);
+  const researchFocus = inferResearchFocus({ paper, analysis, allowExplicit: false });
+  const score = weightedScore(scores, researchFocus.focus);
   const notRecommendReason = scope.eligible
     ? notRecommendReasonForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason })
     : scope.reason;
@@ -3302,6 +3319,10 @@ const normalizeAnalysis = (paper, analysis) => {
     interestLabel: interest.label,
     interestAdjustment: interest.adjustment,
     interestReason,
+    researchFocus: researchFocus.focus,
+    researchFocusLabel: researchFocus.label,
+    researchFocusAdjustment: researchFocus.adjustment,
+    researchFocusReason: researchFocus.reason,
     tldr: normalizeText(analysis.tldr),
     valueHighlight: normalizeText(highValueSignalForScore(score, scores, { ...analysis, interestFit: interest.fit, interestReason })),
     problem: normalizeText(analysis.problem),
@@ -3360,7 +3381,12 @@ const normalizeReadingListReview = (paper, review = {}) => {
     interestReason: review.interestReason || paper?.analysis?.interestReason
   });
   const interestReason = normalizeText(review.interestReason) || normalizeText(paper?.analysis?.interestReason) || interest.reason;
-  const score = weightedScore(scores, interest.fit);
+  const researchFocus = inferResearchFocus({
+    paper,
+    analysis: { ...paper?.analysis, ...review },
+    allowExplicit: false
+  });
+  const score = researchQualityScore(scores);
   const dimensionDetails = dimensions.map((dimension) => ({
     key: dimension.key,
     label: dimension.label,
@@ -3401,6 +3427,10 @@ const normalizeReadingListReview = (paper, review = {}) => {
     interestLabel: interest.label,
     interestAdjustment: interest.adjustment,
     interestReason,
+    researchFocus: researchFocus.focus,
+    researchFocusLabel: researchFocus.label,
+    researchFocusAdjustment: researchFocus.adjustment,
+    researchFocusReason: researchFocus.reason,
     dimensionDetails,
     matchedDimensions,
     tldr: normalizeText(review.tldr) || normalizeText(paper?.analysis?.tldr),
@@ -3437,6 +3467,10 @@ const applyReadingListReviews = (papers, reviews, { allowMissing = false } = {})
       interestLabel: readingListReview.interestLabel,
       interestAdjustment: readingListReview.interestAdjustment,
       interestReason: readingListReview.interestReason,
+      researchFocus: readingListReview.researchFocus,
+      researchFocusLabel: readingListReview.researchFocusLabel,
+      researchFocusAdjustment: readingListReview.researchFocusAdjustment,
+      researchFocusReason: readingListReview.researchFocusReason,
       dimensionDetails: readingListReview.dimensionDetails,
       matchedDimensions: readingListReview.matchedDimensions,
       tldr: readingListReview.tldr || paper.analysis?.tldr || "",
@@ -4608,6 +4642,15 @@ const serveStatic = async (request, response) => {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (url.pathname === "/api/health") {
+    if (request.method !== "GET") {
+      sendJson(response, 405, { error: "METHOD_NOT_ALLOWED" });
+      return;
+    }
+    sendJson(response, 200, { status: "ok" });
+    return;
+  }
 
   if (url.pathname === "/api/papers") {
     await handlePapersRequest(request, response);

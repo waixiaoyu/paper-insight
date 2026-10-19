@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   weeklyReportManualReviewInFlightView,
   weeklyReportManualReviewPresentationKey,
+  weeklyReportManualReviewRenderKey,
   weeklyReportManualReviewView
 } from "../public/manual-review-view.js";
 
@@ -156,6 +157,27 @@ test("manual review presentation key changes for the next issue and for a repeat
   assert.notEqual(
     weeklyReportManualReviewPresentationKey(first),
     weeklyReportManualReviewPresentationKey(repeatedAfterRepair)
+  );
+});
+
+test("manual review render key stays stable during polling but changes for visible user state", () => {
+  const base = {
+    presentationKey: "weekly-report-job-1|issue-1|2026-09-15T10:00:00.000Z",
+    selectedItemId: "issue-1",
+    reason: ""
+  };
+
+  assert.equal(
+    weeklyReportManualReviewRenderKey(base),
+    weeklyReportManualReviewRenderKey({ ...base })
+  );
+  assert.notEqual(
+    weeklyReportManualReviewRenderKey(base),
+    weeklyReportManualReviewRenderKey({ ...base, selectedItemId: "issue-2" })
+  );
+  assert.notEqual(
+    weeklyReportManualReviewRenderKey(base),
+    weeklyReportManualReviewRenderKey({ ...base, reason: "人工纳入原因" })
   );
 });
 

@@ -5,6 +5,7 @@ import {
 } from "./prompts.js";
 import { EVIDENCE_FIELDS } from "./schema.js";
 import { applyCredibilityGatePolicy } from "./credibility-gate-policy.js";
+import { resolveAuthoritativeAffiliations } from "./publication-metadata.js";
 
 export const REVIEW_SCORE_DIMENSIONS = Object.freeze([
   "scenarioProblemValue",
@@ -87,6 +88,10 @@ export const calculateReviewRawScore = (scores = {}) => {
 
 const parseModelJson = (raw) => {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const keys = Object.keys(raw);
+    if (keys.length === 1 && keys[0] === "answer") {
+      return parseModelJson(raw.answer);
+    }
     if (raw.paperId && raw.evidenceValidation) {
       return raw;
     }
@@ -119,6 +124,78 @@ const evidenceRefsFor = (item = {}) => new Set(EVIDENCE_FIELDS.flatMap((field) =
   (Array.isArray(item.evidenceCard?.[field]?.sources) ? item.evidenceCard[field].sources : [])
     .map((_, index) => `${field}:${index}`)
 )));
+
+const normalizedAffiliationOriginal = (value) => normalizeText(value, 300)
+  .replace(/[.,;:，。；：]+$/u, "");
+
+const affiliationEvidenceOriginals = (item = {}) => (
+  item?.evidenceCard?.affiliations?.status === "supported"
+    ? resolveAuthoritativeAffiliations({
+      publicationMetadata: item?.contextPacket?.publicationMetadata,
+      evidenceSources: item?.evidenceCard?.affiliations?.sources
+    })
+    : []
+);
+
+const affiliationEvidenceContainsExactOriginal = (item = {}, originalName = "") => {
+  const needle = normalizeText(originalName, 300);
+  if (!needle) return false;
+  const boundaryCharacter = /[\p{L}\p{N}]/u;
+  return (Array.isArray(item?.evidenceCard?.affiliations?.sources)
+    ? item.evidenceCard.affiliations.sources
+    : []).some((source) => {
+    const haystack = normalizeText(source?.originalName || source?.excerpt, 12000);
+    let start = haystack.indexOf(needle);
+    while (start >= 0) {
+      const before = start > 0 ? haystack[start - 1] : "";
+      const afterIndex = start + needle.length;
+      const after = afterIndex < haystack.length ? haystack[afterIndex] : "";
+      if ((!before || !boundaryCharacter.test(before))
+        && (!after || !boundaryCharacter.test(after))) {
+        return true;
+      }
+      start = haystack.indexOf(needle, start + 1);
+    }
+    return false;
+  });
+};
+
+const hasBalancedAsciiParentheses = (value) => {
+  let depth = 0;
+  for (const character of String(value || "")) {
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+};
+
+const hasValidLocalizedParentheses = (value) => {
+  let depth = 0;
+  for (const character of String(value || "")) {
+    if (character === "（") depth += 1;
+    if (character === "）") depth -= 1;
+    if (depth < 0) return false;
+  }
+  return depth === 0 && !/（[^（）]*[A-Za-z][^（）]*）/u.test(value);
+};
+
+const parseAffiliationDisplay = (value) => {
+  const text = normalizeText(value, 300);
+  if (!text.endsWith("）")) return null;
+  const wrapperStart = text.lastIndexOf("（");
+  if (wrapperStart <= 0) return null;
+  const displayName = normalizeText(text.slice(0, wrapperStart), 300);
+  const originalName = normalizeText(text.slice(wrapperStart + 1, -1), 300);
+  if (!displayName
+    || !originalName
+    || !hasValidLocalizedParentheses(displayName)
+    || !/[A-Za-z]/u.test(originalName)
+    || !hasBalancedAsciiParentheses(originalName)) {
+    return null;
+  }
+  return { displayName, originalName };
+};
 
 export const validateReviewResult = (value, { item } = {}) => {
   const issues = [];
@@ -244,19 +321,70 @@ export const validateReviewResult = (value, { item } = {}) => {
     requiredText.interestReason = NORMALIZED_INTEREST_REASONS[interestFit];
   }
 
+  const supportedAffiliationOriginals = affiliationEvidenceOriginals(item);
+  const supportedAffiliationOriginalKeys = new Set(
+    supportedAffiliationOriginals.map((entry) => normalizedAffiliationOriginal(entry.originalName))
+  );
   const affiliations = (Array.isArray(value.affiliations) ? value.affiliations : [])
     .slice(0, 20)
     .map((entry) => normalizeText(entry, 300))
     .filter(Boolean);
   affiliations.forEach((affiliation, index) => {
-    if (!/\p{Script=Han}/u.test(affiliation)) {
+    const parsedAffiliation = parseAffiliationDisplay(affiliation);
+    const originalOnlyName = parsedAffiliation
+      && normalizedAffiliationOriginal(parsedAffiliation.displayName)
+        === normalizedAffiliationOriginal(parsedAffiliation.originalName);
+    const evidenceBackedOriginalOnlyName = originalOnlyName
+      && affiliationEvidenceContainsExactOriginal(item, parsedAffiliation.originalName);
+    if (!/\p{Script=Han}/u.test(affiliation) && !evidenceBackedOriginalOnlyName) {
       issues.push(validationIssue(
         "affiliation_not_chinese",
         `affiliations[${index}]`,
         "Affiliation must include a Chinese institution name."
       ));
     }
+    if (!parsedAffiliation) {
+      const malformedWrapper = /[（）]/u.test(affiliation);
+      issues.push(validationIssue(
+        malformedWrapper ? "affiliation_display_format_invalid" : "affiliation_original_name_missing",
+        `affiliations[${index}]`,
+        malformedWrapper
+          ? "Affiliation must use exactly one final 中文译名（英文原名） wrapper with no trailing text."
+          : "Affiliation must preserve the original institution name in parentheses."
+      ));
+    } else if (supportedAffiliationOriginalKeys.size
+      && !supportedAffiliationOriginalKeys.has(
+        normalizedAffiliationOriginal(parsedAffiliation.originalName)
+      )) {
+      issues.push(validationIssue(
+        "affiliation_original_name_mismatch",
+        `affiliations[${index}]`,
+        "Affiliation original name must exactly match a supported affiliation Evidence source."
+      ));
+    }
   });
+  const returnedAffiliationOriginalKeys = new Set(affiliations
+    .map((affiliation) => parseAffiliationDisplay(affiliation))
+    .filter(Boolean)
+    .map((entry) => normalizedAffiliationOriginal(entry.originalName)));
+  const missingAffiliationOriginals = supportedAffiliationOriginals.filter((entry) => (
+    !returnedAffiliationOriginalKeys.has(normalizedAffiliationOriginal(entry.originalName))
+  ));
+  if (affiliations.length && missingAffiliationOriginals.length) {
+    issues.push(validationIssue(
+      "supported_affiliations_incomplete",
+      "affiliations",
+      "Review must preserve every server-owned publication affiliation."
+    ));
+  }
+  if (item?.evidenceCard?.affiliations?.status === "supported" && !affiliations.length) {
+    issues.push(validationIssue(
+      "supported_affiliations_omitted",
+      "affiliations",
+      "Supported affiliation Evidence requires at least one publication affiliation."
+    ));
+  }
+
 
   const knownEvidenceRefs = evidenceRefsFor(item);
   const affiliationEvidenceRefs = [...new Set((Array.isArray(value.affiliationEvidenceRefs)
@@ -308,6 +436,35 @@ export const validateReviewResult = (value, { item } = {}) => {
     reviewResult,
     normalizations
   };
+};
+
+const AFFILIATION_FALLBACK_ISSUE_CODES = new Set([
+  "affiliation_not_chinese",
+  "affiliation_display_format_invalid",
+  "affiliation_original_name_missing",
+  "affiliation_original_name_mismatch",
+  "supported_affiliations_omitted",
+  "supported_affiliations_incomplete",
+  "affiliation_evidence_ref_invalid",
+  "affiliation_evidence_missing"
+]);
+
+const reviewWithEvidenceAffiliationFallback = (validation, item) => {
+  const validationIssues = Array.isArray(validation?.issues) ? validation.issues : [];
+  if (!validation?.reviewResult
+    || !validationIssues.length
+    || validationIssues.some((entry) => !AFFILIATION_FALLBACK_ISSUE_CODES.has(entry.code))) {
+    return null;
+  }
+  const evidenceOriginals = affiliationEvidenceOriginals(item);
+  if (!evidenceOriginals.length) return null;
+
+  const fallbackValidation = validateReviewResult({
+    ...validation.reviewResult,
+    affiliations: evidenceOriginals.map((entry) => `原文单位（${entry.originalName}）`),
+    affiliationEvidenceRefs: evidenceOriginals.map((entry) => entry.evidenceRef)
+  }, { item });
+  return fallbackValidation.valid ? fallbackValidation.reviewResult : null;
 };
 
 export class ReviewAgentError extends Error {
@@ -555,11 +712,30 @@ export const runReviewAgent = async ({
         currentItem
       );
       if (!validation.valid) {
-        throw new ReviewAgentError("Review result remains invalid after one structured repair.", {
-          code: "READING_LIST_REVIEW_UNSUPPORTED",
+        const fallbackReview = reviewWithEvidenceAffiliationFallback(validation, currentItem);
+        if (!fallbackReview) {
+          throw new ReviewAgentError("Review result remains invalid after one structured repair.", {
+            code: "READING_LIST_REVIEW_UNSUPPORTED",
+            paperId,
+            issues: validation.issues
+          });
+        }
+        await onEvent?.({
+          type: "review_affiliations_fallback_applied",
+          stage: "review",
+          scope: "paper",
           paperId,
-          issues: validation.issues
+          severity: "warning",
+          issues: validation.issues,
+          affiliations: fallbackReview.affiliations,
+          message: "Review 单位格式修正耗尽，已保留其余有效评分并使用 Evidence 原文单位。"
         });
+        validation = {
+          valid: true,
+          issues: [],
+          reviewResult: fallbackReview,
+          normalizations: []
+        };
       }
     }
     return validation.reviewResult;

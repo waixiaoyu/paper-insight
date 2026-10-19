@@ -62,32 +62,33 @@ const mockLlmServer = createServer(async (request, response) => {
   }));
 });
 
-test("recommendation scores use the four-dimension weighted average plus interest adjustment", async () => {
+test("recommendation scores use research quality plus the deterministic research-focus adjustment", async () => {
   const previousGenerationText = mockGenerationText;
   const papers = [
     {
       id: "2608.30001",
-      title: "Balanced recommendation candidate",
+      title: "A Reliable Agent Harness for Long-Running Tasks",
       authors: ["Test Author"],
       categories: ["cs.AI"],
       primaryCategory: "cs.AI",
       published: "2026-08-28T00:00:00Z",
-      summary: "A balanced general AI systems paper."
+      summary: "The agent harness provides tool orchestration, memory, recovery, and observability."
     },
     {
       id: "2608.30002",
-      title: "Evidence-limited recommendation candidate",
+      title: "Low-Bit Quantization for Large Language Models",
       authors: ["Test Author"],
       categories: ["cs.AI"],
       primaryCategory: "cs.AI",
       published: "2026-08-28T00:00:00Z",
-      summary: "A general AI systems paper with limited evidence."
+      summary: "A model-internal method for weight quantization and efficient inference."
     }
   ];
   const analysisFor = (paper, scores) => ({
     id: paper.id,
     score: 0,
     scores,
+    researchFocus: "network_ai",
     interestFit: "general_ai_system",
     interestReason: "The method is transferable to general AI systems.",
     tldr: "A concrete recommendation judgment.",
@@ -143,7 +144,15 @@ test("recommendation scores use the four-dimension weighted average plus interes
     assert.equal(response.status, 200, payload.detail || payload.message);
     assert.deepEqual(
       payload.analyzedPapers.map((paper) => paper.analysis.score),
-      [72, 76]
+      [75, 70]
+    );
+    assert.deepEqual(
+      payload.analyzedPapers.map((paper) => paper.analysis.researchFocus),
+      ["agent_harness", "model_internals"]
+    );
+    assert.deepEqual(
+      payload.analyzedPapers.map((paper) => paper.analysis.researchFocusLabel),
+      ["Agent / Harness", "模型内部与底层优化"]
     );
   } finally {
     mockGenerationText = previousGenerationText;
@@ -235,6 +244,7 @@ test("primary hardware papers never enter the recommendation list", async () => 
     assert.ok(excluded);
     assert.equal(excluded.analysis.recommendationEligible, false);
     assert.equal(excluded.analysis.scopeExclusionCode, "primary_hardware_domain");
+    assert.equal(excluded.analysis.score, 82);
     assert.match(excluded.analysis.notRecommendReason, /硬件/);
     const excludedRtl = payload.hiddenPapers.find((paper) => paper.id === "2602.00704");
     assert.ok(excludedRtl);
@@ -328,8 +338,8 @@ test("首页和静态资源仍可访问", async () => {
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-type") || "", /text\/html/);
   const html = await page.text();
-  assert.match(html, /weekly-report-trace-summary-v2026-08-31/);
-  assert.match(html, /<script src="\/app\.js\?v=glm-5\.3-default-v2026-09-14" type="module"><\/script>/);
+  assert.match(html, /<link rel="stylesheet" href="\/styles\.css\?v=[^"]+">/);
+  assert.match(html, /<script src="\/app\.js\?v=[^"]+" type="module"><\/script>/);
   assert.match(html, /id="weeklyReportTraceDialog"/);
   assert.match(html, /id="weeklyReportJobHealth"/);
   assert.match(html, /id="weeklyReportTraceReconnect"/);
@@ -404,12 +414,19 @@ test("首页和静态资源仍可访问", async () => {
   );
 });
 
+test("轻量健康检查不读取周报任务详情", async () => {
+  const response = await fetch(`${baseUrl}/api/health`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "ok" });
+});
+
 test("周报弹窗只使用外层纵向滚动", async () => {
   const styles = await fetch(`${baseUrl}/styles.css`);
   assert.equal(styles.status, 200);
   const stylesheet = await styles.text();
   assert.match(stylesheet, /\.reading-list-output\s*\{[^}]*overflow:\s*hidden/s);
   assert.doesNotMatch(stylesheet, /\.reading-list-output\s*\{[^}]*overflow:\s*auto/s);
+  assert.match(stylesheet, /\.weekly-report-trace-shell\s*\{[^}]*overflow-anchor:\s*none/s);
 });
 
 test("周报弹窗在关键状态时显示进度区", async () => {
@@ -604,6 +621,12 @@ test("GLM-5.3 默认使用 Coding OpenAI 接口和系统消息", async () => {
   assert.equal(request.payload.reasoning_effort, "low");
   assert.equal(request.payload.messages[0].role, "system");
   assert.match(request.payload.messages[0].content, /论文周报编辑/);
+  const generationPrompt = request.payload.messages.map((message) => String(message.content || "")).join(" ");
+  assert.match(generationPrompt, /12-32 个字符的学术描述性短语/);
+  assert.match(generationPrompt, /不使用问句、新闻标题/);
+  assert.match(generationPrompt, /按 1-3 个真实主题分组/);
+  assert.match(generationPrompt, /公开分发的模型文件/);
+  assert.match(generationPrompt, /不要写成“分布式模型构件”/);
   assert.equal(request.payload.system, undefined);
 });
 

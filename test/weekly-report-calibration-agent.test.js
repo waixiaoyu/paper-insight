@@ -138,6 +138,41 @@ test("Calibration validation rejects direct score changes and unknown comparison
   assert.equal(comparisonValidation.issues.some((issue) => issue.code === "comparison_paper_unknown"), true);
 });
 
+test("Calibration validation rejects unknown fields and a non-array suspicion list", () => {
+  const items = [reviewItemFor("2607.30101"), reviewItemFor("2607.30102")];
+  const response = calibrationResponseFor(items, {
+    "2607.30101": {
+      status: "rereview_required",
+      suspectedMisjudgments: [{
+        dimension: "evidence",
+        direction: "overrated",
+        reason: "The evidence appears weak relative to the comparison.",
+        comparisonPaperIds: ["2607.30102"]
+      }]
+    }
+  });
+  response.unexpectedTopLevel = true;
+  response.results[0].unexpectedResultField = true;
+  response.results[0].suspectedMisjudgments[0].unexpectedSuspicionField = true;
+  response.results[1].suspectedMisjudgments = "none";
+
+  const validation = validateCalibrationResponse(response, { items, phase: "initial" });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "calibration_field_forbidden" && entry.path === "response.unexpectedTopLevel"
+  )), true);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "calibration_field_forbidden" && entry.path.endsWith(".unexpectedResultField")
+  )), true);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "calibration_field_forbidden" && entry.path.endsWith(".unexpectedSuspicionField")
+  )), true);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "calibration_suspicions_invalid" && entry.path === "results[1].suspectedMisjudgments"
+  )), true);
+});
+
 test("Calibration validation unwraps only an unambiguous answer results envelope", () => {
   const items = [reviewItemFor("2609.05881"), reviewItemFor("2609.05802")];
   const response = calibrationResponseFor(items);
@@ -166,6 +201,201 @@ test("Calibration validation unwraps only an unambiguous answer results envelope
   }, { items, phase: "confirm" });
   assert.equal(stringAnswerValidation.valid, false);
   assert.equal(stringAnswerValidation.issues.some((entry) => entry.code === "schema_invalid"), true);
+});
+
+test("Calibration missing-result repair requests only missing papers and merges retained results", async () => {
+  const items = [
+    reviewItemFor("2609.10001"),
+    reviewItemFor("2609.10002"),
+    reviewItemFor("2609.10003")
+  ];
+  const calls = [];
+
+  const result = await calibrateReviewBatch(items, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      calls.push(payload);
+      if (payload.task === "weekly_report_calibration") {
+        return calibrationResponseFor(items.slice(0, 2));
+      }
+      if (payload.task === "weekly_report_calibration_repair") {
+        return calibrationResponseFor(items.slice(2));
+      }
+      throw new Error(`Unexpected task ${payload.task}`);
+    }
+  });
+
+  assert.deepEqual(calls.map((payload) => payload.task), [
+    "weekly_report_calibration",
+    "weekly_report_calibration_repair"
+  ]);
+  assert.deepEqual(calls[1].papers.map((paper) => paper.paperId), [
+    "2609.10001",
+    "2609.10002",
+    "2609.10003"
+  ]);
+  assert.deepEqual(calls[1].requestedPaperIds, ["2609.10003"]);
+  assert.deepEqual(result.succeeded.map((item) => item.reviewResult.paperId), [
+    "2609.10001",
+    "2609.10002",
+    "2609.10003"
+  ]);
+});
+
+test("Calibration missing-result merge preserves status-normalization Trace events", async () => {
+  const items = [
+    reviewItemFor("2609.10101"),
+    reviewItemFor("2609.10102"),
+    reviewItemFor("2609.10103")
+  ];
+  const events = [];
+
+  await calibrateReviewBatch(items, {
+    networkRetryDelayMs: 0,
+    onEvent: async (event) => events.push(event),
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      if (payload.task === "weekly_report_calibration") {
+        return calibrationResponseFor(items.slice(0, 2), {
+          "2609.10101": {
+            status: "consistent",
+            suspectedMisjudgments: [{
+              dimension: "evidence",
+              direction: "overrated",
+              reason: "Its evidence appears weaker than the comparison paper.",
+              comparisonPaperIds: ["2609.10102"]
+            }]
+          }
+        });
+      }
+      if (payload.task === "weekly_report_calibration_repair") {
+        return calibrationResponseFor(items.slice(2));
+      }
+      if (payload.task === "weekly_report_targeted_rereview") {
+        return {
+          paperId: "2609.10101",
+          dimensions: {
+            evidence: { score: 55, reason: "The evaluation evidence is limited." }
+          }
+        };
+      }
+      return calibrationResponseFor(items, {
+        "2609.10101": { status: "repaired" }
+      });
+    }
+  });
+
+  assert.equal(events.some((event) => (
+    event.type === "calibration_status_normalized"
+    && event.paperId === "2609.10101"
+    && event.from === "consistent"
+    && event.to === "rereview_required"
+  )), true);
+});
+
+test("Calibration missing-result repair regenerates the full cohort when retained output has unknown fields", async () => {
+  const items = [reviewItemFor("2609.10201"), reviewItemFor("2609.10202")];
+  const calls = [];
+  const result = await calibrateReviewBatch(items, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      calls.push(payload);
+      if (payload.task === "weekly_report_calibration") {
+        const partial = calibrationResponseFor(items.slice(0, 1), {
+          "2609.10201": { readingTier: "skim" }
+        });
+        partial.results[0].unexpectedField = "must not be retained";
+        return partial;
+      }
+      return calibrationResponseFor(items, {
+        "2609.10201": { readingTier: "must_read" }
+      });
+    }
+  });
+
+  assert.equal(calls[1].requestedPaperIds, undefined);
+  assert.deepEqual(calls[1].papers.map((paper) => paper.paperId), ["2609.10201", "2609.10202"]);
+  assert.equal(result.succeeded[0].calibrationResult.readingTier, "must_read");
+});
+
+test("Calibration confirmation repairs only missing papers while retaining rereview context", async () => {
+  const items = [reviewItemFor("2609.10301"), reviewItemFor("2609.10302")];
+  const calls = [];
+  const result = await calibrateReviewBatch(items, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const payload = JSON.parse(prompt);
+      calls.push(payload);
+      if (payload.task === "weekly_report_calibration") {
+        return calibrationResponseFor(items, {
+          "2609.10301": {
+            status: "rereview_required",
+            suspectedMisjudgments: [{
+              dimension: "evidence",
+              direction: "overrated",
+              reason: "The evidence appears weaker than the comparison paper.",
+              comparisonPaperIds: ["2609.10302"]
+            }]
+          }
+        });
+      }
+      if (payload.task === "weekly_report_targeted_rereview") {
+        return {
+          paperId: "2609.10301",
+          dimensions: {
+            evidence: { score: 55, reason: "The evidence remains limited." }
+          }
+        };
+      }
+      if (payload.task === "weekly_report_calibration_confirm") {
+        return calibrationResponseFor(items.slice(0, 1), {
+          "2609.10301": { status: "repaired" }
+        });
+      }
+      return calibrationResponseFor(items.slice(1));
+    }
+  });
+
+  const repair = calls.find((payload) => payload.task === "weekly_report_calibration_confirm_repair");
+  assert.deepEqual(repair.requestedPaperIds, ["2609.10302"]);
+  assert.deepEqual(repair.papers.map((paper) => paper.paperId), ["2609.10301", "2609.10302"]);
+  assert.deepEqual(repair.rereviewedDimensions, { "2609.10301": ["evidence"] });
+  assert.match(repair.confirmationInstruction, /Confirm the cohort after targeted Review/i);
+  assert.deepEqual(result.succeeded.map((item) => item.reviewResult.paperId), [
+    "2609.10301",
+    "2609.10302"
+  ]);
+});
+
+test("Calibration patch validation allows cohort comparisons but rejects non-target results", () => {
+  const items = [reviewItemFor("2609.10401"), reviewItemFor("2609.10402")];
+  const targetResponse = calibrationResponseFor(items.slice(1), {
+    "2609.10402": {
+      status: "rereview_required",
+      suspectedMisjudgments: [{
+        dimension: "evidence",
+        direction: "overrated",
+        reason: "The target evidence appears weaker than the retained comparison paper.",
+        comparisonPaperIds: ["2609.10401"]
+      }]
+    }
+  });
+  const validPatch = validateCalibrationResponse(targetResponse, {
+    items,
+    phase: "initial",
+    requestedPaperIds: ["2609.10402"]
+  });
+  const retainedPaperPatch = validateCalibrationResponse(calibrationResponseFor(items.slice(0, 1)), {
+    items,
+    phase: "initial",
+    requestedPaperIds: ["2609.10402"]
+  });
+
+  assert.equal(validPatch.valid, true);
+  assert.equal(retainedPaperPatch.valid, false);
+  assert.equal(retainedPaperPatch.issues.some((entry) => entry.code === "calibration_paper_unknown"), true);
 });
 
 test("Calibration status follows suspected misjudgments when the model returns a contradictory resolved status", () => {

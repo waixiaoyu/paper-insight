@@ -1,19 +1,19 @@
 import { internalProcessWarnings } from "./internal-process-policy.js";
 
 const REQUIRED_SECTIONS = [
-  "报告导读",
-  "本周趋势判断",
-  "推荐阅读顺序",
-  "完整论文清单"
+  ["报告导读"],
+  ["本周研究观察", "本周趋势判断"],
+  ["推荐阅读顺序"],
+  ["完整论文清单"]
 ];
 
 const REQUIRED_PAPER_BLOCKS = [
-  "研究问题",
-  "核心贡献",
-  "方法框架",
-  "实验与结果",
-  "局限与适用约束",
-  "ADN 启发与阅读价值"
+  ["研究问题"],
+  ["核心贡献"],
+  ["方法框架"],
+  ["实验结论", "实验与结果"],
+  ["局限与适用约束"],
+  ["阅读价值与借鉴", "ADN 启发与阅读价值"]
 ];
 
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -284,19 +284,19 @@ export const validateWeeklyReportMarkdown = ({
 
   const titleSuffix = yamlTitle.split(/[：:]/).slice(1).join("：");
 
-  if (titleSuffix && Array.from(titleSuffix).length < 18) {
-    warnings.push("标题观点少于 18 个字符，建议人工确认是否足够具体。");
+  if (titleSuffix && Array.from(titleSuffix).length < 12) {
+    warnings.push("标题主题少于 12 个字符，建议人工确认是否足够具体。");
   }
 
   if (titleSuffix && Array.from(titleSuffix).length > 32) {
     errors.push("标题观点超过 32 个字符。");
   }
 
-  REQUIRED_SECTIONS.forEach((section) => {
-    const pattern = new RegExp(`^##\\s+${section}\\s*$`, "m");
+  REQUIRED_SECTIONS.forEach((acceptedLabels) => {
+    const present = acceptedLabels.some((label) => new RegExp(`^##\\s+${label}\\s*$`, "m").test(text));
 
-    if (!pattern.test(text)) {
-      errors.push(`缺少「${section}」章节。`);
+    if (!present) {
+      errors.push(`缺少「${acceptedLabels[0]}」章节。`);
     }
   });
 
@@ -304,11 +304,11 @@ export const validateWeeklyReportMarkdown = ({
     errors.push("完整论文清单缺少规定的四列表头。");
   }
 
-  REQUIRED_PAPER_BLOCKS.forEach((label) => {
-    const count = countLabel(text, `**${label}**`);
+  REQUIRED_PAPER_BLOCKS.forEach((acceptedLabels) => {
+    const count = acceptedLabels.reduce((sum, label) => sum + countLabel(text, `**${label}**`), 0);
 
     if (count < selectedPapers.length) {
-      errors.push(`「${label}」小节只有 ${count} 个，少于入选论文数 ${selectedPapers.length}。`);
+      errors.push(`「${acceptedLabels[0]}」小节只有 ${count} 个，少于入选论文数 ${selectedPapers.length}。`);
     }
   });
 
@@ -381,11 +381,13 @@ export const validateWeeklyReportMarkdown = ({
       ? paper.readingListReview.affiliations.map(normalizeText).filter(Boolean)
       : [];
 
-    if (expectedAffiliations.includes("单位线索不足") && !publishedAffiliations.includes("单位线索不足")) {
+    const unknownAffiliationLabels = ["单位线索不足", "原文未提供可核实的作者单位"];
+    if (expectedAffiliations.some((entry) => unknownAffiliationLabels.includes(entry))
+      && !unknownAffiliationLabels.some((entry) => publishedAffiliations.includes(entry))) {
       errors.push(`论文「${paper.title || paper.id}」的单位线索不足，发布正文却未保留该证据边界。`);
     }
 
-    const chineseAffiliations = expectedAffiliations.filter((item) => /\p{Script=Han}/u.test(item) && item !== "单位线索不足");
+    const chineseAffiliations = expectedAffiliations.filter((item) => /\p{Script=Han}/u.test(item) && !unknownAffiliationLabels.includes(item));
 
     if (chineseAffiliations.length && !chineseAffiliations.some((item) => publishedAffiliations.includes(item))) {
       errors.push(`论文「${paper.title || paper.id}」的发表单位与复评单位线索不一致。`);
@@ -395,7 +397,7 @@ export const validateWeeklyReportMarkdown = ({
       .filter((other) => other !== paper)
       .flatMap((other) => Array.isArray(other?.readingListReview?.affiliations) ? other.readingListReview.affiliations : [])
       .map(normalizeText)
-      .filter((item) => item && item !== "单位线索不足" && /\p{Script=Han}/u.test(item));
+      .filter((item) => item && !unknownAffiliationLabels.includes(item) && /\p{Script=Han}/u.test(item));
 
     if (otherAffiliations.some((item) => publishedAffiliations.includes(item) && !expectedAffiliations.includes(item))) {
       errors.push(`论文「${paper.title || paper.id}」的发表单位疑似串入其他论文。`);

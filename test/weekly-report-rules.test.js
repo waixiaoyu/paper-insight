@@ -245,9 +245,14 @@ test("legacy Selection does not fill the minimum with below-threshold papers", (
 const calibratedItem = (paperId, rawScore, readingTier, extras = {}) => ({
   paper: {
     id: paperId,
+    title: extras.title || paperId,
     published: extras.published || "2026-07-29T00:00:00.000Z",
     readingListReview: { score: extras.oldScore ?? 100 },
-    analysis: { score: extras.oldAnalysisScore ?? 100 }
+    analysis: {
+      score: extras.oldAnalysisScore ?? 100,
+      ...(extras.initialInterestFit ? { interestFit: extras.initialInterestFit } : {}),
+      ...(extras.researchFocus ? { researchFocus: extras.researchFocus } : {})
+    }
   },
   reviewResult: {
     paperId,
@@ -255,10 +260,11 @@ const calibratedItem = (paperId, rawScore, readingTier, extras = {}) => ({
     evidenceValidation: { status: "pass", issues: [] },
     scores: {
       scenarioProblemValue: rawScore,
-      methodNovelty: rawScore,
+      methodNovelty: extras.methodNovelty ?? rawScore,
       practicalValue: rawScore,
       evidence: rawScore
-    }
+    },
+    ...(extras.reviewInterestFit ? { interestFit: extras.reviewInterestFit } : {})
   },
   calibrationResult: {
     paperId,
@@ -324,6 +330,142 @@ test("new Selection publishes two threshold-qualified papers without filling the
   assert.equal(result.notSelected[0].selection.selectionReason, "below_threshold");
 });
 
+test("new Selection softly reserves three of five slots for qualified Agent, application, and network AI papers", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("foundation-95", 95, "must_read", { researchFocus: "foundation_model" }),
+    calibratedItem("internals-94", 94, "must_read", { researchFocus: "model_internals" }),
+    calibratedItem("foundation-93", 93, "must_read", { researchFocus: "foundation_model" }),
+    calibratedItem("agent-82", 82, "must_read", { researchFocus: "agent_harness" }),
+    calibratedItem("application-81", 81, "must_read", { researchFocus: "ai_application" }),
+    calibratedItem("network-80", 80, "must_read", { researchFocus: "network_ai" }),
+    calibratedItem("other-79", 79, "worth_reading", { researchFocus: "other" })
+  ], {
+    threshold: 70,
+    minSelectedCount: 3,
+    maxSelectedCount: 5
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), [
+    "foundation-95",
+    "internals-94",
+    "agent-82",
+    "application-81",
+    "network-80"
+  ]);
+  assert.equal(result.preferredFocusTarget, 3);
+  assert.equal(result.preferredFocusSelectedCount, 3);
+});
+
+test("new Selection uses only the qualified preferred papers that actually exist", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("foundation-95", 95, "must_read", { researchFocus: "foundation_model" }),
+    calibratedItem("internals-94", 94, "must_read", { researchFocus: "model_internals" }),
+    calibratedItem("foundation-93", 93, "must_read", { researchFocus: "foundation_model" }),
+    calibratedItem("agent-82", 82, "must_read", { researchFocus: "agent_harness" }),
+    calibratedItem("network-80", 80, "must_read", { researchFocus: "network_ai" })
+  ], {
+    threshold: 70,
+    maxSelectedCount: 5
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), [
+    "foundation-95",
+    "internals-94",
+    "foundation-93",
+    "agent-82",
+    "network-80"
+  ]);
+  assert.equal(result.preferredFocusTarget, 2);
+  assert.equal(result.preferredFocusSelectedCount, 2);
+});
+
+test("new Selection never uses a below-threshold preferred paper to satisfy the portfolio target", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("foundation-95", 95, "must_read", { researchFocus: "foundation_model" }),
+    calibratedItem("agent-69", 69, "worth_reading", { researchFocus: "agent_harness" }),
+    calibratedItem("network-68", 68, "worth_reading", { researchFocus: "network_ai" })
+  ], {
+    threshold: 70,
+    maxSelectedCount: 5
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["foundation-95"]);
+  assert.equal(result.preferredFocusTarget, 0);
+  assert.equal(result.preferredFocusSelectedCount, 0);
+});
+
+test("new Selection does not promote a domain-specific Agent paper without exceptional method novelty", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("foundation-95", 95, "must_read", { researchFocus: "foundation_model" }),
+    calibratedItem("internals-94", 94, "must_read", { researchFocus: "model_internals" }),
+    calibratedItem("application-83", 83, "must_read", { researchFocus: "ai_application" }),
+    calibratedItem("rare-disease-agent-82", 82, "must_read", {
+      researchFocus: "agent_harness",
+      initialInterestFit: "out_of_scope_domain",
+      reviewInterestFit: "general_ai_system",
+      methodNovelty: 90
+    }),
+    calibratedItem("network-80", 80, "must_read", { researchFocus: "network_ai" }),
+    calibratedItem("other-79", 79, "worth_reading", { researchFocus: "other" })
+  ], {
+    threshold: 70,
+    maxSelectedCount: 5
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), [
+    "foundation-95",
+    "internals-94",
+    "application-83",
+    "network-80",
+    "other-79"
+  ]);
+  const excluded = result.notSelected.find((item) => item.paper.id === "rare-disease-agent-82");
+  assert.equal(excluded.selection.selectionReason, "out_of_scope_domain");
+  assert.equal(result.preferredFocusSelectedCount, 2);
+});
+
+test("new Selection admits a domain-specific paper only when weekly review finds general value and novelty is exceptional", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("cross-domain-method-96", 96, "must_read", {
+      researchFocus: "agent_harness",
+      initialInterestFit: "out_of_scope_domain",
+      reviewInterestFit: "general_ai_system",
+      methodNovelty: 96
+    }),
+    calibratedItem("foundation-95", 95, "must_read", { researchFocus: "foundation_model" })
+  ], {
+    threshold: 70,
+    maxSelectedCount: 5
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), [
+    "cross-domain-method-96",
+    "foundation-95"
+  ]);
+  assert.equal(result.preferredFocusSelectedCount, 1);
+});
+
+test("new Selection excludes a paper that weekly review classifies as out of scope", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("review-out-of-scope-90", 90, "must_read", {
+      researchFocus: "agent_harness",
+      initialInterestFit: "general_ai_system",
+      reviewInterestFit: "out_of_scope_domain",
+      methodNovelty: 20
+    }),
+    calibratedItem("network-84", 84, "must_read", { researchFocus: "network_ai" })
+  ], {
+    threshold: 70,
+    maxSelectedCount: 5
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["network-84"]);
+  assert.equal(
+    result.notSelected.find((item) => item.paper.id === "review-out-of-scope-90")?.selection.selectionReason,
+    "out_of_scope_domain"
+  );
+});
+
 test("new Selection includes an audited eligible below-threshold paper without changing its score", () => {
   const result = selectCalibratedPapers([
     calibratedItem("paper-74", 74, "must_read"),
@@ -381,6 +523,59 @@ test("manual Selection overrides cannot bypass an explicit failed credibility ga
 
   assert.deepEqual(result.selected.map((item) => item.paper.id), ["paper-74"]);
   assert.deepEqual(result.rejectedOverridePaperIds, ["paper-gate-blocked"]);
+});
+
+test("manual Selection overrides cannot bypass an out-of-scope domain decision", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("paper-74", 74, "must_read"),
+    calibratedItem("rare-disease-agent-67", 67, "worth_reading", {
+      researchFocus: "agent_harness",
+      initialInterestFit: "out_of_scope_domain",
+      reviewInterestFit: "general_ai_system",
+      methodNovelty: 90
+    })
+  ], {
+    threshold: 70,
+    minSelectedCount: 2,
+    maxSelectedCount: 10,
+    adminSelectionOverrides: [{
+      paperId: "rare-disease-agent-67",
+      decisionId: "f65fd1f1-da78-489f-9e57-84af8d7fc213",
+      decidedAt: "2026-09-21T00:00:00.000Z",
+      reason: "人工纳入只能覆盖分数阈值，不能覆盖领域适配结论。"
+    }]
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["paper-74"]);
+  assert.equal(
+    result.notSelected.find((item) => item.paper.id === "rare-disease-agent-67")?.selection.selectionReason,
+    "out_of_scope_domain"
+  );
+  assert.deepEqual(result.rejectedOverridePaperIds, ["rare-disease-agent-67"]);
+});
+
+test("manual Selection overrides cannot bypass a weekly review out-of-scope decision", () => {
+  const result = selectCalibratedPapers([
+    calibratedItem("paper-74", 74, "must_read"),
+    calibratedItem("review-out-of-scope-67", 67, "worth_reading", {
+      researchFocus: "agent_harness",
+      initialInterestFit: "general_ai_system",
+      reviewInterestFit: "out_of_scope_domain",
+      methodNovelty: 20
+    })
+  ], {
+    threshold: 70,
+    maxSelectedCount: 10,
+    adminSelectionOverrides: [{
+      paperId: "review-out-of-scope-67",
+      decisionId: "258a3e9a-1985-4db9-b0f4-7e8cdf93d6df",
+      decidedAt: "2026-09-21T00:00:00.000Z",
+      reason: "周报复评已判定领域外，人工纳入不能绕过该结论。"
+    }]
+  });
+
+  assert.deepEqual(result.selected.map((item) => item.paper.id), ["paper-74"]);
+  assert.deepEqual(result.rejectedOverridePaperIds, ["review-out-of-scope-67"]);
 });
 
 test("new Selection leaves every below-threshold paper out of the selected cohort", () => {

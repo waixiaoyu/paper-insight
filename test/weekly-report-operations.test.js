@@ -6,9 +6,24 @@ import {
   weeklyReportDisconnectedJob,
   weeklyReportHealthState,
   weeklyReportPhaseStatus,
+  weeklyReportProgressRevealState,
   weeklyReportRequestRetryable,
   weeklyReportSelectionRows
 } from "../public/weekly-report-operations.js";
+
+test("waiting-admin progress auto-reveals once per issue instead of on every poll", () => {
+  const first = weeklyReportProgressRevealState("", "waiting:job-1|issue-1");
+  assert.deepEqual(first, { key: "waiting:job-1|issue-1", reveal: true });
+
+  const repeatedPoll = weeklyReportProgressRevealState(first.key, "waiting:job-1|issue-1");
+  assert.deepEqual(repeatedPoll, { key: "waiting:job-1|issue-1", reveal: false });
+
+  const nextIssue = weeklyReportProgressRevealState(repeatedPoll.key, "waiting:job-1|issue-2");
+  assert.deepEqual(nextIssue, { key: "waiting:job-1|issue-2", reveal: true });
+
+  const cleared = weeklyReportProgressRevealState(nextIssue.key, "");
+  assert.deepEqual(cleared, { key: "", reveal: false });
+});
 
 const paperEntry = (id, title = `Paper ${id}`) => ({
   paper: { id, title },

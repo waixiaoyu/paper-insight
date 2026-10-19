@@ -4,6 +4,7 @@ import { manualReviewDecisionStatusText, submitWeeklyReportManualReviewDecision 
 import {
   weeklyReportManualReviewInFlightView,
   weeklyReportManualReviewPresentationKey,
+  weeklyReportManualReviewRenderKey,
   weeklyReportManualReviewView
 } from "./manual-review-view.js";
 import {
@@ -17,6 +18,7 @@ import {
   weeklyReportDisconnectedJob,
   weeklyReportHealthState,
   weeklyReportPhaseStatus,
+  weeklyReportProgressRevealState,
   weeklyReportRequestRetryable,
   weeklyReportSelectionRows,
   weeklyReportWarningSummary
@@ -38,6 +40,10 @@ import {
   runConcurrentTasks,
   skipFailedAnalysisPaper
 } from "./analysis-pool.js";
+import {
+  inferResearchFocus,
+  researchFocusAdjustment
+} from "./research-focus.js";
 const dimensionLabels = {
   scenarioProblemValue: "研究问题价值",
   methodNovelty: "方法新意",
@@ -60,23 +66,23 @@ const falseNetworkDomainPattern = /\b(social network|regulatory network|protein 
 const interestFitRules = {
   target_network_autonomy: {
     label: "网络自治/电信方向",
-    adjustment: 4,
-    reason: "方向适配：命中网络自治、电信网络、ADN 或网络基础设施问题，小幅提升本轮排序优先级。"
+    adjustment: 0,
+    reason: "方向分类：论文主问题属于网络自治、电信网络、ADN 或网络基础设施。"
   },
   general_ai_system: {
     label: "通用 AI/Agent 方法",
-    adjustment: 2,
-    reason: "方向适配：属于通用 AI/Agent/系统方法，保留阅读价值，但需要进一步判断能否迁移到网络自治场景。"
+    adjustment: 0,
+    reason: "方向分类：论文属于通用 AI、Agent 或系统方法，需要另行判断能否迁移到网络自治场景。"
   },
   out_of_scope_domain: {
     label: "专用非目标领域",
-    adjustment: -6,
-    reason: "方向适配：主问题属于医学、生命科学、地理、游戏、社科、推荐等专用非目标领域，小幅降低本轮推荐优先级。"
+    adjustment: 0,
+    reason: "方向分类：论文主问题属于医学、生命科学、地理、游戏、社科、推荐等专用非目标领域。"
   },
   unclear: {
     label: "方向相关性不明",
-    adjustment: -2,
-    reason: "方向适配：暂时没有看到明确的网络自治/电信网络信号，也缺少足够清楚的通用可迁移方法，仅轻微后移。"
+    adjustment: 0,
+    reason: "方向分类：暂时没有看到明确的网络自治、电信网络或通用可迁移方法信号。"
   }
 };
 const interestFitAliases = {
@@ -400,8 +406,10 @@ const state = {
   readingListTrace: null,
   manualReviewSelectedItemId: "",
   manualReviewPresentedKey: "",
+  manualReviewRenderedKey: "",
   manualReviewInFlight: null,
   manualReviewRetryDecision: null,
+  readingListProgressRevealKey: "",
   readingListLiveStatus: null,
   readingListSourceExpanded: false,
   progressState: null,
@@ -867,7 +875,11 @@ function findHistoricalAnalysis(paper) {
 
   for (const report of state.reports) {
     for (const item of reportPapers(report)) {
-      if (!item?.analysis || typeof item.analysis.recommendationEligible !== "boolean") {
+      if (
+        !item?.analysis
+        || typeof item.analysis.recommendationEligible !== "boolean"
+        || !item.analysis.researchFocus
+      ) {
         continue;
       }
 
@@ -951,8 +963,8 @@ function weightedPaperScore(paper) {
     return null;
   }
 
-  const interest = interestCalibrationForPaper(paper);
-  return Math.round(clamp(quality + interest.adjustment));
+  const researchFocus = inferResearchFocus({ paper, analysis: paper?.analysis });
+  return Math.round(clamp(quality + researchFocusAdjustment(researchFocus.focus)));
 }
 
 function paperScore(paper) {
@@ -970,14 +982,23 @@ function interestReasonForPaper(paper) {
   return String(analysis.interestReason || interestCalibrationForPaper(paper).reason || "").trim();
 }
 
-function interestAdjustmentText(paper) {
-  const adjustment = Number(paper?.analysis?.interestAdjustment ?? interestCalibrationForPaper(paper).adjustment) || 0;
+function researchFocusForPaper(paper) {
+  return inferResearchFocus({ paper, analysis: paper?.analysis });
+}
 
-  if (adjustment > 0) {
-    return `+${adjustment}`;
-  }
+function researchFocusLabelForPaper(paper) {
+  return paper?.analysis?.researchFocusLabel || researchFocusForPaper(paper).label;
+}
 
-  return String(adjustment);
+function researchFocusReasonForPaper(paper) {
+  return paper?.analysis?.researchFocusReason || researchFocusForPaper(paper).reason;
+}
+
+function researchFocusAdjustmentText(paper) {
+  const adjustment = Number(
+    paper?.analysis?.researchFocusAdjustment ?? researchFocusForPaper(paper).adjustment
+  ) || 0;
+  return adjustment > 0 ? `+${adjustment}` : String(adjustment);
 }
 
 const scoreTierClasses = [
@@ -1034,9 +1055,9 @@ function setScorePill(pill, paper) {
   const score = paperScore(paper);
   const tier = scoreTier(score);
   pill.textContent = `${score} 分 · ${tier.label}`;
-  const interestText = `${interestLabelForPaper(paper)} ${interestAdjustmentText(paper)} 分`;
-  pill.title = `${tier.description} ${interestText}`;
-  pill.setAttribute("aria-label", `${score} 分，${tier.label}。${tier.description} ${interestText}`);
+  const focusText = `${researchFocusLabelForPaper(paper)} ${researchFocusAdjustmentText(paper)} 分`;
+  pill.title = `${tier.description} 研究重点校准：${focusText}`;
+  pill.setAttribute("aria-label", `${score} 分，${tier.label}。${tier.description} 研究重点校准：${focusText}`);
   pill.classList.remove(...scoreTierClasses);
   pill.classList.add(tier.className);
 }
@@ -1087,17 +1108,23 @@ function industryTagsForPaper(paper) {
 }
 
 function appendIndustryTagPills(meta, paper) {
+  const focus = document.createElement("span");
+  focus.className = "industry-pill";
+  focus.textContent = researchFocusLabelForPaper(paper);
+  focus.title = `${researchFocusReasonForPaper(paper)} 排序校准 ${researchFocusAdjustmentText(paper)} 分。`;
+  meta.append(focus);
+
   const interest = document.createElement("span");
   interest.className = "industry-pill";
   interest.textContent = interestLabelForPaper(paper);
-  interest.title = `${interestReasonForPaper(paper)} 校准 ${interestAdjustmentText(paper)} 分。`;
+  interest.title = `${interestReasonForPaper(paper)} 该字段仅说明方向，不再直接调整推荐分。`;
   meta.append(interest);
 
   industryTagsForPaper(paper).forEach((tag) => {
     const pill = document.createElement("span");
     pill.className = "industry-pill";
     pill.textContent = tag;
-    pill.title = "产业/方向标签；最终推荐分由兴趣适配单独校准。";
+    pill.title = "产业/方向标签；不直接参与研究质量分。";
     meta.append(pill);
   });
 }
@@ -1133,6 +1160,12 @@ function readingListPaperPayload(paper) {
       interestLabel: interestLabelForPaper(paper),
       interestAdjustment: Number(analysis.interestAdjustment ?? interestCalibrationForPaper(paper).adjustment) || 0,
       interestReason: interestReasonForPaper(paper),
+      researchFocus: researchFocusForPaper(paper).focus,
+      researchFocusLabel: researchFocusLabelForPaper(paper),
+      researchFocusAdjustment: Number(
+        analysis.researchFocusAdjustment ?? researchFocusForPaper(paper).adjustment
+      ) || 0,
+      researchFocusReason: researchFocusReasonForPaper(paper),
       dimensionDetails,
       matchedDimensions,
       tldr: analysis.tldr || "",
@@ -2860,6 +2893,7 @@ function renderWeeklyReportManualReview(job) {
   if (!review) {
     panel.hidden = true;
     state.manualReviewPresentedKey = "";
+    state.manualReviewRenderedKey = "";
     return false;
   }
 
@@ -2874,6 +2908,16 @@ function renderWeeklyReportManualReview(job) {
   }
   const view = weeklyReportManualReviewView(review, state.manualReviewSelectedItemId);
   state.manualReviewSelectedItemId = String(view.activeItem?.itemId || "");
+  const reason = view.requiresReason
+    ? String(elements.weeklyReportManualReviewReason?.value || "").trim()
+    : "";
+  const renderKey = weeklyReportManualReviewRenderKey({
+    presentationKey,
+    selectedItemId: state.manualReviewSelectedItemId,
+    reason
+  });
+  if (state.manualReviewRenderedKey === renderKey) return shouldPresent;
+  state.manualReviewRenderedKey = renderKey;
   if (elements.weeklyReportManualReviewEyebrow) {
     elements.weeklyReportManualReviewEyebrow.textContent = inFlight?.eyebrow || "等待管理员决策";
   }
@@ -2942,7 +2986,6 @@ function renderWeeklyReportManualReview(job) {
     }
   }
   const actions = new Map(view.actions.map((action) => [action.action, action]));
-  const reason = String(elements.weeklyReportManualReviewReason?.value || "").trim();
   panel.querySelectorAll("[data-manual-review-action]").forEach((button) => {
     const action = button.dataset.manualReviewAction;
     const actionView = actions.get(action);
@@ -3346,6 +3389,16 @@ function renderWeeklyReportJobProgress(job, { connectionInterrupted = false } = 
     void loadWeeklyReportTrace(job.jobId);
   }
   const waitingForAdmin = Boolean(job?.manualReview);
+  const progressRevealKey = waitingForAdmin
+    ? `waiting:${weeklyReportManualReviewPresentationKey(job)}`
+    : connectionInterrupted
+      ? `connection:${String(job?.jobId || "")}`
+      : "";
+  const progressReveal = weeklyReportProgressRevealState(
+    state.readingListProgressRevealKey,
+    progressRevealKey
+  );
+  state.readingListProgressRevealKey = progressReveal.key;
   const health = renderWeeklyReportJobHealth(job, { connectionInterrupted });
   const healthOverridesStage = ["connection_interrupted", "possibly_stalled", "waiting_model"].includes(health?.key);
   const runningTitle = healthOverridesStage
@@ -3368,7 +3421,7 @@ function renderWeeklyReportJobProgress(job, { connectionInterrupted = false } = 
     {
       step: job?.state === "publish" ? "save" : step,
       meta: `${formatElapsedSeconds(weeklyReportJobElapsed(job))} · ${label} · ${waitingForAdmin ? "等待决策" : job?.state === "running" ? "运行中" : job?.state === "publish" ? "发布" : "拒绝"}`,
-      reveal: waitingForAdmin || connectionInterrupted
+      reveal: progressReveal.reveal
     }
   );
 }
@@ -5326,8 +5379,10 @@ function renderPaperDetail(paper) {
   const sections = document.createElement("div");
   sections.className = "analysis-detail-body";
   const detailSections = [
-    createDetailSection("方向适配", [
-      { label: "兴趣分类", body: `${interestLabelForPaper(paper)}（校准 ${interestAdjustmentText(paper)} 分）` },
+    createDetailSection("研究重点与方向", [
+      { label: "研究重点", body: `${researchFocusLabelForPaper(paper)}（排序校准 ${researchFocusAdjustmentText(paper)} 分）` },
+      { label: "重点依据", body: researchFocusReasonForPaper(paper) },
+      { label: "兴趣分类", body: interestLabelForPaper(paper) },
       { label: "判断依据", body: interestReasonForPaper(paper) }
     ]),
     createDetailSection("背景与问题", [

@@ -5,7 +5,24 @@ export const parseModelJsonObject = (raw, {
   allowTrailingProse = false
 } = {}) => {
   const invalid = () => new TypeError(`${label}：模型响应 JSON 格式不完整或有语法错误；仅允许补全末尾闭合符，不能补写缺失正文。`);
+  const unwrapAnswer = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const keys = Object.keys(value);
+    if (keys.length !== 1 || keys[0] !== "answer" || typeof value.answer !== "string") return null;
+    const parsed = parseModelJsonObject(value.answer, {
+      label, maxTrailingClosures, allowTrailingProse
+    });
+    return {
+      value: parsed.value,
+      normalization: {
+        kind: "answer_wrapper_unwrapped",
+        innerNormalization: parsed.normalization
+      }
+    };
+  };
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const unwrapped = unwrapAnswer(raw);
+    if (unwrapped) return unwrapped;
     if (raw.paperId || raw.oneSentenceTakeaway || raw.researchProblem || Array.isArray(raw.patches)) {
       return { value: raw, normalization: null };
     }
@@ -21,7 +38,10 @@ export const parseModelJsonObject = (raw, {
   const text = String(raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   // Do not extract an object from a surrounding array or discard trailing malformed content.
   if (!text.startsWith("{")) throw invalid();
-  try { return { value: JSON.parse(text), normalization: null }; } catch { /* Scan below. */ }
+  try {
+    const value = JSON.parse(text);
+    return unwrapAnswer(value) || { value, normalization: null };
+  } catch { /* Scan below. */ }
   const stack = [];
   let inString = false;
   let escaped = false;

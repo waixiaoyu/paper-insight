@@ -25,6 +25,14 @@ export const weeklyReportWarningSummary = (warning) => {
   return paperId ? `论文 ${paperId}：存在需要管理员查看的执行提醒。` : "存在需要管理员查看的执行提醒。";
 };
 
+export const weeklyReportProgressRevealState = (previousKey = "", nextKey = "") => {
+  const key = String(nextKey || "");
+  return {
+    key,
+    reveal: Boolean(key) && String(previousKey || "") !== key
+  };
+};
+
 export const weeklyReportArtifactSummary = (name, artifact = {}) => {
   const normalizedName = String(name || "").toLowerCase();
   if (["evidence-artifacts", "review-artifacts"].includes(normalizedName)) {

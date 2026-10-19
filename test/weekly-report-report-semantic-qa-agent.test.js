@@ -84,6 +84,7 @@ const headTailDraft = {
   reportIntroduction: "This week focuses on moving validation before autonomous execution.",
   trendJudgments: [{
     trendIndex: 0,
+    title: "验证环节前移到自主执行之前",
     claim: "Across both papers, validation moves ahead of autonomous execution.",
     caveat: "The available evaluation remains early.",
     supportingPaperIds: ["2608.20001", "2608.20002"],
@@ -136,6 +137,7 @@ test("Report Semantic QA prompt contains compact selected artifacts but no origi
   assert.match(parsed.rules.join(" "), /copied from an editorial plan or review is still invalid/i);
   assert.match(parsed.rules.join(" "), /Simplified Chinese/i);
   assert.match(parsed.rules.join(" "), /metaphorical, personified, slogan-like/i);
+  assert.equal(parsed.headTailDraft.trendJudgments[0].title, "验证环节前移到自主执行之前");
   assert.deepEqual(parsed.papers.map((paper) => paper.paperId), ["2608.20001", "2608.20002"]);
   assert.match(serialized, /Reading value 2608\.20001/);
   assert.doesNotMatch(serialized, /ABSTRACT_MUST_NOT_ENTER_REPORT_QA/);
@@ -178,6 +180,37 @@ test("Report Semantic QA deterministically blocks English Head/Tail when zh-CN i
   assert.equal(result.qaResult.status, "repair_required");
   assert.equal(result.qaResult.checks.readerLanguageChinese, false);
   assert.equal(result.qaResult.issues.some((issue) => issue.code === "reader_language_mismatch"), true);
+});
+
+test("Report Semantic QA includes trend titles in reader-language validation", async () => {
+  const titleOnlyDraft = {
+    ...headTailDraft,
+    titleAngle: "",
+    description: "",
+    tags: [],
+    reportIntroduction: "",
+    trendJudgments: [{
+      ...headTailDraft.trendJudgments[0],
+      title: "自主系统正在把关键验证环节前移到实际动作执行之前",
+      claim: "",
+      caveat: ""
+    }],
+    readingOrder: headTailDraft.readingOrder.map((entry) => ({ ...entry, reason: "" })),
+    closingSummary: ""
+  };
+  const result = await reviewReportSemantics({
+    report: { title: "T", description: "D" },
+    editorialPlan,
+    headTailDraft: titleOnlyDraft,
+    selectedItems,
+    paperDrafts,
+    requiredLanguage: "zh-CN",
+    networkRetryDelayMs: 0,
+    callModel: async () => passResponse()
+  });
+
+  assert.equal(result.qaResult.status, "passed");
+  assert.equal(result.qaResult.checks.readerLanguageChinese, true);
 });
 
 test("a failed report check overrides a requested pass and targets head_tail only", async () => {

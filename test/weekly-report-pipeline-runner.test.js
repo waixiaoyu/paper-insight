@@ -633,6 +633,138 @@ test("Pipeline Runner routes a paper writer decision back to the failed paper", 
   assert.deepEqual(retryInput.paperDrafts, [{ paperId: "2608.51001" }]);
 });
 
+test("Pipeline Runner regenerates one paper from scratch when its Writer response is unavailable", async () => {
+  const failedPaperId = "2609.27337";
+  let retryInput = null;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "retry_paper",
+      itemId: `writer-${failedPaperId}`
+    })
+  };
+  const failedItem = { paper: { id: failedPaperId } };
+  const steps = {
+    prepare: async () => ({
+      nextStage: "manual_review",
+      selectedItems: [
+        { paper: { id: "2608.51001" } },
+        failedItem
+      ],
+      paperDrafts: [{ paperId: "2608.51001" }],
+      paperDraftResult: {
+        failed: [{
+          item: failedItem,
+          error: {
+            paperId: failedPaperId,
+            code: "READING_LIST_PAPER_SECTION_UNSUPPORTED",
+            paperDraft: { paperId: failedPaperId }
+          }
+        }]
+      },
+      paperSectionRetry: { paperId: failedPaperId, issues: [{ code: "writer_text_missing" }], attempt: 2 },
+      manualReview: {
+        stage: "write_paper_sections",
+        activeItemId: `writer-${failedPaperId}`,
+        items: [{
+          itemId: `writer-${failedPaperId}`,
+          paperId: failedPaperId,
+          kind: "processing_failure",
+          scope: "paper",
+          sourceStage: "write_paper_sections",
+          summary: `论文 ${failedPaperId} 的模型响应没有形成可用稿件。`,
+          allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+        }]
+      }
+    }),
+    paperSections: async (value) => {
+      retryInput = value;
+      return {
+        ...value,
+        nextStage: "publish",
+        markdown: "# Regenerated paper",
+        qaReport: { status: "passed" }
+      };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop({ reportKey: "2026-W40" }, context, {
+    buildContext: async () => ({}),
+    callModel: async () => ({}),
+    steps
+  });
+
+  assert.equal(result.state, "publish");
+  assert.equal(retryInput.nextStage, "write_paper_sections");
+  assert.equal(retryInput.paperSectionRetry, null);
+  assert.deepEqual(retryInput.paperDrafts, [{ paperId: "2608.51001" }]);
+});
+
+test("Pipeline Runner retries only one failed Paper Semantic QA and retains passed results", async () => {
+  const failedPaperId = "2609.05002";
+  const retainedResult = { paperId: "2609.05001", status: "passed", issues: [] };
+  let retryInput = null;
+  const context = {
+    ...executionContext(),
+    requestManualReview: async () => ({
+      action: "retry_paper",
+      itemId: `paper-semantic-${failedPaperId}`
+    })
+  };
+  const steps = {
+    prepare: transition("prepare", "manual_review", [], {
+      selectedItems: [
+        { paper: { id: retainedResult.paperId } },
+        { paper: { id: failedPaperId } }
+      ],
+      paperDrafts: [
+        { paperId: retainedResult.paperId },
+        { paperId: failedPaperId }
+      ],
+      qaReport: {
+        status: "rejected",
+        paperSemanticResults: [retainedResult]
+      },
+      manualReview: {
+        stage: "paper_semantic_qa",
+        activeItemId: `paper-semantic-${failedPaperId}`,
+        items: [{
+          itemId: `paper-semantic-${failedPaperId}`,
+          paperId: failedPaperId,
+          kind: "processing_failure",
+          scope: "paper",
+          sourceStage: "paper_semantic_qa",
+          summary: "该论文的语义 QA 返回格式无效。",
+          allowedActions: ["retry_paper", "skip_paper", "exit_task"]
+        }]
+      }
+    }),
+    paperSemanticQa: async (value) => {
+      retryInput = value;
+      return {
+        ...value,
+        nextStage: "publish",
+        markdown: "# Retried one paper",
+        qaReport: { status: "passed" }
+      };
+    }
+  };
+
+  const result = await runWeeklyReportAgentLoop(
+    { reportKey: "2026-W38" },
+    context,
+    { buildContext: async () => ({}), callModel: async () => ({}), steps }
+  );
+
+  assert.equal(retryInput.nextStage, "paper_semantic_qa");
+  assert.equal(retryInput.paperSemanticQaRetry.paperId, failedPaperId);
+  assert.equal(retryInput.paperSemanticQaRetry.attempt, 1);
+  assert.equal(retryInput.paperSemanticQaRetryAttempts[failedPaperId], 1);
+  assert.deepEqual(retryInput.qaReport.paperSemanticResults, [retainedResult]);
+  assert.equal(retryInput.qaReport.status, "passed");
+  assert.equal(result.state, "publish");
+});
+
 test("Pipeline Runner restarts calibration after an administrator skips one paper", async () => {
   const calls = [];
   let calibrationInput;

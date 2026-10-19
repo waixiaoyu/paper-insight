@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   PaperSemanticQaError,
   reviewPaperSemantics,
-  reviewPaperSemanticsBatch
+  reviewPaperSemanticsBatch,
+  validatePaperSemanticQaResponse
 } from "../weekly-report/paper-semantic-qa-agent.js";
 import {
   buildPaperSemanticQaPrompt,
@@ -285,6 +286,95 @@ test("a false QA check without its detailed issue uses response repair instead o
   assert.equal(result.qaResult.status, "passed");
   assert.equal(result.responseRepairAttempted, true);
   assert.equal(prompts[1].task, "weekly_report_paper_semantic_qa_response_repair");
+});
+
+test("an experimental denominator mismatch may satisfy experiment and number checks with one issue", () => {
+  const item = itemFor("2605.30002");
+  const validation = validatePaperSemanticQaResponse({
+    ...passResponse(item.paper.id),
+    verdict: "repair_required",
+    checks: checks({ experimentsGrounded: false, numbersGrounded: false }),
+    issues: [{
+      code: "unsupported_number",
+      severity: "medium",
+      field: "experimentsAndResults.text",
+      claim: "在九个领域中的六个上取得最低误差",
+      reason: "证据写的是八个可比领域中的六个。",
+      evidenceRefs: ["results:1", "experiments:1"]
+    }]
+  }, {
+    item,
+    paperDraft: draftFor(item.paper.id)
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.qaResult.status, "repair_required");
+  assert.equal(validation.qaResult.issues[0].code, "unsupported_number");
+});
+
+test("an unrelated number issue cannot satisfy a failed experiment check", () => {
+  const item = itemFor("2605.30002-unrelated-number");
+  const validation = validatePaperSemanticQaResponse({
+    ...passResponse(item.paper.id),
+    verdict: "repair_required",
+    checks: checks({ experimentsGrounded: false, numbersGrounded: false }),
+    issues: [{
+      code: "unsupported_number",
+      severity: "medium",
+      field: "readingValue.whyWorthReading.text",
+      claim: "覆盖九个领域",
+      reason: "该阅读价值数字没有证据支持。",
+      evidenceRefs: ["results:0"]
+    }]
+  }, {
+    item,
+    paperDraft: draftFor(item.paper.id)
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((issue) => issue.path === "checks.experimentsGrounded"), true);
+});
+
+test("a number issue cannot satisfy experimentGrounded while numbersGrounded remains true", () => {
+  const item = itemFor("2605.30002-number-check-true");
+  const validation = validatePaperSemanticQaResponse({
+    ...passResponse(item.paper.id),
+    verdict: "repair_required",
+    checks: checks({ experimentsGrounded: false, numbersGrounded: true }),
+    issues: [{
+      code: "unsupported_number",
+      severity: "medium",
+      field: "experimentsAndResults.text",
+      claim: "在九个领域中的六个上取得最低误差",
+      reason: "证据写的是八个可比领域中的六个。",
+      evidenceRefs: ["results:1"]
+    }]
+  }, {
+    item,
+    paperDraft: draftFor(item.paper.id)
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((issue) => issue.path === "checks.experimentsGrounded"), true);
+});
+
+test("response repair accepts the first complete JSON object before echoed prompt fields", async () => {
+  const item = itemFor("2605.30002-json-suffix");
+  let callCount = 0;
+  const result = await reviewPaperSemantics({
+    item,
+    paperDraft: draftFor(item.paper.id),
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      callCount += 1;
+      if (callCount === 1) return { paperId: item.paper.id };
+      return `${JSON.stringify(passResponse(item.paper.id))},"repairInstruction":"echoed"}`;
+    }
+  });
+
+  assert.equal(callCount, 2);
+  assert.equal(result.qaResult.status, "passed");
+  assert.equal(result.responseRepairAttempted, true);
 });
 
 test("Paper Semantic QA batch uses finite concurrency and preserves paper order", async () => {

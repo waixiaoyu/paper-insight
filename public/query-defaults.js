@@ -67,6 +67,14 @@ export const queryKeywordGroups = [
       "multi-agent",
       "agentic AI",
       "autonomous agent",
+      "agent harness",
+      "agent loop",
+      "tool orchestration",
+      "agent memory",
+      "multi-agent coordination",
+      "agent evaluation",
+      "agent observability",
+      "agent recovery",
       { value: "AI", selected: false },
       { value: "machine learning", selected: false },
       { value: "deep learning", selected: false },
@@ -102,9 +110,9 @@ export const queryKeywordGroups = [
       "end-to-end framework",
       "closed-loop autonomy",
       "network automation",
-      { value: "network orchestration", selected: false },
+      "network orchestration",
       { value: "closed-loop automation", selected: false },
-      { value: "network management", selected: false },
+      "network management",
       { value: "agent-based system", selected: false },
       { value: "multi-agent system", selected: false },
       { value: "semantic communication", selected: false },
@@ -113,12 +121,12 @@ export const queryKeywordGroups = [
       { value: "network simulation", selected: false },
       { value: "protocol learning", selected: false },
       { value: "network optimization", selected: false },
-      { value: "anomaly detection", selected: false },
-      { value: "traffic prediction", selected: false },
-      { value: "root cause analysis", selected: false },
+      "anomaly detection",
+      "traffic prediction",
+      "root cause analysis",
       { value: "orchestration", selected: false },
-      { value: "fault diagnosis", selected: false },
-      { value: "alarm correlation", selected: false },
+      "fault diagnosis",
+      "alarm correlation",
       { value: "performance prediction", selected: false },
       { value: "QoS prediction", selected: false },
       { value: "routing optimization", selected: false },
@@ -126,15 +134,15 @@ export const queryKeywordGroups = [
       { value: "load balancing", selected: false },
       { value: "handover optimization", selected: false },
       { value: "capacity planning", selected: false },
-      { value: "service assurance", selected: false },
-      { value: "security monitoring", selected: false },
+      "service assurance",
+      "security monitoring",
       { value: "intrusion detection", selected: false },
       { value: "policy optimization", selected: false }
     ]
   }
 ];
 
-export const queryDefaultsVersion = "network-domain-all-2026-08";
+export const queryDefaultsVersion = "upper-layer-focus-2026-09";
 
 export const queryTermValue = (term) => typeof term === "string" ? term : term.value;
 export const queryTermDefaultSelected = (term) => typeof term === "string" || term.selected !== false;
@@ -154,6 +162,34 @@ export const buildQueryFromSelection = (selection) => queryKeywordGroups
   .filter(Boolean)
   .join(" AND ");
 
+export const legacyNetworkDomainAllDefaultQuery = buildQueryFromSelection({
+  domain: queryKeywordGroups.find((group) => group.id === "domain").terms.map(queryTermValue),
+  ai: [
+    "large language model",
+    "LLM",
+    "foundation model",
+    "AI agent",
+    "LLM agent",
+    "multi-agent",
+    "agentic AI",
+    "autonomous agent"
+  ],
+  task: [
+    "autonomous network",
+    "autonomous networking",
+    "self-driving network",
+    "zero-touch network",
+    "network digital twin",
+    "digital twin network",
+    "intent-based networking",
+    "agent framework",
+    "agentic framework",
+    "end-to-end framework",
+    "closed-loop autonomy",
+    "network automation"
+  ]
+});
+
 export const defaultQuery = buildQueryFromSelection(defaultQuerySelection());
 
 const normalizeQueryText = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -161,7 +197,8 @@ const legacyDefaultQueries = [
   legacyIndustrialDefaultQuery,
   legacyResearchBalancedDefaultQuery,
   legacyAgenticNetworkDefaultQuery,
-  legacyNoDomainDefaultQuery
+  legacyNoDomainDefaultQuery,
+  legacyNetworkDomainAllDefaultQuery
 ].map(normalizeQueryText);
 
 export const shouldResetStoredQueryDefaults = ({ storedVersion, savedQuery } = {}) => {

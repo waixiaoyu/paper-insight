@@ -40,6 +40,21 @@ const CALIBRATION_ENVELOPE_KEYS = new Set([
   "request_id",
   "usage"
 ]);
+const CALIBRATION_RESPONSE_KEYS = new Set(["results"]);
+const CALIBRATION_RESULT_KEYS = new Set([
+  "paperId",
+  "status",
+  "relativePosition",
+  "suspectedMisjudgments",
+  "readingTier",
+  "calibrationReason"
+]);
+const CALIBRATION_SUSPICION_KEYS = new Set([
+  "dimension",
+  "direction",
+  "reason",
+  "comparisonPaperIds"
+]);
 
 const normalizeText = (value, maximum = 2400) => String(value || "")
   .replace(/\s+/g, " ")
@@ -123,20 +138,28 @@ const uniqueIssues = (issues) => {
 
 export const validateCalibrationResponse = (value, {
   items = [],
-  phase = "initial"
+  phase = "initial",
+  requestedPaperIds = []
 } = {}) => {
   const rawValue = value;
   const candidates = Array.isArray(items) ? items : [];
-  const expectedOrder = candidates.map((item) => normalizedPaperId(
+  const cohortOrder = candidates.map((item) => normalizedPaperId(
     item?.reviewResult?.paperId || item?.contextPacket?.paperId || item?.paper?.id
   ));
+  const requestedIds = [...new Set((Array.isArray(requestedPaperIds) ? requestedPaperIds : [])
+    .map(normalizedPaperId)
+    .filter(Boolean))];
+  const expectedOrder = requestedIds.length ? requestedIds : cohortOrder;
   const expectedIds = new Set(expectedOrder);
+  const cohortIds = new Set(cohortOrder);
+  const candidatesById = new Map(candidates.map((item, index) => [cohortOrder[index], item]));
   const issues = findForbiddenScoreKeys(rawValue);
   const normalizations = [];
   const topLevelResults = rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)
     && Array.isArray(rawValue.results);
   const wrappedResults = rawValue?.answer && typeof rawValue.answer === "object"
     && !Array.isArray(rawValue.answer) && Array.isArray(rawValue.answer.results);
+  let unwrappedAnswer = false;
   if (topLevelResults && wrappedResults) {
     issues.push(issue(
       "calibration_result_envelope_conflict",
@@ -147,6 +170,7 @@ export const validateCalibrationResponse = (value, {
     CALIBRATION_ENVELOPE_KEYS.has(key)
   ))) {
     value = rawValue.answer;
+    unwrappedAnswer = true;
     normalizations.push({
       code: "calibration_answer_envelope_unwrapped",
       path: "response.answer.results"
@@ -164,6 +188,18 @@ export const validateCalibrationResponse = (value, {
       results: []
     };
   }
+  const allowedResponseKeys = unwrappedAnswer
+    ? CALIBRATION_RESPONSE_KEYS
+    : new Set([...CALIBRATION_RESPONSE_KEYS, ...CALIBRATION_ENVELOPE_KEYS]);
+  Object.keys(value).forEach((key) => {
+    if (!allowedResponseKeys.has(key)) {
+      issues.push(issue(
+        "calibration_field_forbidden",
+        `response.${key}`,
+        "Calibration returned an unknown response field."
+      ));
+    }
+  });
   if (value.results.length !== expectedOrder.length) {
     issues.push(issue(
       "calibration_result_count_mismatch",
@@ -179,6 +215,15 @@ export const validateCalibrationResponse = (value, {
       issues.push(issue("calibration_result_invalid", path, "Calibration result must be an object."));
       return;
     }
+    Object.keys(entry).forEach((key) => {
+      if (!CALIBRATION_RESULT_KEYS.has(key)) {
+        issues.push(issue(
+          "calibration_field_forbidden",
+          `${path}.${key}`,
+          "Calibration returned an unknown result field."
+        ));
+      }
+    });
     const id = normalizedPaperId(entry.paperId);
     if (!expectedIds.has(id)) {
       issues.push(issue("calibration_paper_unknown", `${path}.paperId`, "Calibration returned an unknown paperId."));
@@ -200,10 +245,34 @@ export const validateCalibrationResponse = (value, {
       issues.push(issue("calibration_confirm_status_invalid", `${path}.status`, "Confirmation can only return consistent, repaired or unresolved."));
     }
 
+    if (!Array.isArray(entry.suspectedMisjudgments)) {
+      issues.push(issue(
+        "calibration_suspicions_invalid",
+        `${path}.suspectedMisjudgments`,
+        "Calibration suspectedMisjudgments must be an array."
+      ));
+    }
     const suspectedMisjudgments = (Array.isArray(entry.suspectedMisjudgments)
       ? entry.suspectedMisjudgments
       : []).slice(0, 12).map((suspected, suspectedIndex) => {
       const suspectedPath = `${path}.suspectedMisjudgments[${suspectedIndex}]`;
+      if (!suspected || typeof suspected !== "object" || Array.isArray(suspected)) {
+        issues.push(issue(
+          "calibration_suspicion_invalid",
+          suspectedPath,
+          "Calibration suspected misjudgment must be an object."
+        ));
+      } else {
+        Object.keys(suspected).forEach((key) => {
+          if (!CALIBRATION_SUSPICION_KEYS.has(key)) {
+            issues.push(issue(
+              "calibration_field_forbidden",
+              `${suspectedPath}.${key}`,
+              "Calibration returned an unknown suspected-misjudgment field."
+            ));
+          }
+        });
+      }
       const dimension = normalizeText(suspected?.dimension, 80);
       const direction = normalizeText(suspected?.direction, 40).toLowerCase();
       const reason = normalizeText(suspected?.reason, 1600);
@@ -224,7 +293,7 @@ export const validateCalibrationResponse = (value, {
         issues.push(issue("comparison_paper_missing", `${suspectedPath}.comparisonPaperIds`, "A suspected misjudgment requires a comparison paper."));
       }
       comparisonPaperIds.forEach((comparisonId, comparisonIndex) => {
-        if (!expectedIds.has(comparisonId) || comparisonId === id) {
+        if (!cohortIds.has(comparisonId) || comparisonId === id) {
           issues.push(issue(
             "comparison_paper_unknown",
             `${suspectedPath}.comparisonPaperIds[${comparisonIndex}]`,
@@ -248,7 +317,7 @@ export const validateCalibrationResponse = (value, {
       normalizations.push({
         code: "calibration_status_inferred_from_suspicions",
         path: `${path}.status`,
-        paperId: String(candidates[expectedOrder.indexOf(id)]?.reviewResult?.paperId || entry.paperId || ""),
+        paperId: String(candidatesById.get(id)?.reviewResult?.paperId || entry.paperId || ""),
         from: reportedStatus,
         to: inferredStatus
       });
@@ -275,7 +344,7 @@ export const validateCalibrationResponse = (value, {
     }
 
     normalizedById.set(id, {
-      paperId: String(candidates[expectedOrder.indexOf(id)]?.reviewResult?.paperId || entry.paperId || ""),
+      paperId: String(candidatesById.get(id)?.reviewResult?.paperId || entry.paperId || ""),
       status,
       relativePosition,
       suspectedMisjudgments,
@@ -508,12 +577,13 @@ const runCalibrationCall = async ({
   invokeModel,
   onEvent
 }) => {
+  const rereviewedDimensions = Object.fromEntries(items
+    .filter((item) => item.targetedRereview)
+    .map((item) => [item.reviewResult.paperId, Object.keys(item.targetedRereview.dimensions)]));
   const prompt = phase === "confirm"
     ? buildCalibrationConfirmationPrompt({
       items,
-      rereviewedDimensions: Object.fromEntries(items
-        .filter((item) => item.targetedRereview)
-        .map((item) => [item.reviewResult.paperId, Object.keys(item.targetedRereview.dimensions)]))
+      rereviewedDimensions
     })
     : buildCalibrationPrompt({ items });
   let validation = await invokeModel({
@@ -524,18 +594,63 @@ const runCalibrationCall = async ({
   });
 
   if (!validation.valid) {
+    const repairableMissingCodes = new Set([
+      "calibration_result_count_mismatch",
+      "calibration_paper_missing"
+    ]);
+    const returnedIds = new Set((validation.results || []).map((entry) => normalizedPaperId(entry.paperId)));
+    const missingItems = items.filter((item) => !returnedIds.has(normalizedPaperId(item?.reviewResult?.paperId)));
+    const canRepairMissingOnly = missingItems.length > 0
+      && validation.issues.every((entry) => repairableMissingCodes.has(entry.code));
     await onEvent?.({
       type: "calibration_repair_requested",
       stage: "calibrate",
       phase,
       issues: validation.issues
     });
-    validation = await invokeModel({
-      prompt: buildCalibrationRepairPrompt({ items, issues: validation.issues, phase }),
+    const retainedResults = canRepairMissingOnly ? validation.results : [];
+    const requestedPaperIds = canRepairMissingOnly
+      ? missingItems.map((item) => String(item.reviewResult.paperId || ""))
+      : [];
+    const repairedValidation = await invokeModel({
+      prompt: buildCalibrationRepairPrompt({
+        items,
+        issues: validation.issues,
+        phase,
+        requestedPaperIds,
+        rereviewedDimensions
+      }),
       role: "cross_paper_calibration",
       attemptType: `${phase}_repair`,
-      validate: (value) => validateCalibrationResponse(value, { items, phase })
+      validate: (value) => validateCalibrationResponse(value, {
+        items,
+        phase,
+        requestedPaperIds
+      })
     });
+    if (canRepairMissingOnly && repairedValidation.valid) {
+      const retainedNormalizations = validation.normalizations || [];
+      const repairedById = new Map([...retainedResults, ...repairedValidation.results]
+        .map((entry) => [normalizedPaperId(entry.paperId), entry]));
+      validation = validateCalibrationResponse({
+        results: items.map((item) => repairedById.get(normalizedPaperId(item.reviewResult.paperId)))
+      }, { items, phase });
+      const seenNormalizations = new Set();
+      validation.normalizations = [
+        ...retainedNormalizations,
+        ...(repairedValidation.normalizations || []),
+        ...(validation.normalizations || [])
+      ].filter((entry) => {
+        const key = JSON.stringify(entry);
+        if (seenNormalizations.has(key)) {
+          return false;
+        }
+        seenNormalizations.add(key);
+        return true;
+      });
+    } else {
+      validation = repairedValidation;
+    }
     if (!validation.valid) {
       throw new CalibrationAgentError("Calibration response remains invalid after one structured repair.", {
         code: "READING_LIST_CALIBRATION_UNSUPPORTED",

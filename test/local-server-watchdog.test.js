@@ -46,8 +46,12 @@ const createWatchdog = (overrides = {}) => {
 };
 
 test("watchdog validates ports, paths, timing", () => {
-  assert.equal(normalizeLocalServerWatchdogConfig({ repositoryPath: process.cwd() }).port, 3100);
-  for (const config of [{}, { repositoryPath: " " }, { port: 0 }, { port: 65536 }, { intervalMs: 1 }, { startupGraceMs: -1 }]) {
+  const defaults = normalizeLocalServerWatchdogConfig({ repositoryPath: process.cwd() });
+  assert.equal(defaults.port, 3100);
+  assert.equal(defaults.healthTimeoutMs, 15000);
+  assert.equal(defaults.failureThreshold, 3);
+  for (const config of [{}, { repositoryPath: " " }, { port: 0 }, { port: 65536 }, { intervalMs: 1 }, { startupGraceMs: -1 },
+    { healthTimeoutMs: 999 }, { failureThreshold: 0 }, { failureThreshold: 11 }]) {
     assert.throws(() => normalizeLocalServerWatchdogConfig(config.repositoryPath === undefined && Object.keys(config).length
       ? { repositoryPath: process.cwd(), ...config } : config));
   }
@@ -62,18 +66,38 @@ test("healthy watchdog starts once and uses loopback environment", async () => {
   assert.equal(states.at(-1).status, "healthy");
   await watchdog.stop(); assert.equal(children[0].killed, true);
 });
-test("health failure replaces only owned child using capped backoff", async () => {
-  let healthy = false;
-  const { watchdog, children, waits } = createWatchdog({ requestHealth: async () => {
-    if (!healthy) throw new Error("connection refused");
+test("one transient health failure keeps the running child", async () => {
+  let attempts = 0;
+  const { watchdog, children, waits, states } = createWatchdog({ requestHealth: async () => {
+    if (++attempts === 1) throw new Error("temporary timeout");
   } });
   await watchdog.start();
-  for (let i = 0; i < 5; i++) await watchdog.checkOnce();
+  await watchdog.checkOnce();
+  assert.equal(children.length, 1);
+  assert.equal(children[0].killed, false);
+  assert.deepEqual(waits, []);
+  assert.equal(states.at(-1).status, "degraded");
+  assert.equal(states.at(-1).consecutiveHealthFailures, 1);
+  await watchdog.checkOnce();
+  assert.equal(children.length, 1);
+  assert.equal(states.at(-1).status, "healthy");
+  assert.equal(states.at(-1).consecutiveHealthFailures, 0);
+  await watchdog.stop();
+});
+test("three consecutive health failures replace only the owned child", async () => {
+  const { watchdog, children, waits } = createWatchdog({ requestHealth: async () => {
+    throw new Error("connection refused");
+  } });
+  await watchdog.start();
+  await watchdog.checkOnce();
+  await watchdog.checkOnce();
+  assert.equal(children.length, 1);
+  assert.equal(children[0].killed, false);
+  await watchdog.checkOnce();
   assert.match(watchdog.state().lastError, /connection refused/);
-  assert.deepEqual(waits, [2000, 5000, 10000, 30000, 30000]);
-  assert.equal(children.slice(0, -1).every((child) => child.killed), true);
-  healthy = true; await watchdog.checkOnce();
-  assert.equal(watchdog.state().restartAttempt, 0);
+  assert.deepEqual(waits, [2000]);
+  assert.equal(children.length, 2);
+  assert.equal(children[0].killed, true);
   await watchdog.stop();
 });
 test("exit and health recovery cannot create duplicate children", async () => {

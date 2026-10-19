@@ -95,9 +95,33 @@ const parseModelJson = (value) => {
     return JSON.parse(unfenced);
   } catch {
     const start = unfenced.indexOf("{");
-    const end = unfenced.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return JSON.parse(unfenced.slice(start, end + 1));
+    if (start >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let index = start; index < unfenced.length; index += 1) {
+        const character = unfenced[index];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (character === "\\") {
+            escaped = true;
+          } else if (character === '"') {
+            inString = false;
+          }
+          continue;
+        }
+        if (character === '"') {
+          inString = true;
+        } else if (character === "{") {
+          depth += 1;
+        } else if (character === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            return JSON.parse(unfenced.slice(start, index + 1));
+          }
+        }
+      }
     }
     throw new Error("Paper Semantic QA did not return a JSON object.");
   }
@@ -224,7 +248,16 @@ export const validatePaperSemanticQaResponse = (value, {
     .filter(Boolean);
 
   for (const key of REQUIRED_CHECKS) {
-    if (!checks[key] && !semanticIssues.some((entry) => entry.code === CHECK_ISSUE_CODES[key])) {
+    const hasMatchingIssue = semanticIssues.some((entry) => (
+      entry.code === CHECK_ISSUE_CODES[key]
+      || (
+        key === "experimentsGrounded"
+        && entry.code === "unsupported_number"
+        && checks.numbersGrounded === false
+        && /^experimentsAndResults(?:\.|$)/u.test(entry.field)
+      )
+    ));
+    if (!checks[key] && !hasMatchingIssue) {
       schemaIssues.push(validationIssue(
         "false_check_without_issue",
         `checks.${key}`,

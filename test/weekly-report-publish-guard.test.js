@@ -170,7 +170,7 @@ test("核心章节、逐篇小节或发布字段缺失时阻止发布", () => {
 
   assert.equal(result.valid, false);
   assert.match(result.errors.join("\n"), /缺少「推荐阅读顺序」章节/);
-  assert.match(result.errors.join("\n"), /「实验与结果」小节只有 1 个/);
+  assert.match(result.errors.join("\n"), /「实验结论」小节只有 1 个/);
   assert.match(result.errors.join("\n"), /「发表单位」字段只有 1 个/);
 });
 
@@ -212,6 +212,18 @@ test("空论文集合不能形成可发布周报", () => {
   assert.equal(result.valid, false);
   assert.match(result.errors.join("\n"), /没有可发布的入选论文/);
   assert.match(result.errors.join("\n"), /YAML paper_count 为 2，实际入选 0 篇/);
+});
+
+test("十二字符以上的简洁学术标题不会触发旧的十八字符告警", () => {
+  const concise = markdown.replaceAll(
+    "护栏验证与数字孪生评估构成本周主线",
+    "自主动作执行前的约束验证方法"
+  );
+
+  const result = validate(concise);
+
+  assert.equal(result.valid, true, result.errors.join("\n"));
+  assert.doesNotMatch(result.warnings.join("\n"), /标题观点少于 18 个字符/);
 });
 
 test("过长标题观点和 description 会被质量门拒绝", () => {

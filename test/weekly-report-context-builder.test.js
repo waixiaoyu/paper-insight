@@ -70,6 +70,114 @@ test("有效 arXiv HTML 生成结构化 contextPacket 并清除页面噪音", ()
   assert.equal(packet.qualityGate.thresholds.minBodyChars, 2500);
   assert.doesNotMatch(packet.inputText, /Navigation must not|Footer must not|SCRIPT_SECRET|REFERENCES_SECRET/);
 });
+test("arXiv 标准作者单位标记生成论文级单位元数据和独立 Evidence 区块", () => {
+  const html = validHtml().replace(
+    "<p>Alice Example, Example University</p>",
+    `<div class="ltx_authors">
+      <span class="ltx_creator ltx_role_author">
+        <span class="ltx_personname">Alice Example</span>
+        <span class="ltx_author_notes"><span class="ltx_author_notes_content">
+          <span class="ltx_contact ltx_role_affiliation">
+            <span class="ltx_contact_name">Affiliation:</span> Yale University
+          </span>
+        </span></span>
+      </span>
+    </div>`
+  );
+  const packet = buildContextPacket(validInput({ html }));
+
+  assert.equal(packet.publicationMetadata.status, "extracted");
+  assert.deepEqual(packet.publicationMetadata.affiliations.map((item) => item.originalName), [
+    "Yale University"
+  ]);
+  assert.equal(packet.publicationMetadata.affiliations[0].sourceType, "arxiv_structured");
+  assert.equal(packet.publicationMetadata.affiliations[0].confidence, "high");
+  const metadata = packet.inputSections.find((item) => item.anchor === "META_AFFILIATIONS");
+  assert.ok(metadata);
+  assert.equal(metadata.kind, "metadata");
+  assert.match(metadata.text, /Yale University/);
+});
+
+
+test("作者脚注中的单位被保留为标题页元数据", () => {
+  const html = validHtml().replace(
+    "<p>Alice Example, Example University</p>",
+    `<div class="ltx_authors">
+      <span class="ltx_creator ltx_role_author">
+        <span class="ltx_personname">Jackie Baek</span>
+        <span class="ltx_note ltx_note_frontmatter ltx_thanks_note ltx_role_thanks">
+          <span class="ltx_note_content">Stern School of Business, New York University, baek@stern.nyu.edu</span>
+        </span>
+      </span>
+    </div>`
+  );
+  const packet = buildContextPacket(validInput({ html }));
+
+  assert.equal(packet.publicationMetadata.status, "extracted");
+  assert.deepEqual(packet.publicationMetadata.affiliations.map((item) => item.originalName), [
+    "Stern School of Business, New York University"
+  ]);
+  assert.equal(packet.publicationMetadata.affiliations[0].sourceType, "arxiv_frontmatter_note");
+});
+
+test("摘要后且第一节正文前的独立单位块可以作为保守回退", () => {
+  const html = validHtml()
+    .replace("<p>Alice Example, Example University</p>", "<div class=\"ltx_authors\"><span class=\"ltx_personname\">Chen Qian</span></div>")
+    .replace(
+      "\n  <section>\n    <h2>1 Introduction",
+      `
+      <div class="ltx_logical-block ltx_align_bottom">
+        <p class="ltx_p ltx_align_center">William &amp; Mary · Anytime AI</p>
+        <p class="ltx_p ltx_align_center">contact@wm.edu · contact@anytime-ai.com</p>
+      </div>
+  <section>
+    <h2>1 Introduction`
+    );
+  const packet = buildContextPacket(validInput({ html }));
+
+  assert.equal(packet.publicationMetadata.status, "extracted");
+  assert.deepEqual(packet.publicationMetadata.affiliations.map((item) => item.originalName), [
+    "William & Mary",
+    "Anytime AI"
+  ]);
+  assert.equal(packet.publicationMetadata.affiliations.every((item) => (
+    item.sourceType === "arxiv_frontmatter_block"
+  )), true);
+});
+
+test("LaTeXML 作者宏异常时只从正文前标题页提取单位", () => {
+  const html = validHtml().replace(
+    "<p>Alice Example, Example University</p>",
+    `<p class="ltx_ERROR undefined">
+      \\TRBauthor Shuyang Li, Graduate Student, Civil and Environmental Engineering,
+      Rensselaer Polytechnic Institute, lis36@rpi.edu
+    </p>`
+  );
+  const packet = buildContextPacket(validInput({ html }));
+
+  assert.equal(packet.publicationMetadata.status, "extracted");
+  assert.deepEqual(packet.publicationMetadata.affiliations.map((item) => item.originalName), [
+    "Rensselaer Polytechnic Institute"
+  ]);
+  assert.equal(packet.publicationMetadata.affiliations[0].sourceType, "arxiv_frontmatter_recovery");
+});
+
+test("正文、实验和致谢中的机构名称不能被识别为作者单位", () => {
+  const html = validHtml()
+    .replace("<p>Alice Example, Example University</p>", "<div class=\"ltx_authors\"><span class=\"ltx_personname\">Alice Example</span></div>")
+    .replace(
+      "METHOD_PRIORITY_MARKER",
+      "METHOD_PRIORITY_MARKER evaluated with Google Research and Huawei Technologies products"
+    )
+    .replace(
+      "<section class=\"ltx_bibliography\">",
+      "<section><h2>Acknowledgements</h2><p>Supported by Example University.</p></section><section class=\"ltx_bibliography\">"
+    );
+  const packet = buildContextPacket(validInput({ html }));
+
+  assert.equal(packet.publicationMetadata.status, "not_provided");
+  assert.deepEqual(packet.publicationMetadata.affiliations, []);
+});
 
 test("摘要来源和 arXiv 摘要页永远不能进入周报发布链路", () => {
   const abstractSource = buildContextPacket(validInput({ source: "abstract_only" }));

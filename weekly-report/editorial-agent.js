@@ -8,6 +8,7 @@ import {
   editorialPlanRepairPathsForIssues
 } from "./prompts.js";
 import { internalProcessWarnings } from "./internal-process-policy.js";
+import { readingGuidanceOverstatesResult } from "./reading-guidance-policy.js";
 import { acceptCredibilityAdvisories } from "./credibility-gate-policy.js";
 
 const MATURITY_LEVELS = new Set(["emerging", "developing", "mature", "uncertain"]);
@@ -21,6 +22,9 @@ const EVIDENCE_FIELDS = [
   "affiliations"
 ];
 const GENERIC_TITLE_PATTERN = /新范式|值得关注|加速落地|new\s+paradigm|worth\s+watching|accelerat(?:e|ed|ing)\s+(?:adoption|deployment)/iu;
+const GENERIC_RESEARCH_PROGRESS_TITLE_PATTERN = /(?:研究|技术|领域|方向|系统|方法|模型|LLMs?|AI|人工智能|大模型|基础模型)(?:研究)?(?:的)?(?:最新|前沿|近期|新)?进展(?:概述|综述)?$/iu;
+const TITLE_TRAILING_PUNCTUATION_PATTERN = /[。！？!?；;，,：:、…·'"“”‘’（）()\[\]【】《》]+$/gu;
+const NEWS_STYLE_TITLE_PATTERN = /[？?]/u;
 const RHETORICAL_STYLE_PATTERN = /不等于|不等同于|并非.{0,12}而是|而非|揭示|迈向|赋能|解锁|重塑|颠覆|革命性?|坚实(?:的)?(?:量化)?证据|有效(?:解决|方法|暴露|测试)|具有(?:较高|很高|重要)的?(?:直接)?参考价值|不排除未来.{0,30}(?:可能|改进|消除)|鸿沟|浪潮|拐点|破局|\breveal(?:s|ed|ing)?\b|\bunlock(?:s|ed|ing)?\b|\breshape(?:s|d|ing)?\b|\brevolutionary\b/iu;
 const LIMITED_TOP_MODEL_EVIDENCE_PATTERN = /\b(?:the\s+)?(?:strongest|best(?:-performing)?|best\s+performer)\s+models?\b/iu;
 const BROAD_MODEL_SUBJECT_PATTERN = /(?:前沿|当前|现有|多数|大多数)?(?:大语言模型|大模型|语言模型|模型|抽取系统|系统|方法)|(?:frontier\s+)?(?:LLMs?|large\s+language\s+models?|models?)|\bmost\s+(?:systems?|methods?)\b/iu;
@@ -205,6 +209,32 @@ const normalizedPaperId = (value) => {
 };
 
 const issue = (code, path, detail) => ({ code, path, detail });
+
+const validateAcademicTitleStyle = (value, issues) => {
+  if (!NEWS_STYLE_TITLE_PATTERN.test(String(value || ""))) return;
+  const validationIssue = issue(
+    "news_style_title",
+    "titleAngle",
+    "Title angle must be an academic descriptive phrase, not a question or news headline."
+  );
+  validationIssue.repairKinds = ["academic_descriptive_title"];
+  issues.push(validationIssue);
+};
+
+const validateSpecificResearchTitle = (value, issues) => {
+  const normalizedTitle = String(value || "")
+    .trim()
+    .replace(TITLE_TRAILING_PUNCTUATION_PATTERN, "")
+    .trim();
+  if (!GENERIC_RESEARCH_PROGRESS_TITLE_PATTERN.test(normalizedTitle)) return;
+  const validationIssue = issue(
+    "generic_research_progress_title",
+    "titleAngle",
+    "Title angle must name concrete research problems or technical mechanisms instead of ending with a generic research-progress summary."
+  );
+  validationIssue.repairKinds = ["specific_research_topics"];
+  issues.push(validationIssue);
+};
 
 const uniqueIssues = (issues) => {
   const seen = new Set();
@@ -622,13 +652,15 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
     issues.push(issue("title_angle_missing", "titleAngle", "titleAngle is required."));
   }
   const titleAngleLength = Array.from(titleAngle).length;
-  if (titleAngleLength < 18 || titleAngleLength > 32) {
+  if (titleAngleLength < 12 || titleAngleLength > 32) {
     issues.push(issue(
       "title_angle_length_invalid",
       "titleAngle",
-      "Editorial titleAngle must contain 18-32 Unicode characters; target 20-28 before returning."
+      "Editorial titleAngle must contain 12-32 Unicode characters; target 14-24 before returning."
     ));
   }
+  validateAcademicTitleStyle(titleAngle, issues);
+  validateSpecificResearchTitle(titleAngle, issues);
   const forbiddenTitlePrefix = selectedPaperTitlePrefix(titleAngle, rankedItems);
   if (forbiddenTitlePrefix) {
     const validationIssue = issue(
@@ -652,6 +684,9 @@ export const validateEditorialPlan = (value, { selectedItems = [] } = {}) => {
 
   if (!Array.isArray(value.trends)) {
     issues.push(issue("trends_invalid", "trends", "trends must be an array."));
+  }
+  if (Array.isArray(value.trends) && value.trends.length > 2) {
+    issues.push(issue("trends_invalid", "trends", "Editorial Plan may contain at most two public cross-paper trends."));
   }
   const trends = (Array.isArray(value.trends) ? value.trends : []).slice(0, 20).map((entry, index) => {
     const path = `trends[${index}]`;
@@ -1418,10 +1453,14 @@ const headTailSourceText = (editorialPlan, paperDrafts) => JSON.stringify({
   }))
 });
 
-const unknownPaperIdsInText = (value, selectedIds) => {
+const paperIdsInText = (value) => {
   const ids = String(value || "").match(/\d{4}\.\d{4,5}(?:v\d+)?/gi) || [];
-  return [...new Set(ids.map(normalizedPaperId).filter((paperId) => !selectedIds.has(paperId)))];
+  return [...new Set(ids.map(normalizedPaperId))];
 };
+
+const unknownPaperIdsInText = (value, selectedIds) => (
+  paperIdsInText(value).filter((paperId) => !selectedIds.has(paperId))
+);
 
 const validateHeadTailText = (value, {
   path,
@@ -1490,6 +1529,12 @@ const validateIndexedEditorialEntries = ({
     issues.push(issue("head_tail_collection_invalid", collectionPath, `${collectionPath} must be an array.`));
   }
   const returned = (Array.isArray(normalizedValue) ? normalizedValue : []).slice(0, 40);
+  const allowedEntryFields = new Set([
+    indexField,
+    "claim",
+    "caveat",
+    ...(indexField === "trendIndex" ? ["title"] : [])
+  ]);
   const indexes = returned.map((entry) => Number(entry?.[indexField]));
   if (returned.length !== source.length
     || indexes.some((index, position) => !Number.isInteger(index) || index !== position)) {
@@ -1503,7 +1548,7 @@ const validateIndexedEditorialEntries = ({
   return source.map((sourceEntry, index) => {
     const entry = returned.find((candidate) => Number(candidate?.[indexField]) === index) || {};
     Object.keys(entry).forEach((key) => {
-      if (![indexField, "claim", "caveat"].includes(key)) {
+      if (!allowedEntryFields.has(key)) {
         issues.push(issue(
           "head_tail_field_forbidden",
           `${collectionPath}[${index}].${key}`,
@@ -1528,8 +1573,44 @@ const validateIndexedEditorialEntries = ({
       numericSource,
       maximum: 2400
     });
+    const legacyTrendTitle = Array.from(
+      String(claim || "").split(/[。！？；.!?;]/u)[0].trim()
+    ).slice(0, 32).join("").trim();
+    const trendTitle = indexField === "trendIndex"
+      ? validateHeadTailText(entry?.title || legacyTrendTitle, {
+        path: `${collectionPath}[${index}].title`,
+        issues,
+        warnings,
+        selectedIds,
+        numericSource,
+        maximum: 120
+      })
+      : "";
+    if (indexField === "trendIndex" && Array.from(trendTitle).length > 32) {
+      issues.push(issue(
+        "trend_title_too_long",
+        `${collectionPath}[${index}].title`,
+        "A reader-facing trend title must not exceed 32 characters."
+      ));
+    }
+    if (indexField === "trendIndex") {
+      [
+        [`${collectionPath}[${index}].title`, trendTitle],
+        [`${collectionPath}[${index}].claim`, claim],
+        [`${collectionPath}[${index}].caveat`, caveat]
+      ].forEach(([path, text]) => {
+        if (paperIdsInText(text).length) {
+          issues.push(issue(
+            "trend_arxiv_id_forbidden",
+            path,
+            "Reader-facing trend text must not contain arXiv identifiers."
+          ));
+        }
+      });
+    }
     return {
       [indexField]: index,
+      ...(indexField === "trendIndex" ? { title: trendTitle } : {}),
       claim,
       caveat,
       ...(indexField === "trendIndex" ? {
@@ -1665,9 +1746,11 @@ export const validateHeadTailDraft = (value, {
     maximum: 200
   });
   const titleLength = Array.from(titleAngle).length;
-  if (titleLength < 18 || titleLength > 32) {
-    issues.push(issue("title_angle_length_invalid", "titleAngle", "Title angle must contain 18-32 characters."));
+  if (titleLength < 12 || titleLength > 32) {
+    issues.push(issue("title_angle_length_invalid", "titleAngle", "Title angle must contain 12-32 characters."));
   }
+  validateAcademicTitleStyle(titleAngle, issues);
+  validateSpecificResearchTitle(titleAngle, issues);
   if (GENERIC_TITLE_PATTERN.test(titleAngle)) {
     issues.push(issue("generic_title_angle", "titleAngle", "Title angle uses a forbidden generic slogan."));
   }
@@ -1764,6 +1847,20 @@ export const validateHeadTailDraft = (value, {
         maximum: 2400
       })
     }));
+  readingOrder.forEach((entry, index) => {
+    const paperDraft = (Array.isArray(paperDrafts) ? paperDrafts : [])
+      .find((draft) => normalizedPaperId(draft?.paperId) === entry.paperId);
+    if (readingGuidanceOverstatesResult(entry.reason, paperDraft)) {
+      warnings.push({
+        code: "reading_order_overstates_result",
+        path: `readingOrder[${index}].reason`,
+        detail: "阅读顺序使用全面优于等概括，但该论文的结果或局限记载了不占优的情况。",
+        triggerText: entry.reason,
+        severity: "warning",
+        blocking: false
+      });
+    }
+  });
   const actualOrder = readingOrder.map((entry) => entry.paperId);
   if (actualOrder.length !== expectedOrder.length
     || actualOrder.some((paperId, index) => paperId !== expectedOrder[index])
@@ -1794,14 +1891,16 @@ export const validateHeadTailDraft = (value, {
   const scopeEvidence = [...evidenceReferenceMap(rankedItems).values()]
     .map((entry) => entry.excerpt)
     .join(" ");
+  const trendReaderFields = trendJudgments.flatMap((entry, index) => [
+    [`trendJudgments[${index}].title`, entry.title],
+    [`trendJudgments[${index}].claim`, entry.claim],
+    [`trendJudgments[${index}].caveat`, entry.caveat]
+  ]);
   [
     ["titleAngle", titleAngle],
     ["description", description],
     ["reportIntroduction", reportIntroduction],
-    ...trendJudgments.flatMap((entry, index) => [
-      [`trendJudgments[${index}].claim`, entry.claim],
-      [`trendJudgments[${index}].caveat`, entry.caveat]
-    ]),
+    ...trendReaderFields,
     ...singlePaperObservations.flatMap((entry, index) => [
       [`singlePaperObservations[${index}].claim`, entry.claim],
       [`singlePaperObservations[${index}].caveat`, entry.caveat]
@@ -1818,10 +1917,7 @@ export const validateHeadTailDraft = (value, {
     ["titleAngle", titleAngle],
     ["description", description],
     ["reportIntroduction", reportIntroduction],
-    ...trendJudgments.flatMap((entry, index) => [
-      [`trendJudgments[${index}].claim`, entry.claim],
-      [`trendJudgments[${index}].caveat`, entry.caveat]
-    ]),
+    ...trendReaderFields,
     ...singlePaperObservations.flatMap((entry, index) => [
       [`singlePaperObservations[${index}].claim`, entry.claim],
       [`singlePaperObservations[${index}].caveat`, entry.caveat]
@@ -1838,10 +1934,7 @@ export const validateHeadTailDraft = (value, {
     ["titleAngle", titleAngle],
     ["description", description],
     ["reportIntroduction", reportIntroduction],
-    ...trendJudgments.flatMap((entry, index) => [
-      [`trendJudgments[${index}].claim`, entry.claim],
-      [`trendJudgments[${index}].caveat`, entry.caveat]
-    ]),
+    ...trendReaderFields,
     ...singlePaperObservations.flatMap((entry, index) => [
       [`singlePaperObservations[${index}].claim`, entry.claim],
       [`singlePaperObservations[${index}].caveat`, entry.caveat]
@@ -1858,10 +1951,7 @@ export const validateHeadTailDraft = (value, {
     ["titleAngle", titleAngle],
     ["description", description],
     ["reportIntroduction", reportIntroduction],
-    ...trendJudgments.flatMap((entry, index) => [
-      [`trendJudgments[${index}].claim`, entry.claim],
-      [`trendJudgments[${index}].caveat`, entry.caveat]
-    ]),
+    ...trendReaderFields,
     ...singlePaperObservations.flatMap((entry, index) => [
       [`singlePaperObservations[${index}].claim`, entry.claim],
       [`singlePaperObservations[${index}].caveat`, entry.caveat]
@@ -1878,10 +1968,7 @@ export const validateHeadTailDraft = (value, {
     ["titleAngle", titleAngle],
     ["description", description],
     ["reportIntroduction", reportIntroduction],
-    ...trendJudgments.flatMap((entry, index) => [
-      [`trendJudgments[${index}].claim`, entry.claim],
-      [`trendJudgments[${index}].caveat`, entry.caveat]
-    ]),
+    ...trendReaderFields,
     ...singlePaperObservations.flatMap((entry, index) => [
       [`singlePaperObservations[${index}].claim`, entry.claim],
       [`singlePaperObservations[${index}].caveat`, entry.caveat]
@@ -1900,10 +1987,7 @@ export const validateHeadTailDraft = (value, {
     ["titleAngle", titleAngle],
     ["description", description],
     ["reportIntroduction", reportIntroduction],
-    ...trendJudgments.flatMap((entry, index) => [
-      [`trendJudgments[${index}].claim`, entry.claim],
-      [`trendJudgments[${index}].caveat`, entry.caveat]
-    ]),
+    ...trendReaderFields,
     ["closingSummary", closingSummary]
   ].forEach(([path, text]) => validateMixedMethodCohortSubject({
     text,

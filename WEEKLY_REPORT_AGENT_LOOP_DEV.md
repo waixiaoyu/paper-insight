@@ -69,6 +69,7 @@ Evidence Agent 的失败必须先按性质分类，不能把模型响应格式�
 - `processing_failure`：网络或模型最终失败、响应截断、JSON/Schema 形状不兼容、服务端规范化失败或阶段产物缺失。它不改变论文分数，也不产生自动内容排除；优先确定性恢复，单篇范围只重试当前论文，Calibration 或报告级范围只重试当前阶段，仍失败则进入待复核队列。
 - `evidence_dispute`：确定性的来源引用、论文归属或证据对象关系无法成立，且系统保留了可复核产物。界面显示周报片段、引用标识和可取得的局部原文，允许重试当前论文或跳过论文。数字、单位等价、事实支持充分性等语义分歧不再进入阻断队列，只作为告警展示。
 - `quality_below_threshold`：论文已经通过全文、身份和证据门，但真实 Review/Calibration 分低于默认入选线。当已达标数量不足 `minSelectedCount` 时，系统优先把接近阈值的论文加入待复核队列；管理员填写理由后可以人工纳入，也可以保持不入选。
+- `out_of_scope_domain`：论文的主问题属于医学、生命科学等专用非目标领域。初筛或周报 Review 任一阶段给出该结论时，即使标题或方法包含 Agent、LLM、工具调用等概念，也不能仅凭研究重点标签获得软组合优先或自动进入周报。只有周报 Review 重新将其判断为具有通用 AI 系统价值，且方法新意达到 95 分时，才作为极高创新性的跨领域例外参与 Selection；否则保留真实评分并以该原因不入选。管理员人工纳入只能覆盖分数阈值，不能覆盖该领域适配结论或可信度门。
 
 人工纳入只覆盖 Selection 的分数阈值。系统必须保留真实四维分、最终分、默认决策和人工理由，并在 Trace 标记 `selectionSource=admin_override`。人工纳入不能绕过全文可用性、论文身份、来源归属、跨论文引用、敏感信息、产物集合和发布结构，也不能把内部流程写入读者可见正文。
 
@@ -173,6 +174,8 @@ Calibration 不得修改四维分；它只能发现评分误判并触发 Review 
 ### 2.6 校准规模
 
 第一阶段单次横向校准最多处理 30 篇论文。
+
+若 Calibration 返回的条目均合法但数量不足，Harness 必须保留已经校验通过的条目，以完整候选组作为横向比较上下文，只要求模型返回明确列出的缺失 `paperId`。补丁不得返回已保留或未知论文，但其误判比较可以引用完整候选组中的其他论文。确认阶段的补丁必须继续携带定向重评维度和确认指令。补充结果由服务端按原候选顺序合并，并使用完整 Calibration Schema 再校验一次，同时保留初次响应中的状态归一化 Trace。不得要求模型重新生成已经有效的条目；若初始响应还包含重复、未知论文、非法字段、错误的 `suspectedMisjudgments` 形状或其他治理问题，则继续使用完整结构化修正，不得把无效条目当作可保留结果。
 
 - 有效候选不超过 30 篇时，全部进入同一批校准。
 - 超过 30 篇时，只按周报 Review 产生的 rawScore 选择最高潜力的 30 篇进入校准和最终选文。
@@ -590,6 +593,34 @@ contextPacket 是原文来源、章节结构、输入文本和质量门结果的
 
 它不得包含摘要降级发布状态。
 
+contextPacket 还必须保存论文级单位元数据：
+
+~~~json
+{
+  "publicationMetadata": {
+    "status": "extracted | not_provided | parse_failed",
+    "affiliations": [
+      {
+        "originalName": "Example University",
+        "sourceText": "标题页中的原始来源文本",
+        "sourceType": "arxiv_structured | arxiv_frontmatter_note | arxiv_frontmatter_block | arxiv_frontmatter_recovery",
+        "confidence": "high | medium"
+      }
+    ],
+    "warnings": []
+  }
+}
+~~~
+
+单位元数据契约：
+
+- 提取范围只包括 arXiv HTML 标题页作者区、结构化单位节点、作者脚注、正文第一节之前的独立前置单位块，以及同一区域内的 LaTeXML 异常恢复；不得扫描正文、实验、附录、引用或致谢推断单位。
+- `arxiv_structured` 的置信度为 `high`；`arxiv_frontmatter_note`、`arxiv_frontmatter_block` 和 `arxiv_frontmatter_recovery` 为 `medium`。
+- 至少找到一个可信单位时状态为 `extracted`；页面没有可用标题页单位时为 `not_provided`；解析异常时为 `parse_failed` 并记录 warning。后两种状态都不得由模型补写单位。
+- 当前只保存论文级单位集合，不建立作者到单位的映射，也不读取 PDF 或 TeX。
+- 找到单位时，contextPacket 在 Evidence 输入最前面增加 `META_AFFILIATIONS` metadata 区块，其中分别保存 `Original institution` 和原始 `Source`；没有单位时不生成该区块。
+- 原文缓存 v3 同时保存清洗正文和 `publicationMetadata`。只有 `version >= 3`、正文、抓取时间和单位元数据对象都存在且未超过 TTL 时才可复用；v2、缺字段或过期缓存会重新抓取 arXiv HTML 并写回 v3。
+
 ### 8.2 evidenceCard
 
 evidenceCard 不只是总结，必须保存原文来源定位。
@@ -617,12 +648,13 @@ evidenceCard 不只是总结，必须保存原文来源定位。
   "experiments": {},
   "results": {},
   "limitations": {},
+  "affiliations": { "summary": "...", "status": "supported | not_present | insufficient", "sources": [] },
   "evidenceInsufficient": false,
   "warnings": []
 }
 ~~~
 
-problem、method、systemDesign、experiments、results、limitations 使用相同结构。problem 字段的 supported 摘录必须直接陈述研究问题、缺口、挑战、风险、需求或被测能力；仅有 “We introduce X” 等贡献声明时不能作为问题证据。
+problem、method、systemDesign、experiments、results、limitations、affiliations 使用相同结构。problem 字段的 supported 摘录必须直接陈述研究问题、缺口、挑战、风险、需求或被测能力；仅有 “We introduce X” 等贡献声明时不能作为问题证据。
 
 证据规则：
 
@@ -636,7 +668,9 @@ problem、method、systemDesign、experiments、results、limitations 使用相�
 - Review Agent 必须始终返回完整四维评分。其对单位、方向、比较对象和 cohort/适用范围的质疑随评分写入 `evidenceValidation.issues` 和 Trace，不再触发 Evidence 自动重写、候选增补或论文排除。
 - `F1`、`V4` 等由拉丁字母直接前缀的指标或版本标识不拆成独立数字；完整标识及其事实含义仍由 Evidence 复核和后续语义 QA 检查。
 - 未绑定数字或其他语义差异不再触发确定性删句、字段降级或 Value Signal 删除。系统保留模型产物，并将失败数字、字段路径和绑定来源写入 Trace 告警，交由管理员在运维视图复核。
-- affiliations 只能绑定论文作者/机构 metadata 区块；正文、附录、引用、致谢、受测产品、供应商或客户名称不能作为作者单位线索。metadata 不足时返回 not_present，不能从产品关系推断机构。
+- affiliations 只能绑定服务端从论文级单位元数据生成的 `META_AFFILIATIONS` metadata 区块，并通过 sourceId 回到其中的 `Original institution` 与原始 `Source`。
+- 正文、实验、附录、引用、致谢、受测产品、供应商、客户或项目关系不能作为作者单位线索，也不能用于建立作者到单位的映射。
+- `publicationMetadata` 为 `not_provided` 或 `parse_failed` 时，affiliations 返回 `not_present` 且 sources 为空，不能由模型推断机构。
 - results summary 应保留受测对象和反例范围。例如原文只报告商业 VLM 在长文档上退化、同时列出保持接近短文档表现的点名抽取系统时，不应概括为“多数/现有系统”普遍退化。此类范围判断作为语义告警，不作为来源绑定硬门禁。
 - 找不到依据时返回 not_present 或 insufficient，不能补写。
 - sourceId、章节锚点、引用存在性、论文归属或必填证据对象失败时，Evidence Agent 默认最多获得 3 次定向修正机会，每次只修改当前问题映射的字段。
@@ -708,6 +742,13 @@ valueSignals 用于解释“为什么值得读”，必须绑定 evidenceCard。
 ~~~
 
 Review 在评分前必须复核 Evidence Card 总结是否忠于原文摘录。
+
+单位输出与恢复规则：
+
+- `affiliations` 每项使用“中文译名（英文原名）”，并至少引用一个当前论文的 `affiliations:*` Evidence ref。
+- 括号内英文原名除大小写和空白规范化外，必须与受支持的 affiliation Evidence 原名精确匹配；Evidence 已支持单位时不能返回空列表。
+- 初次 Review 与一次结构化修正都无效、且剩余问题全部属于单位格式、原名或引用时，服务端保留其余有效 Review 字段和分数，按 Evidence 生成“原文单位（英文原名）”，并记录 `review_affiliations_fallback_applied`。
+- 该回退不能补写 Evidence 中不存在的机构；其他 Schema 或评分问题仍按 Review 失败处理。
 
 如果 evidenceValidation = repair_required：
 
@@ -787,7 +828,9 @@ Calibration 不返回分数调整。
 
 - 只能引用最终入选论文。
 - 本周趋势至少有两篇论文支持。
-- 单篇支持只能进入 singlePaperObservations，不能写成本周趋势。
+- 公开的本周趋势最多 3 条。Head/Tail 为每条趋势生成一个简短读者标题，并分别输出变化说明和一个关键适用边界；标题优先控制在 8–24 个中文字符，直接说明具体技术变化，不使用新闻式或宣传式表达。变化说明需要回答“发生了什么、论文怎样体现、为什么值得关注”，不得按论文逐篇罗列完整方法、实验配置和结果。
+- 读者态趋势不得使用 arXiv 编号代替论文名称；`oracle`、`显式工件`、`构造模型`、`执行策略`、`编码进模型权重` 等抽象或不常用术语若无法改为通行中文，必须在首次出现时立即解释。
+- 单篇支持只能进入 singlePaperObservations，不能写成本周趋势。singlePaperObservations 只作为内部 Trace 和逐篇 QA artifact 保留，不进入公开周报。
 - 跨论文趋势必须说明共同的具体评测设计、机制、指标纪律、比较边界或工程含义；仅陈述“多篇论文都构建基准”或“都指出旧评测不足”不具备足够阅读信息量，必须修正。
 - evidenceRefs 必须存在。
 - 中文稿中的阿拉伯数字与绑定英文 Evidence 中的数字字面差异继续记录，例如 `two of five` 与 `2/5`；匹配或不匹配均只形成语义告警，不影响 Editorial Plan 结构通过。
@@ -874,7 +917,7 @@ Editorial Agent 在逐篇 paperDraft 完成后执行第二次独立调用，生�
 
 ~~~json
 {
-  "titleAngle": "18-32 字符的具体技术观点",
+  "titleAngle": "12-32 字符的学术描述性主题",
   "description": "不超过 55 字符的报告描述",
   "tags": ["..."],
   "reportIntroduction": "...",
@@ -905,11 +948,12 @@ Editorial Agent 在逐篇 paperDraft 完成后执行第二次独立调用，生�
 质量门：
 
 - 只读取已校验 editorialPlan 和 paperDraft 的精简读者价值字段，不读取多篇原文或 Evidence 摘录。
-- trendJudgments 和 singlePaperObservations 必须逐项映射回 editorialPlan，模型不能增加、删除或把单篇观察提升为周趋势。
+- trendJudgments 和 singlePaperObservations 必须逐项映射回 editorialPlan，模型不能增加、删除或把单篇观察提升为跨论文观察。内部字段名 `trendJudgments` 保持不变以兼容已有产物，公开标题为“本周研究观察”。
+- trendJudgments 中最多保留 2 条由多篇论文共同支持的公开观察，每条包含 `title`、`claim` 和 `caveat`。`title` 使用 6–16 个汉字说明一个有证据支持的共同发现，不预设领域变化；`claim` 最多两句，第一句用无需论文背景也能理解的通俗中文说明入选论文实际显示了什么，第二句说明为什么值得研究或工程读者关注；`caveat` 只用一句话说明一项关键适用边界。不得仅凭本周论文推断领域趋势、成熟度或时间变化，除非 Evidence 直接提供前后比较。观察不罗列方法名、模块名、基准名、指标名或实现细节，不在一句话中堆叠多个技术概念和未解释的英文缩写，只保留理解结论所必需的术语。若没有共同发现，允许公开观察为空；历史产物没有 title 时，服务端使用 claim 作为兼容标题来源，但新版生成必须返回独立 title。
 - 当 editorialPlan 对某个集合明确期望零项时，模型省略该集合可由服务端规范化为空数组；只要计划期望非空条目，缺失、非数组、少项或乱序仍必须拒绝。
-- 只有一篇论文入选时，Head/Tail 的三个读者字段必须分工：reportIntroduction 只说明问题和阅读入口，singlePaperObservations 只保留一个最有用的结果及一个证据边界，closingSummary 只给不同于逐篇 recommendedFocus 的最终阅读重点，不重复方法、结果或逐篇阅读建议。服务端忽略空白和标点后，若任意两类字段，或 closingSummary 与该篇 recommendedFocus，共享至少 24 个连续字符且该片段至少包含 8 个汉字，则进入一次安全定向修正。closingSummary 与 recommendedFocus 还需在移除英文技术标识符后比较中文二元字符；两侧至少各有 20 个汉字且较短一侧重合率达到 55% 时，同样视为轻度改写重复。修正必须改选另一个已提供的阅读维度，不能只替换原句尾部或替换少量同义词。长英文论文、系统或模型标识符本身不算重复内容。该确定性规则不用于多篇周报。
+- 只有一篇论文入选时，Head/Tail 的字段仍需分工：reportIntroduction 只说明问题和阅读入口，内部 singlePaperObservations 只保留一个最有用的结果及一个证据边界，closingSummary 只给不同于逐篇 recommendedFocus 的最终阅读重点，不重复方法、结果或逐篇阅读建议。singlePaperObservations 和 closingSummary 参与 Trace 与 QA，但不渲染到公开周报，以免与逐篇阅读建议及推荐阅读顺序重复。服务端忽略空白和标点后，若任意两类字段，或 closingSummary 与该篇 recommendedFocus，共享至少 24 个连续字符且该片段至少包含 8 个汉字，则进入一次安全定向修正。closingSummary 与 recommendedFocus 还需在移除英文技术标识符后比较中文二元字符；两侧至少各有 20 个汉字且较短一侧重合率达到 55% 时，同样视为轻度改写重复。修正必须改选另一个已提供的阅读维度，不能只替换原句尾部或替换少量同义词。长英文论文、系统或模型标识符本身不算重复内容。该确定性规则不用于多篇周报。
 - readingOrder 必须保持 Selection 的确定性顺序。
-- 标题观点必须具体，拒绝“新范式”“值得关注”“加速落地”等泛化套话。
+- 标题观点必须具体，拒绝“新范式”“值得关注”“加速落地”等泛化套话，也不得使用“研究进展”“技术进展”“领域进展”等无法说明具体进展内容的概括性结尾。多主题周报应在标题中点明至少两个具体研究问题或技术机制；若只有一篇次要方向论文偏离主线，可使用“兼论 + 具体研究对象”，不得用抽象上位词强行统合。
 - 标题观点必须是独立的技术判断，不以入选论文、基准或产品名加冒号开头。
 - 标题、description、tags、导读、趋势、单篇观察、阅读理由和结语全部使用中性、直接的技术表述，不使用“X 不等于 Y”式修辞、“揭示”等修辞化动词、比喻、拟人或宣传性表达；服务端逐字段确定性检查。
 - 导读等综合字段不得保留“旨在奖励函数未知的情况下”等缺少介词的句式；修正后仍需通过逐字段校验。
@@ -1040,7 +1084,10 @@ Selection 由服务端确定性执行。
 - 达阈值论文优先。
 - 达标论文不足 minSelectedCount 时继续从 reservePapers 增补并完整执行原文、Evidence、Review 和 Calibration。
 - 低于阈值的论文不得自动入选，也不得以 `background_only` 或其他阅读层级绕过入选线；只有已经通过全部可信度门且管理员填写理由后，才可以按 2.1.1.2 人工覆盖 Selection 阈值。
-- 最多 maxSelectedCount，默认 5；达到阈值的论文超过上限时，只发布横向校准后排序最高的论文，其余论文保留在推荐列表和 Trace 中。
+- 最多 maxSelectedCount，默认 5。研究重点由服务端基于论文标题、摘要和已有分析确定，不由 Selection Agent 自报；分类为 `agent_harness`、`ai_application`、`network_ai`、`foundation_model`、`model_internals`、`hardware` 或 `other`。
+- 达到阈值的候选足够时，Selection 使用软组合目标：最终 5 篇中尽量至少有 3 篇属于 `agent_harness`、`ai_application` 或 `network_ai`，再按周报复评分填充剩余名额；最终展示顺序仍按复评分和确定性次序排列。
+- 优先研究重点不足时按实际数量使用，不强行凑满 3 篇，不降低阈值，也不排除高质量基础模型论文。模型内部与底层优化论文可以凭足够高的复评分进入剩余名额，但不占优先研究重点名额。
+- 达到阈值但受篇数和软组合目标限制的其余论文保留在推荐列表和 Trace 中。
 - 同分使用确定性次序。
 - selectionReason 只进入 Trace，不进入发布稿。
 - candidate pool 耗尽时允许少于 minSelectedCount；系统先把证据门已通过的接近阈值论文加入人工复核队列，管理员完成选择后按实际数量继续。最终没有任何可发布论文时进入管理员处理，由管理员选择重试或退出任务。
@@ -1051,11 +1098,13 @@ Selection 由服务端确定性执行。
 
 - 使用最终 selectedPapers 和结构化 artifacts。
 - 模型的事实输入只包含带 ref 的原文 Evidence 短摘录；不发送 Evidence summary、Value Signal 事实文本、Review 理由或 Calibration 理由，避免编辑提示进入发布事实。
-- 生成 coreTheme、trends 和 readingOrder。
-- titleAngle 在 Editorial Plan 阶段就必须满足 18–32 Unicode 字符，安全目标为 20–28 字符；不能把超长标题留给 Head/Tail 的唯一修正机会处理。ASCII 字母逐个计数，titleAngle 不添加论文、基准或产品名加冒号的前缀；若模型仍返回“论文/系统名：标题正文”且仅正文已满足 18–32 字符，服务端可确定性移除该前缀；若正文过短，则进入一次定向修正，不得因整串仍在 18–32 字符内而接受前缀，也不得直接截断其他长标题。
-- 趋势绑定至少两篇论文和具体 evidenceRefs。
-- 趋势质量、事实支持充分性、来源限定词和概念边界继续由语义规则检查并写入告警；低信息趋势或可能扩大范围的表述不会单独阻断发布。
-- 每篇最多生成一条 singlePaperObservation，把该论文最重要的单篇发现和一个实质证据边界合并，不能用多条重复论文标题和正文。
+- 生成 coreTheme、trends 和 readingOrder。若入选论文不存在一个有具体证据支持的共同结论，coreTheme 按 1-3 个真实主题组织，明确每组的研究对象，不得为串联全部论文创造抽象共同主题。
+- titleAngle 在 Editorial Plan 阶段就必须满足 12–32 Unicode 字符，安全目标为 14–24 字符；较短但准确的学术标题不需要补充抽象词。ASCII 字母逐个计数，titleAngle 使用学术描述性短语，直接说明研究领域及对象、方法或评估问题，不使用问句或新闻标题，也不添加论文、基准或产品名加冒号的前缀。若模型仍返回“论文/系统名：标题正文”且仅正文已满足 12–32 字符，服务端可确定性移除该前缀；若正文过短，则进入一次定向修正，不得因整串仍在 12–32 字符内而接受前缀，也不得直接截断其他长标题。
+- Head/Tail 的 reportIntroduction 先说明收录范围；论文方向不一致时按 Editorial Plan 中的 1-3 个真实主题分别介绍。首次出现的不常用术语要解释；模型仓库语境中的 `distributed artifacts` 写为“公开分发的模型文件”，不得误写为分布式计算中的“模型构件”。
+- 跨论文观察绑定至少两篇论文和具体 evidenceRefs；不能把研究对象相近等同于结论相同。
+- 公开观察最多 2 条，每条只表达一个共同发现和一个关键证据边界，不设最低字数，不展开逐篇方法和实验清单。
+- 跨论文观察的质量、事实支持充分性、来源限定词和概念边界继续由语义规则检查并写入告警；低信息观察或可能扩大范围的表述不会单独阻断发布。
+- 每篇最多生成一条 singlePaperObservation，把该论文最重要的单篇发现和一个实质证据边界合并，不能用多条重复论文标题和正文；该字段只进入 Trace 与 QA，不渲染到公开周报。
 - caveat 描述当前实验、数据、模型、指标或适用范围，不写“不排除未来改进”等泛化可能性。
 - Editorial Plan、Paper Section 和 Head/Tail 若命中修辞式或推广式表达，记录字段级文风告警；不触发自动改写。
 - 服务端先校验计划，再允许写头尾。
@@ -1065,6 +1114,10 @@ Selection 由服务端确定性执行。
 - 每篇独立调用。
 - 默认并发 2。
 - 生成该论文正文块。
+- `methodFramework` 使用 2–3 个短句，只回答研究输入或对象、核心机制、输出或验证路径；目标 180–260 个 Unicode 字符，最大 260。
+- `experimentsAndResults` 从读者最关心的主要发现写起，再交代决定结论的比较及证据边界；保留必要的实验范围，专有术语只在确实不可替代时使用并就地解释。最大 280 个 Unicode 字符，不设最低字数，不能为了压缩而丢失有决策价值的结果或例外。
+- 上述两个字段各自最多保留 3 个决定性精确数字；与主结论无关的阈值、硬件、运行参数和次要消融不进入公开正文，完整证据仍保留在 Evidence 与 Trace。
+- 字段超长时只对该字段执行一次路径级压缩，不改动同篇其他字段。压缩后仍超出篇幅预算时保留当前稿件并记录非阻断可读性告警，不得因此移除论文或拒绝整份周报。
 - 模型的事实输入只包含当前论文带 ref 的原文 Evidence 短摘录；Value Signal 仅保留维度和方向路由，Review/Calibration 仅保留评分与层级元数据。
 - 事实范围不得超出 evidenceCard。
 - 每个正文单元的精确数字与 evidenceRefs、章节元数据进行字面对照并记录告警。章节号只识别独立的“节”或“章节”表达，不把“46 节点”等普通名词识别成章节引用；无论是否匹配，数字语义检查均不阻断。
@@ -1091,7 +1144,7 @@ Selection 由服务端确定性执行。
 
 - 标题角度。
 - 报告导读。
-- 本周趋势判断。
+- 本周研究观察（仅在至少两篇论文有共同、可核实发现时写入；没有时明确说明暂无充分的跨论文观察）。
 - 推荐阅读顺序。
 - 必要的跨论文总结。
 
@@ -1107,7 +1160,7 @@ Selection 由服务端确定性执行。
 YAML
 H1 标题
 报告导读
-本周趋势判断
+本周研究观察
 按阅读层级组织的逐篇正文
 推荐阅读顺序
 完整论文清单
@@ -1125,7 +1178,7 @@ H1 标题
 - 逐篇正文按照 Selection rank 拼装，不依赖 paperDraft 的输入数组顺序。
 - 推荐阅读顺序必须与 Selection 顺序一致。
 - 合并逐篇阅读价值字段时先清理字段尾部重复句号/分号，使用中文分号连接后补齐句末标点，不能产生 `。；` 或无句末标点的长条目。
-- 趋势和单篇观察的 claim/caveat 由服务端使用“；边界：”直接连接，先清理 claim 尾部标点，不产生“。 边界：”或其他标点后空格。
+- 趋势由服务端拼装为带标题的嵌套列表：第一行显示“趋势序号｜读者标题（成熟度）”，第二行显示“变化”，第三行显示“适用边界”。不再把 claim 和 caveat 压缩成一条“；边界：”长句。singlePaperObservations 只保留在内部 artifact 和 Trace，不参与公开 Markdown 拼装。
 - 完整论文清单固定为「论文、一句话介绍、阅读级别、链接」四列，并对表格字符执行转义。
 - 固定页尾始终由服务端追加到最后一行。
 - assemble 不调用 LLM；Markdown 全稿写入 Trace 后进入 deterministic_qa。
@@ -1177,9 +1230,10 @@ deterministic_qa 是服务端确定性质量门，不是 Agent，也不调用 LL
 - QA 必须以绑定摘录而不是 Evidence summary 或 Value Signal 文本作为事实依据；逐句检查设置、可观察性、控制器类型和时间跨度限定，引用存在不等于事实被支持。
 - 每个语义 issue 必须包含 code、severity、field、claim、reason、evidenceRefs、paperId、scope、repairTarget 和 repairable。
 - 每个为 false 的 check 必须有对应 check-specific code 的详细 issue；缺失时视为 QA 响应契约错误，走一次响应结构修正，不得生成笼统内容问题并消耗正文 repair_once。
+- 同一局部问题可以同时影响实验范围与精确数字检查；当 issue 已使用 `unsupported_number` 精确指出实验分母、样本数或指标数字不一致时，可以同时解释 `experimentsGrounded=false`，不得仅因错误分类名称不同再次拒绝结构完整的 QA 结果。
 - 服务端保留 checks 和 issues 供管理员查看；只要响应结构、paperId 和 artifact 身份有效，语义 issue 不改变阶段继续结论。
-- QA 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，并且这不消耗正文唯一一次 repair_once。
-- QA 模型调用最终不可用或响应修正后仍无效时，当前论文记为 `processing_failure` 并进入待复核队列，继续其他论文；不能把系统故障伪装成论文内容失败，也不能自动整体 reject。
+- QA 响应 JSON 或 Schema 无效时允许一次结构化响应修正；修正 prompt 不携带上一次原始响应，并且这不消耗正文唯一一次 repair_once。若模型先返回一个完整 JSON 对象、随后误附带提示字段或解释文字，服务端只解析第一个边界完整的 JSON 对象，再执行正常 Schema 校验。
+- QA 模型调用最终不可用或响应修正后仍无效时，当前论文记为 `processing_failure` 并进入待复核队列，继续其他论文；不能把系统故障伪装成论文内容失败，也不能自动整体 reject。并发出现多篇失败时，每篇必须形成独立队列项，只有全部当前入选论文都取得成功 qaResult 才能进入报告级 QA。管理员可以只重试该论文或将其从本期周报移除；单篇重试必须保留其他论文已经通过的 qaResult，只重新调用目标论文，成功后按原入选顺序合并。首次失败和每次人工重试使用不同的 Trace 文件名，不得覆盖原始返回或聚合记录。
 - 论文 artifacts 身份不一致时不直接发布；有明确 paperId 时进入管理员处理，只允许跳过该论文或退出任务，不能忽略阻断问题或在错误身份上继续修正。
 - 任一论文发现语义内容问题时，记录 paperId、字段、claim、reason 和 evidenceRefs 后继续，不进入 repair_once，不自动重写正文，也不跳过论文。
 - 每次模型调用、响应修正、逐篇结论、聚合结果、耗时和最终路由全部写入 Trace。
@@ -1311,7 +1365,7 @@ Evidence、Review、Calibration、单篇 Writer 或逐篇 QA 的调用、内容�
 - YAML。
 - 具体、主题化标题。
 - 报告导读。
-- 本周趋势判断。
+- 本周研究观察。
 
 标题冒号后的观点必须绑定本周具体技术信号，不能使用“新范式”“值得关注”“加速落地”等泛化套话。
 
@@ -1325,21 +1379,23 @@ Evidence、Review、Calibration、单篇 Writer 或逐篇 QA 的调用、内容�
 - 主问题域。
 - 关键支撑技术。
 - 链接。
+- 一句话看点。
 - 研究问题。
 - 核心贡献。
 - 方法框架。
-- 实验与结果。
+- 实验结论。
 - 局限与适用约束。
-- 阅读价值与重点关注。
+- 阅读价值与借鉴。
 
-“阅读价值与重点关注”建议包含：
+“阅读价值与借鉴”建议包含：
 
-- 为什么值得读。
-- 优先阅读的章节、表格或机制。
-- 有证据时才写 ADN/网络自治启发。
+- 可借鉴之处：只在有证据时写 ADN/网络自治启发，不强行迁移。
+- 建议重点阅读的章节、表格或机制；不要重复“一句话看点”、实验结论与局限。
 - background_only 必须明确阅读边界，但不因此降低入选阈值。
 
-发表单位在逐篇正文中使用中文并绑定原文依据；完整论文清单不增加单位列。
+发表单位在逐篇正文中使用“中文译名（英文原名）”并绑定当前论文的 affiliation Evidence；括号内原名必须与 Evidence 精确对应。单位格式修正耗尽时只允许使用 Evidence 原名回退，不得自行补写；完整论文清单不增加单位列。
+
+发布拼装时去掉数据层的“原文单位（…）”包装，只保留单位名称；原文未提供可核实单位时明确写“原文未提供可核实的作者单位”。“推荐阅读顺序”的理由要与该论文的实验结论、局限和证据边界一致；若同时出现“全面优于”等笼统优势表述和明确的反例，公开稿退回中性核对提示，并在 Trace 记录告警。历史周报中的旧章节名称仍可通过发布校验。
 
 ### 11.3 报告尾部
 
@@ -1776,6 +1832,10 @@ runStep 统一负责：
 - Evidence excerpt 原文匹配。
 - 精确数字匹配。
 - Evidence not_present。
+- 论文级单位元数据覆盖 `extracted`、`not_provided`、`parse_failed`，并验证四类 sourceType、置信度、标题页范围及正文/实验/致谢排除。
+- 找到单位时生成 `META_AFFILIATIONS` Evidence 区块；无单位或解析失败时不生成，并要求 affiliations 为 `not_present`。
+- 原文缓存 v2 或缺少单位元数据时重新抓取并写回 v3；有效且未过期的 v3 可直接复用。
+- Review 单位使用“中文译名（英文原名）”、精确匹配 Evidence 原名，并在单位类结构化修正耗尽后保留其他有效评分、使用 Evidence 原名回退。
 - Review 质疑 Evidence 后仍完成评分，并记录非阻断告警。
 - Calibration 不直接返回分数。
 - Calibration 定向 Review 后重新计算。
@@ -1910,6 +1970,7 @@ Mock arXiv 和 Mock LLM 走完：
 - 定向 Review 一次。
 - unresolved 排除增补。
 - maxSelectedCount。
+- 最终 5 篇使用研究重点软组合目标：Agent / Harness、AI 应用与系统、网络 AI 合计尽量不少于 3 篇；不足时不强制补齐。
 - 保留 background_only 规则；Selection 只接收达到入选阈值的论文。
 
 ### 阶段 5：Editorial Plan 和分段写作
@@ -1987,6 +2048,7 @@ Mock arXiv 和 Mock LLM 走完：
 - 不实现跨任务统计看板。
 - 不实现多批 Fold 校准。
 - 不下载 PDF 或 TeX。
+- 不建立作者到单位的对应关系；第一阶段只维护论文级单位集合。
 - 不做开放式 Agent 自主规划。
 - 不允许人工强制发布 reject 稿件。
 - 不自动回退旧周报链路。
@@ -2047,8 +2109,12 @@ Mock arXiv 和 Mock LLM 走完：
 - 前端提交当前推荐列表中的可见推荐论文：候选下限以上进入 primary，其余可见推荐进入 reserve，隐藏论文不提交；不按发表时间过滤。
 - 新版界面不再提供摘要降级或关闭全文门的开关；原文质量门由服务端强制执行。
 - `minSelectedCount` 和 `maxSelectedCount` 均可配置；`minSelectedCount` 只驱动达标候选增补，候选耗尽后按实际达标数量发布，不因只有 1–2 篇而整体拒绝，也不使用低于阈值的论文补足。
+- 推荐分析新增确定性的研究重点分类和排序校准：优先 Agent / Harness、AI 应用与系统、网络 AI；保留高质量基础模型研究；模型内部与底层优化默认后移；硬件主领域继续排除。前端不新增配置项，推荐卡片显示分类和判断依据。
+- Selection 在所有候选都满足入选阈值和可信度要求后应用软组合目标；它只改变篇数上限内的成员选择，不修改周报复评分，也不允许低分论文补位。
 - 周报窗口展示当前 Agent stage；独立管理员 Trace 对话框延迟加载 Timeline、模型调用记录、阶段 artifacts、耗时、修正和决策。
 - Job/Trace 持久化、认证字段脱敏、最近 20 次与 30 天保留、管理员取消和服务重启标记 interrupted 已实现。
-- 当前自动化回归覆盖 601 个用例并全部通过。
+- arXiv HTML 标题页论文级单位元数据、`META_AFFILIATIONS` Evidence、cache v3 刷新、Review 英文原名精确校验与 Evidence 原名回退已实现；当前不支持 PDF/TeX 或作者到单位映射。
+- 2026-09-23 的 24 篇真实 arXiv HTML 时间点回放以并发 3 完成，HTTP 200、`extracted` 均为 24/24，六类已知脏值回归全部清除；输入、统计和复现边界见 `docs/2026-09-23-arxiv-affiliation-replay.md`。
+- 当前自动化回归覆盖 675 个用例。
 
 真实周报灰度、问题定位和防护网记录在 `WEEKLY_REPORT_GRAY_ISSUE_REGISTRY.md`。截至 2026-09-20，系统已经使用真实推荐列表完成 publish，并由管理员手动确认最新的单篇重试与恢复流程可以继续执行。Paper Insight 2.1 进入可持续发布阶段；后续灰度继续关注内容事实、实验范围、阅读价值和人工复核可读性，但不再把已经完成的框架重构标记为“等待切换默认”。

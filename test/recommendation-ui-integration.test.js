@@ -15,6 +15,15 @@ test("frontend and backend share the domain-selected default query configuration
   assert.match(appSource, /const readingListStepOrder\s*=/);
 });
 
+test("recommendation cards expose the deterministic research-focus label and reason", () => {
+  assert.match(appSource, /from "\.\/research-focus\.js"/);
+  assert.match(serverSource, /from "\.\/public\/research-focus\.js"/);
+  assert.match(appSource, /researchFocusLabelForPaper\(paper\)/);
+  assert.match(appSource, /researchFocusReasonForPaper\(paper\)/);
+  assert.match(serverSource, /researchFocusLabel:/);
+  assert.match(serverSource, /researchFocusReason:/);
+});
+
 test("recommendation analysis uses the fixed three-request concurrency pool", () => {
   assert.match(appSource, /from "\.\/analysis-pool\.js"/);
   assert.match(appSource, /recommendationAnalysisConcurrency\s*=\s*3/);
@@ -98,6 +107,7 @@ test("historical analyses without a scope decision are reanalyzed instead of reu
 
   assert.ok(start >= 0 && end > start);
   assert.match(functionSource, /typeof item\.analysis\.recommendationEligible\s*!==\s*"boolean"/);
+  assert.match(functionSource, /!item\.analysis\.researchFocus/);
 });
 
 test("API settings default to GLM-5.3 on the BigModel Coding OpenAI endpoint", () => {

@@ -13,17 +13,21 @@ const OPERATION_CONTEXT_PATTERN = /paper\s*insight|本轮|周报|任务|候选|�
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
 
 export const containsInternalProcessLanguage = (value) => {
-  const text = normalizeText(value);
+  const raw = String(value || "");
+  const text = normalizeText(raw);
   if (!text) {
     return false;
   }
   if (DIRECT_INTERNAL_PROCESS_PATTERNS.some((pattern) => pattern.test(text))) {
     return true;
   }
-  if (FALLBACK_TERM_PATTERN.test(text) && FALLBACK_CONTEXT_PATTERN.test(text)) {
-    return true;
-  }
-  return OPERATION_TERM_PATTERN.test(text) && OPERATION_CONTEXT_PATTERN.test(text);
+  return raw.split(/[\r\n。！？!?]+/u)
+    .map(normalizeText)
+    .filter(Boolean)
+    .some((sentence) => (
+      (FALLBACK_TERM_PATTERN.test(sentence) && FALLBACK_CONTEXT_PATTERN.test(sentence))
+      || (OPERATION_TERM_PATTERN.test(sentence) && OPERATION_CONTEXT_PATTERN.test(sentence))
+    ));
 };
 
 export const internalProcessWarnings = (value, { path = "report.markdown" } = {}) => (

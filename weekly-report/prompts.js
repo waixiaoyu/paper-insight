@@ -1,5 +1,6 @@
 import { paperDraftRepairPaths } from "./paper-draft-patch.js";
 import { buildEvidenceSourceRegistry } from "./evidence-source-registry.js";
+import { resolveAuthoritativeAffiliations } from "./publication-metadata.js";
 
 const paperIdFrom = (paper = {}, contextPacket = {}) => String(
   contextPacket.paperId || paper.id || paper.absLink || paper.link || ""
@@ -380,7 +381,7 @@ const reviewOutputSchema = {
   uncertainty: "Important uncertainty or evidence boundary",
   interestFit: "target_network_autonomy | general_ai_system | out_of_scope_domain | unclear",
   interestReason: "Direction-fit explanation that does not alter research scores",
-  affiliations: ["Chinese institution name supported by affiliations evidence"],
+  affiliations: ["中文译名（English original name） supported by affiliations evidence"],
   affiliationEvidenceRefs: ["affiliations:0"]
 };
 
@@ -394,9 +395,19 @@ const commonReviewRules = [
   "Use target_network_autonomy only when the paper's primary problem domain is directly about communication networks, telecom infrastructure, network operations, or network autonomy. A general AI/agent benchmark that may transfer to network autonomy is general_ai_system, not target_network_autonomy.",
   "Do not return rawScore. The server computes it with a fixed formula.",
   "Use only the supplied Evidence, Value Signals, and their bound excerpts. Do not use abstracts, old analysis, old scores, outside knowledge, or another paper.",
-  "Affiliations must be Chinese institution names and must cite affiliations evidence refs. Return empty arrays when affiliation evidence is insufficient.",
+  "Affiliations must use 中文译名（英文原名） for every institution and cite affiliations evidence refs. Preserve the exact original institution name inside parentheses. When affiliation Evidence is supported, affiliations and affiliationEvidenceRefs must not be empty. Return empty arrays only when affiliation evidence is not_present or insufficient.",
+  "When affiliationOriginals is non-empty, copy English original names only from affiliationOriginals and do not abbreviate, shorten, merge, or reconstruct them.",
   "Return one JSON object only, without Markdown fences."
 ];
+
+const reviewAffiliationOriginals = (item = {}) => (
+  item?.evidenceCard?.affiliations?.status === "supported"
+    ? resolveAuthoritativeAffiliations({
+      publicationMetadata: item?.contextPacket?.publicationMetadata,
+      evidenceSources: item?.evidenceCard?.affiliations?.sources
+    }).map((entry) => entry.originalName)
+    : []
+);
 
 const baseReviewPayload = ({ task, item }) => {
   const evidenceCard = reviewEvidenceCard(item);
@@ -409,6 +420,7 @@ const baseReviewPayload = ({ task, item }) => {
     },
     evidence: { evidenceCard, valueSignals },
     sourceExcerpts: reviewSourceExcerpts(evidenceCard),
+    affiliationOriginals: reviewAffiliationOriginals(item),
     scoring: {
       dimensions: {
         scenarioProblemValue: { weight: 0.2 },
@@ -508,6 +520,13 @@ const commonCalibrationRules = [
   "Every supplied paper must appear exactly once and no unknown paper may be returned.",
   "Return one JSON object only, without Markdown fences."
 ];
+const calibrationConfirmationInstruction = "Confirm the cohort after targeted Review. Return repaired only when the prior suspicion is resolved; return unresolved with suspectedMisjudgments when it is not.";
+const normalizedRereviewedDimensions = (value = {}) => Object.fromEntries(
+  Object.entries(value || {}).map(([paperId, dimensions]) => [
+    String(paperId),
+    (Array.isArray(dimensions) ? dimensions : []).map(String)
+  ])
+);
 
 const baseCalibrationPayload = ({ task, items = [] }) => ({
   task,
@@ -521,30 +540,52 @@ export const buildCalibrationPrompt = ({ items = [] } = {}) => JSON.stringify(
   baseCalibrationPayload({ task: "weekly_report_calibration", items })
 );
 
-export const buildCalibrationRepairPrompt = ({ items = [], issues = [], phase = "initial" } = {}) => JSON.stringify({
-  ...baseCalibrationPayload({
+export const buildCalibrationRepairPrompt = ({
+  items = [],
+  issues = [],
+  phase = "initial",
+  requestedPaperIds = [],
+  rereviewedDimensions = {}
+} = {}) => {
+  const basePayload = baseCalibrationPayload({
     task: phase === "confirm"
       ? "weekly_report_calibration_confirm_repair"
       : "weekly_report_calibration_repair",
     items
-  }),
-  repairInstruction: "Regenerate the complete Calibration response and correct only the listed schema or governance violations.",
-  issues: (Array.isArray(issues) ? issues : []).slice(0, 40).map((itemIssue) => ({
-    code: String(itemIssue?.code || "calibration_validation_failed"),
-    path: String(itemIssue?.path || "")
-  }))
-});
+  });
+  const repairPaperIds = [...new Set((Array.isArray(requestedPaperIds) ? requestedPaperIds : [])
+    .map(String)
+    .filter(Boolean))];
+  return JSON.stringify({
+    ...basePayload,
+    ...(phase === "confirm" ? {
+      confirmationInstruction: calibrationConfirmationInstruction,
+      rereviewedDimensions: normalizedRereviewedDimensions(rereviewedDimensions)
+    } : {}),
+    ...(repairPaperIds.length ? {
+      requestedPaperIds: repairPaperIds,
+      rules: [
+        ...basePayload.rules.filter((rule) => !rule.startsWith("Every supplied paper")),
+        "Use every supplied paper as comparison context, but return exactly one result for each requestedPaperId and no result for any retained paper."
+      ],
+      repairInstruction: "Return only the missing Calibration results named in requestedPaperIds. The server has retained every other valid result and will merge this patch in original cohort order."
+    } : {
+      repairInstruction: "Regenerate the complete Calibration response and correct only the listed schema or governance violations."
+    }),
+    issues: (Array.isArray(issues) ? issues : []).slice(0, 40).map((itemIssue) => ({
+      code: String(itemIssue?.code || "calibration_validation_failed"),
+      path: String(itemIssue?.path || "")
+    }))
+  });
+};
 
 export const buildCalibrationConfirmationPrompt = ({
   items = [],
   rereviewedDimensions = {}
 } = {}) => JSON.stringify({
   ...baseCalibrationPayload({ task: "weekly_report_calibration_confirm", items }),
-  confirmationInstruction: "Confirm the cohort after targeted Review. Return repaired only when the prior suspicion is resolved; return unresolved with suspectedMisjudgments when it is not.",
-  rereviewedDimensions: Object.fromEntries(Object.entries(rereviewedDimensions || {}).map(([paperId, dimensions]) => [
-    String(paperId),
-    (Array.isArray(dimensions) ? dimensions : []).map(String)
-  ]))
+  confirmationInstruction: calibrationConfirmationInstruction,
+  rereviewedDimensions: normalizedRereviewedDimensions(rereviewedDimensions)
 });
 
 const targetedReviewOutputSchema = {
@@ -672,10 +713,10 @@ const editorialPaper = (item = {}) => ({
 });
 
 const editorialPlanOutputSchema = {
-  coreTheme: "Concrete weekly technical theme grounded in selected papers",
-  titleAngle: "Specific title angle, without generic promotional language",
+  coreTheme: "Concrete weekly topic map grounded in selected papers; use one to three groups when no single theme covers the cohort",
+  titleAngle: "Academic descriptive title angle, without generic promotional language or question-headline wording",
   trends: [{
-    claim: "Cross-paper trend supported by at least two papers",
+    claim: "Concrete cross-paper observation supported by at least two papers",
     supportingPaperIds: ["selected paper A", "selected paper B"],
     evidenceRefs: ["paperA:method:0", "paperB:results:0"],
     maturity: "emerging | developing | mature | uncertain",
@@ -705,7 +746,11 @@ const editorialPlanRules = [
   "Only evidence field sources excerpts are factual Evidence. Evidence summaries and factual Value Signal prose are intentionally omitted; do not reconstruct or assume them.",
   "Write every reader-facing field in Simplified Chinese; paper titles and indispensable technical terms may remain in their original language.",
   "Use neutral, literal technical prose. State the research object, method, result, and limitation directly; avoid metaphors, personification, rhetorical contrasts, slogans, and promotional AI-style wording. Do not use 揭示/reveal, 而非 rhetorical contrasts, 赋能/unlock, 重塑/reshape, claims of 坚实量化证据, or generic claims of 较高的直接参考价值.",
-  "titleAngle must contain 18-32 Unicode characters. Target 20-28 characters and count every ASCII letter individually. Do not prefix titleAngle with a paper, benchmark, or product name followed by a colon; Head/Tail already has paper context.",
+  "Use an academic descriptive noun phrase for titleAngle, not a question, news headline, clickbait, or an unexplained chain of abstract terms. State the research domain and a concrete object, method, or evaluation problem.",
+  "Do not use umbrella endings such as 研究进展, 技术进展, or 领域进展. When the cohort contains multiple substantial topics, name at least two concrete research problems or technical mechanisms. If one secondary paper sits outside the dominant theme, place it after 兼论 and name its concrete object instead of inventing a broad umbrella category.",
+  "If the selected papers do not support one concrete shared conclusion, organize coreTheme into one to three factual topic groups instead of inventing a common thesis. Name the papers' concrete research objects in each group and do not force every paper into one cross-paper trend.",
+  "Use standard Chinese technical terms. In a model-registry context, translate distributed artifacts as publicly distributed model files（公开分发的模型文件）, not distributed-computing components（分布式模型构件）. Prefer 模型文件 or 模型产物 to 模型构件 unless the Evidence explicitly describes a software component.",
+  "titleAngle must contain 12-32 Unicode characters. Target 14-24 characters and count every ASCII letter individually. Do not add abstract filler merely to reach the minimum. Do not prefix titleAngle with a paper, benchmark, or product name followed by a colon; Head/Tail already has paper context.",
   "Preserve every population and comparison qualifier. Evidence about the strongest, best-performing, or explicitly named models must not become a claim about frontier models or models as a whole.",
   "A long-document result limited to commercial VLMs must remain limited to that cohort, especially when named extraction systems are counterexamples. Do not rewrite it as a weakness of current or most systems.",
   "Preserve the evaluated object type. A cohort spanning VLMs, extraction tools, coding agents, and APIs is a cohort of methods or systems, not frontier models.",
@@ -717,7 +762,12 @@ const editorialPlanRules = [
   "Preserve metric names exactly: grounding F1 is not grounding accuracy. A negative statement that fixed KIE benchmarks do not handle user-specified schemas does not by itself prove that the current benchmark supports them. Translate scanned forms as 扫描表单, not 扫描表格.",
   "Do not turn 'score zero at both grounding levels' into a zero-level grounding metric. Zero is the score; the level names must come from cited Evidence.",
   "Do not label a percentage as accuracy unless the cited excerpt containing that percentage identifies the metric as accuracy; add the metric-definition Evidence ref or keep the source metric name.",
-  "A trend requires at least two distinct supporting papers and at least one valid evidence ref from every supporting paper.",
+  "A cross-paper observation requires at least two distinct supporting papers and at least one valid evidence ref from every supporting paper.",
+  "Return at most two public cross-paper observations. Return an empty trends array when selected papers do not support a concrete shared observation; never fill a slot merely because topics sound related.",
+  "Each cross-paper claim must use at most two short sentences. State what the selected papers actually show in plain Chinese, then why readers should care. Keep the caveat to one short sentence.",
+  "Do not claim a field is shifting, becoming mature, or establishing a broad trend from the current week's papers alone. Temporal change requires explicit comparative evidence; heterogeneous research objects are separate observations, not proof of one field-wide direction.",
+  "Do not list paper methods, module names, benchmark names, metric names, or implementation details in a trend. Keep only the minimum technical term needed to understand the conclusion.",
+  "Avoid stacking multiple technical concepts or unexplained English abbreviations in one sentence. If an unfamiliar term is indispensable, explain it immediately in plain Chinese.",
   "A cross-paper trend must name a shared concrete evaluation design, mechanism, metric discipline, comparison boundary, or engineering implication. Merely saying that multiple papers build benchmarks or identify limitations in prior evaluation is too generic.",
   "A cross-paper multidimensional-evaluation claim requires a cited excerpt from every supporting paper that directly states dimensions, axes, or multiple metrics. Do not invent an excluded scope such as general-purpose table processing unless the cited excerpt states it.",
   "A claim supported by only one paper must be placed in singlePaperObservations, never trends.",
@@ -734,7 +784,10 @@ const WRITING_REPAIR_HINTS = Object.freeze({
   resource_management: "At this path, remove resource management/资源管理 unless the cited excerpt directly states resource management; resource budgeting is not equivalent.",
   resource_budgeting: "At this path, remove resource budgeting/资源预算 unless the cited excerpt states that term or lists concrete cross-stage resources together with an immediate-versus-future tradeoff.",
   state_tracking: "At this path, remove state tracking/状态追踪 unless the cited excerpt directly states state tracking.",
-  paper_title_prefix: "Rewrite titleAngle as a standalone 18-32 character technical claim. Do not begin it with a selected paper, benchmark, or product name followed by a colon.",
+  compact_reader_section: "Compress only this reader section. Keep the main research object, core mechanism or headline result, and one material evidence boundary; remove secondary setup details, hardware, runtime settings, minor ablations, and non-decisive exact numbers. Preserve the existing evidenceRefs needed by the retained claims.",
+  paper_title_prefix: "Rewrite titleAngle as a standalone 12-32 character technical title. Do not begin it with a selected paper, benchmark, or product name followed by a colon.",
+  academic_descriptive_title: "Rewrite titleAngle as an academic descriptive noun phrase. Remove question marks and question-headline wording; name the research domain and concrete object, method, or evaluation problem directly.",
+  specific_research_topics: "Replace generic 研究进展/技术进展/领域进展 wording with at least two concrete research problems or technical mechanisms. If one secondary paper is outside the dominant theme, use 兼论 followed by its concrete research object.",
   missing_zai_before_condition: "Correct the Chinese grammar at this path: write 在奖励函数未知的情况下, not 旨在奖励函数未知的情况下.",
   multidimensional_evaluation_design: "Remove the multidimensional-evaluation claim unless every cited paper excerpt directly states dimensions, axes, or multiple metrics supporting it.",
   generic_table_scope: "Remove the general-purpose table-processing boundary unless the cited excerpt directly states that excluded scope.",
@@ -899,6 +952,7 @@ const paperDraftPatchOutputSchema = {
 const paperSectionRules = [
   "Write only this paper's weekly-report body artifact. Do not return Markdown.",
   "Write every reader-facing text field in Simplified Chinese; paper titles and indispensable technical terms may remain in their original language.",
+  "Write oneSentenceTakeaway as a plain-language reading entry: state the problem and the main finding in one sentence before naming methods, benchmarks, or metrics.",
   "Use plain, neutral technical prose. Describe what the paper studies, how it works, what was measured, and what remains limited without metaphors, personification, rhetorical contrasts, or promotional AI-style wording. Do not use 揭示/reveal, 赋能/unlock, 重塑/reshape, or claims of 坚实量化证据.",
   "Do not use unqualified effectiveness claims such as 有效解决, 有效方法, 有效暴露, or 有效测试. State the measured result and its boundary instead.",
   "Preserve metric names exactly: F1 is not accuracy. A negative statement that another benchmark lacks a capability does not establish that this paper's system has it. Translate scanned forms as 扫描表单, not 扫描表格.",
@@ -906,6 +960,10 @@ const paperSectionRules = [
   "A best observed score is not an intrinsic upper bound or ceiling. State it as the highest value in this evaluation unless the excerpt explicitly defines an upper bound.",
   "Do not strengthen a decline or gap with 显著/significant unless the cited excerpt uses that qualifier for the same result.",
   "Every factual statement must stay within the supplied Evidence and cite existing field:index refs.",
+  "Write methodFramework as two or three short sentences covering only the research input or object, the core mechanism, and the output or validation path. Target 180-260 Unicode characters and never exceed 260.",
+  "Write experimentsAndResults as two or three short sentences. Lead with the main finding and the decision-relevant comparison, then state the evaluation boundary. Never exceed 280 Unicode characters.",
+  "In experimentsAndResults, explain an indispensable benchmark or metric term immediately in plain Chinese. Omit secondary dataset, model, metric, and ablation name lists when the comparison can be stated faithfully without them.",
+  "Keep at most three decisive exact numbers in each of methodFramework and experimentsAndResults. Omit non-central thresholds, hardware details, runtime settings, and minor ablations unless they are essential to the paper's main conclusion.",
   "Only evidence field sources excerpts are factual Evidence. Evidence summaries and factual Value Signal prose are intentionally omitted; do not reconstruct or assume them.",
   "Put citations only in each field's evidenceRefs array. Never write [field:index], field:index, footnote markers, or citation annotations inside reader-facing text.",
   "Review score reasons, weaknesses, uncertainty, calibration comments, and selection metadata are editorial aids, not factual Evidence. Never present them as facts about the paper.",
@@ -923,7 +981,8 @@ const paperSectionRules = [
   "Provide at least two separately grounded limitations or applicability constraints.",
   "The two required limitations must be materially independent. Do not split the same word-level grounding or exact-evidence-linking gap into two bullets; add a distinct supported scope, cohort, data, seed, comparison, or missing-validation boundary.",
   "A poor performance result is not by itself a separate study limitation. Limitations must describe experiment design, data, seeds, comparison setup, scope, missing validation, or applicability boundaries.",
-  "ADN or network-autonomy implications must follow the supplied value signals and preserve their boundary. Value Signals are editorial hints, not factual Evidence: every factual premise must still be entailed by this field's cited Evidence excerpts. Omit unsupported premises instead of repeating them from a Value Signal.",
+  "ADN or network-autonomy implications must follow the supplied value signals and preserve their boundary. Value Signals are editorial hints, not factual Evidence: every factual premise must still be entailed by this field's cited Evidence excerpts. Omit unsupported premises instead of repeating them from a Value Signal. If the paper has no direct ADN application, describe one concrete method readers can learn from without inventing a deployment scenario.",
+  "Keep adnInsight and readingValue.recommendedFocus distinct: the first names a supported transferable idea, while the second points to the evidence or method readers should check. Avoid repeating researchProblem, coreContribution, or limitationsAndConstraints in these fields.",
   "Use 自主决策系统, not the unnatural phrase 自主决策网络, unless the paper directly studies a communication network.",
   "Do not write persistent state, short-rest mechanics, deterministic engines, or separation from basic rules parsing unless those exact setup premises occur in this field's cited Evidence excerpts.",
   "Do not mention selection mechanics, score cutoffs, review or calibration workflow, Agent stages, prompts, artifacts, or internal JSON.",
@@ -948,6 +1007,13 @@ const basePaperSectionPayload = ({ task, item = {} }) => ({
     finalScore: Number(item?.selection?.finalScore),
     readingTier: String(item?.selection?.readingTier || ""),
     rank: Number(item?.selection?.rank)
+  },
+  publicationConstraints: {
+    readerSectionUnicodeCharacters: {
+      methodFramework: { targetMinimum: 180, maximum: 260 },
+      experimentsAndResults: { maximum: 280 }
+    },
+    decisiveExactNumbersPerReaderSection: { maximum: 3 }
   },
   rules: paperSectionRules,
   outputSchema: paperDraftOutputSchema
@@ -1178,14 +1244,15 @@ const headTailPaper = (item = {}, paperDrafts = []) => {
 };
 
 const headTailOutputSchema = {
-  titleAngle: "Specific 18-32 character technical viewpoint used after the deterministic weekly title prefix",
+  titleAngle: "Specific 12-32 character academic descriptive title used after the deterministic weekly title prefix",
   description: "Concise report description, at most 55 characters",
   tags: ["one to five concise reader-facing topic tags"],
   reportIntroduction: "Grounded report introduction",
   trendJudgments: [{
     trendIndex: "zero-based index of one supplied editorialPlan trend",
-    claim: "Reader-facing expression of that trend",
-    caveat: "Reader-facing boundary of that trend"
+    title: "6-16 Chinese character title stating one concrete, plain-language observation",
+    claim: "At most two short plain-Chinese sentences: what these papers show, then why it matters",
+    caveat: "One short reader-facing boundary sentence"
   }],
   singlePaperObservations: [{
     observationIndex: "zero-based index of one supplied single-paper observation",
@@ -1203,6 +1270,10 @@ const headTailRules = [
   "Use only editorialPlan and the supplied compact selected-paper artifacts. No paper original text, excerpts, abstracts, or outside knowledge is available.",
   "Write every reader-facing field in Simplified Chinese; paper titles and indispensable technical terms may remain in their original language.",
   "Use neutral, literal technical prose throughout. State the topic and findings directly; avoid metaphors, personification, rhetorical contrast patterns such as X is not Y, slogans, and promotional AI-style wording. Do not use 揭示/reveal, 赋能/unlock, 重塑/reshape, or claims of 坚实量化证据.",
+  "Use an academic descriptive noun phrase for titleAngle, not a question, news headline, clickbait, or an unexplained chain of abstract terms. State the research domain and a concrete object, method, or evaluation problem.",
+  "Do not use umbrella endings such as 研究进展, 技术进展, or 领域进展. When the cohort contains multiple substantial topics, name at least two concrete research problems or technical mechanisms. If one secondary paper sits outside the dominant theme, place it after 兼论 and name its concrete object instead of inventing a broad umbrella category.",
+  "reportIntroduction must first state the report scope and then organize heterogeneous papers into one to three actual topic groups when needed. Explain each group with concrete research objects and problems; do not invent one shared conclusion merely to connect every selected paper.",
+  "Use standard Chinese technical terms and define an unfamiliar technical term on first use. In a model-registry context, translate distributed artifacts as publicly distributed model files（公开分发的模型文件）, not distributed-computing components（分布式模型构件）. Prefer 模型文件 or 模型产物 to 模型构件 unless component semantics are explicit.",
   "Preserve strongest, best-performing, subset, and named-model qualifiers from the supplied artifacts. Do not generalize them to frontier models or models as a whole.",
   "Keep commercial-VLM long-document results scoped to commercial VLMs and retain named extraction-system counterexamples. Do not generalize them to current or most systems.",
   "Preserve track-specific metrics. Encounter win rates and Day clear counts must remain separate; do not attach win rate to Day or cross-day outcomes without direct support.",
@@ -1214,13 +1285,21 @@ const headTailRules = [
   "Review reasons, weaknesses, uncertainty, and calibration comments are not factual support. Do not promote them into report claims unless the supplied validated paper artifacts independently support them.",
   "Preserve resource budgeting as 资源预算 rather than the broader 资源管理. Do not introduce deterministic engines, persistent-state or short-rest mechanics, or separation from basic rules parsing unless those premises exist in the supplied validated artifacts.",
   "Return every supplied trend and single-paper observation exactly once by its zero-based source index.",
+  "Return at most two public cross-paper observations. Give each a short reader-facing title. The first sentence states what the selected papers show in plain Chinese; the second states why readers should care. Keep caveat to one short material boundary sentence.",
+  "Do not turn a shared topic into a field-wide shift or maturity claim. Use temporal language only when the supplied artifacts directly compare earlier and current evidence. Keep distinct research objects distinct.",
+  "Observation titles should use 6-16 Chinese characters when possible, name one concrete shared finding, and remain academic rather than promotional or clickbait.",
+  "Do not list method names, module names, benchmark names, metric names, or implementation details in a public observation. Keep only the minimum technical term needed to understand the conclusion.",
+  "Avoid stacking multiple technical concepts or unexplained English abbreviations in one sentence. If an unfamiliar term is indispensable, explain it immediately in plain Chinese.",
+  "Use direct, commonly understood Chinese in observation titles and claims. Do not use arXiv identifiers in reader-facing observation text. Do not use oracle, explicit artifact, model construction, policy execution, or encoded in model weights without an immediate plain Chinese explanation.",
+  "singlePaperObservations are retained only for internal Trace and paper-level QA. They are not rendered in the public report; keep them concise and never use them to pad the public research observation section.",
   "Do not promote a single-paper observation into a weekly trend.",
   "For a one-paper report, assign distinct roles to the reader-facing fields: reportIntroduction states the problem and reading entry; the single-paper observation states one useful result and one evidence boundary; closingSummary states only the final reading focus. Do not repeat the same method or result across these fields.",
   "Do not introduce an exact number unless it already occurs in the corresponding plan entry or supplied compact artifact.",
   "readingOrder must contain every selected paper exactly once in the supplied rank order.",
+  "Each readingOrder reason explains what to check in that paper. Compare it with the same paper's limitations and evidenceBoundary; do not claim every metric wins when any stated result or boundary records an exception.",
   "The title angle must be specific and must not use generic slogans such as new paradigm, worth watching, or accelerated adoption.",
   "titleAngle must be a standalone technical claim. Do not prefix it with a selected paper, benchmark, or product name followed by a colon.",
-  "Count titleAngle by Unicode characters before returning. It must contain 18-32 characters inclusive; prefer 20-28 characters so a repair does not cross either boundary.",
+  "Count titleAngle by Unicode characters before returning. It must contain 12-32 characters inclusive; prefer 14-24 characters and do not add abstract filler to reach the lower boundary.",
   "Use complete Chinese condition phrases. Write 在奖励函数未知的情况下; do not write 旨在奖励函数未知的情况下.",
   "Do not mention selection mechanics, score cutoffs, review or calibration workflow, Agent stages, prompts, artifacts, or internal JSON.",
   "Do not return YAML, Markdown headings, a complete paper list, a footer, paper body sections, scores, or links; the server owns them.",
@@ -1240,7 +1319,7 @@ const baseHeadTailPayload = ({
     headTailPaper(item, paperDrafts)
   )),
   publicationConstraints: {
-    titleAngleUnicodeCharacters: { minimum: 18, maximum: 32, preferredMinimum: 20, preferredMaximum: 28 },
+    titleAngleUnicodeCharacters: { minimum: 12, maximum: 32, preferredMinimum: 14, preferredMaximum: 24 },
     descriptionUnicodeCharacters: { maximum: 55 }
   },
   rules: headTailRules,
@@ -1332,6 +1411,7 @@ const compactHeadTailForQa = (headTailDraft = {}) => ({
     ? headTailDraft.trendJudgments
     : []).map((entry) => ({
     trendIndex: Number(entry?.trendIndex),
+    title: String(entry?.title || ""),
     claim: String(entry?.claim || ""),
     caveat: String(entry?.caveat || ""),
     supportingPaperIds: (Array.isArray(entry?.supportingPaperIds)
@@ -1402,8 +1482,9 @@ const reportSemanticQaRules = [
   "Review report-level narrative only. Per-paper factual grounding has already been checked separately.",
   "Use only the supplied validated Editorial Plan, final Head/Tail draft, server report metadata, and compact selected-paper reading artifacts.",
   "Do not use outside knowledge, abstracts, original paper text, Evidence excerpts, old analysis, or unselected papers.",
-  "A weekly trend requires support from at least two selected papers; keep single-paper observations scoped to one paper.",
+  "A cross-paper observation requires support from at least two selected papers; keep single-paper observations scoped to one paper. Do not infer a field-wide maturity or temporal shift from a shared topic alone.",
   "Judge reading order against the supplied deterministic rank, reading tier, final score, reading value, and evidence boundary.",
+  "Check every readingOrder reason against that paper's limitationsAndConstraints and evidenceBoundary. Flag blanket superiority such as 一致优于 or 全面领先 when any metric or evaluated subset is worse, tied, or uncertain.",
   "Audit every report sentence independently. A claim copied from an editorial plan or review is still invalid when the supplied validated paper artifacts do not support it.",
   "Review reasons, weaknesses, uncertainty, and calibration comments are editorial aids, not factual support; flag any promoted speculation or stronger qualifier.",
   "All reader-facing report fields must be Simplified Chinese, except paper titles and indispensable technical terms.",

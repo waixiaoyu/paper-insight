@@ -107,6 +107,16 @@ export const weeklyReportManualReviewPresentationKey = (job = {}) => {
   ].join("|");
 };
 
+export const weeklyReportManualReviewRenderKey = ({
+  presentationKey = "",
+  selectedItemId = "",
+  reason = ""
+} = {}) => JSON.stringify([
+  String(presentationKey),
+  String(selectedItemId),
+  String(reason)
+]);
+
 export const weeklyReportManualReviewInFlightView = ({
   jobId = "",
   decisionId = "",

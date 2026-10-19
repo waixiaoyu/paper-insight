@@ -331,6 +331,77 @@ export const runWeeklyReportAgentLoop = async (input = {}, context = {}, {
         if (action === "retry_paper") {
           const paperId = String(selectedReview.paperId || "").trim();
           const sourceStage = String(selectedReview.sourceStage || "").trim();
+          if (sourceStage === "write_paper_sections") {
+            const retainedItem = (Array.isArray(current?.selectedItems) ? current.selectedItems : [])
+              .find((item) => paperIdForRetry(item) === paperIdForRetry({ paperId }));
+            const retainedFailure = (Array.isArray(current?.paperDraftResult?.failed)
+              ? current.paperDraftResult.failed
+              : []).find((entry) => (
+              paperIdForRetry(entry?.item || entry) === paperIdForRetry({ paperId })
+                || paperIdForRetry(entry?.error || {}) === paperIdForRetry({ paperId })
+            ));
+            if (!paperId || !retainedItem || !retainedFailure) {
+              const targetLabel = paperId ? `论文 ${paperId}` : "所选论文";
+              throw new WeeklyReportPipelineError(
+                `无法重试${targetLabel}：当前任务未保留该论文的入选产物或失败记录。请从本期周报移除该论文或退出任务。`,
+                {
+                  code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                  stage: sourceStage,
+                  paperId,
+                  traceId: context.traceId
+                }
+              );
+            }
+            current = {
+              ...consumeManualReviewItem(current, review, selectedReview),
+              nextStage: "write_paper_sections",
+              paperDrafts: (Array.isArray(current?.paperDrafts) ? current.paperDrafts : [])
+                .filter((draft) => paperIdForRetry(draft) !== paperIdForRetry({ paperId })),
+              paperSectionRetry: null,
+              paperSectionRepairAttempts: {
+                ...(current?.paperSectionRepairAttempts || {}),
+                [paperId]: 0
+              }
+            };
+            continue;
+          }
+          if (sourceStage === "paper_semantic_qa") {
+            const retainedItem = (Array.isArray(current?.selectedItems) ? current.selectedItems : [])
+              .find((item) => paperIdForRetry(item) === paperIdForRetry({ paperId }));
+            const retainedDraft = (Array.isArray(current?.paperDrafts) ? current.paperDrafts : [])
+              .find((draft) => paperIdForRetry(draft) === paperIdForRetry({ paperId }));
+            if (!paperId || !retainedItem || !retainedDraft) {
+              const targetLabel = paperId ? `论文 ${paperId}` : "所选论文";
+              throw new WeeklyReportPipelineError(
+                `无法重试${targetLabel}：当前任务未保留该论文的入选产物和逐篇稿件。请从本期周报移除该论文或退出任务。`,
+                {
+                  code: "READING_LIST_MANUAL_REVIEW_ACTION_INVALID",
+                  stage: sourceStage,
+                  paperId,
+                  traceId: context.traceId
+                }
+              );
+            }
+            const retryAttempt = Math.max(
+              0,
+              Math.trunc(Number(current?.paperSemanticQaRetryAttempts?.[paperId]) || 0)
+            ) + 1;
+            current = {
+              ...consumeManualReviewItem(current, review, selectedReview),
+              nextStage: "paper_semantic_qa",
+              paperSemanticQaRetry: { paperId, attempt: retryAttempt },
+              paperSemanticQaRetryAttempts: {
+                ...(current?.paperSemanticQaRetryAttempts || {}),
+                [paperId]: retryAttempt
+              },
+              qaReport: {
+                ...(current?.qaReport || {}),
+                status: "passed",
+                paperIssues: []
+              }
+            };
+            continue;
+          }
           const failedItem = retryFailureForPaper(current, sourceStage, paperId);
           if (!paperId || !failedItem || !["extract_evidence", "review"].includes(sourceStage)) {
             const targetLabel = paperId ? `论文 ${paperId}` : "所选论文";

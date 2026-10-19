@@ -21,6 +21,7 @@ import {
 } from "../weekly-report/orchestrator.js";
 import { WeeklyReportTraceStore } from "../weekly-report/trace-store.js";
 import { buildEvidenceSourceRegistry } from "../weekly-report/evidence-source-registry.js";
+import { normalizeManualReviewRequest } from "../weekly-report/manual-review.js";
 
 const tempDirectories = [];
 const waitForManualReview = async (manager, jobId) => {
@@ -52,12 +53,22 @@ const evidencePacketFor = (paperId) => ({
   source: "arxiv-html",
   status: "available",
   qualityGate: { passed: true, reasons: [] },
+  publicationMetadata: {
+    status: "extracted",
+    affiliations: [{
+      originalName: "Example University",
+      sourceText: "Alice Example, Example University",
+      sourceType: "arxiv_structured",
+      confidence: "high"
+    }],
+    warnings: []
+  },
   inputSections: [
     {
-      anchor: "S0",
-      heading: "Paper metadata",
+      anchor: "META_AFFILIATIONS",
+      heading: "Paper author affiliations",
       kind: "metadata",
-      text: "Paper metadata\n\nAlice Example, Example University"
+      text: "Paper author affiliations\n\nOriginal institution: Example University\nSource: Alice Example, Example University"
     },
     {
       anchor: "S1",
@@ -149,9 +160,9 @@ const evidenceResponseFor = (paperId, { valid = true } = {}) => ({
       summary: "The authors are affiliated with Example University.",
       status: "supported",
       sources: [{
-        anchor: "S0",
-        section: "Paper metadata",
-        excerpt: "Alice Example, Example University"
+        anchor: "META_AFFILIATIONS",
+        section: "Paper author affiliations",
+        excerpt: "Original institution: Example University\nSource: Alice Example, Example University"
       }]
     },
     evidenceInsufficient: false,
@@ -238,7 +249,7 @@ const reviewResponseFor = (paperId, {
   uncertainty: "Operational generalization remains unclear.",
   interestFit: "target_network_autonomy",
   interestReason: "The work studies safety for autonomous network actions.",
-  affiliations: ["示例大学"],
+  affiliations: ["示例大学（Example University）"],
   affiliationEvidenceRefs: ["affiliations:0"],
   rawScore: 100
 });
@@ -1926,6 +1937,70 @@ test("write_paper_sections preserves valid drafts while requesting an administra
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
+test("write_paper_sections presents one retryable system issue when the retained draft is empty", async () => {
+  const execution = fakeExecutionContext();
+  const selectedItem = {
+    ...calibratedItemFor("2609.27337", 76, "worth_reading"),
+    selection: { selected: true, finalScore: 76, readingTier: "worth_reading", rank: 1 }
+  };
+  const emptyDraft = {
+    paperId: "2609.27337",
+    oneSentenceTakeaway: { text: "", evidenceRefs: [] },
+    researchProblem: { text: "", evidenceRefs: [] },
+    coreContribution: { text: "", evidenceRefs: [] },
+    methodFramework: { text: "", evidenceRefs: [] },
+    experimentsAndResults: { text: "", evidenceRefs: [] },
+    limitationsAndConstraints: [],
+    adnInsight: { text: "", evidenceRefs: [] },
+    readingValue: {
+      whyWorthReading: { text: "", evidenceRefs: [] },
+      recommendedFocus: { text: "", evidenceRefs: [] },
+      evidenceBoundary: { text: "", evidenceRefs: [] }
+    }
+  };
+  const retainedFailure = {
+    item: selectedItem,
+    error: {
+      paperId: "2609.27337",
+      paperDraft: emptyDraft,
+      issues: [{
+        code: "writer_text_missing",
+        path: "oneSentenceTakeaway.text",
+        detail: "Writer text is required."
+      }]
+    }
+  };
+  const planned = {
+    nextStage: "write_paper_sections",
+    options: { paperConcurrency: 1 },
+    selectedItems: [selectedItem],
+    editorialPlan: editorialPlanFor([selectedItem]),
+    paperDrafts: [],
+    paperDraftResult: { succeeded: [], failed: [retainedFailure] },
+    paperSectionRetry: {
+      paperId: "2609.27337",
+      issues: retainedFailure.error.issues,
+      attempt: 1
+    },
+    paperSectionRepairAttempts: { "2609.27337": 2 },
+    counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
+    warnings: []
+  };
+
+  const written = await writeWeeklyReportPaperSections(planned, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      throw new Error("an empty retained draft must not enter targeted model repair");
+    }
+  });
+
+  assert.equal(written.nextStage, "manual_review");
+  assert.equal(written.manualReview.items.length, 1);
+  assert.equal(written.manualReview.items[0].issues[0].code, "writer_response_unavailable");
+  assert.match(written.manualReview.items[0].summary, /没有形成可用稿件/);
+  assert.deepEqual(written.manualReview.items[0].allowedActions, ["retry_paper", "skip_paper", "exit_task"]);
+});
+
 test("write_paper_sections records concrete numeric mismatches as warnings and continues", async () => {
   const execution = fakeExecutionContext();
   const selectedItem = {
@@ -2626,9 +2701,10 @@ test("paper_semantic_qa artifact mismatch waits for an administrator instead of 
   });
 
   assert.equal(result.nextStage, "manual_review");
-  assert.equal(result.manualReview.paperId, paperId);
-  assert.deepEqual(result.manualReview.allowedActions, ["exit_task", "skip_paper"]);
-  assert.equal(result.manualReview.issues[0].code, "READING_LIST_PAPER_QA_FAILED");
+  assert.equal(result.manualReview.items[0].paperId, paperId);
+  assert.equal(result.manualReview.items[0].kind, "processing_failure");
+  assert.deepEqual(result.manualReview.items[0].allowedActions, ["skip_paper", "exit_task"]);
+  assert.equal(result.manualReview.items[0].issues[0].code, "input_identity_mismatch");
   assert.equal(execution.events.some((event) => (
     event.type === "stage_failed"
     && event.stage === "paper_semantic_qa"
@@ -2637,7 +2713,7 @@ test("paper_semantic_qa artifact mismatch waits for an administrator instead of 
   assert.equal(execution.events.some((event) => event.type === "reject_requested"), false);
 });
 
-test("paper_semantic_qa malformed model responses still fail closed instead of offering skip", async () => {
+test("paper_semantic_qa malformed model responses wait for a paper retry instead of rejecting the report", async () => {
   const execution = fakeExecutionContext();
   const paperId = "2608.19933";
   const item = calibratedItemFor(paperId, 88, "must_read");
@@ -2648,26 +2724,209 @@ test("paper_semantic_qa malformed model responses still fail closed instead of o
     readingTier: "must_read",
     rank: 1
   };
-  await assert.rejects(
-    () => runWeeklyReportPaperSemanticQa({
-      nextStage: "paper_semantic_qa",
-      selectedItems: [item],
-      paperDrafts: [paperDraftFor(paperId)],
-      counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
-      options: { paperConcurrency: 1 },
-      warnings: [],
-      qaReport: { status: "passed", repairAttempted: false, repairCount: 0 }
-    }, execution.context, {
-      networkRetryDelayMs: 0,
-      callModel: async () => ({ paperId })
-    }),
-    (error) => error.code === "READING_LIST_PAPER_QA_FAILED"
-      && error.stage === "paper_semantic_qa"
-      && error.rejectJob === true
-  );
+  const result = await runWeeklyReportPaperSemanticQa({
+    nextStage: "paper_semantic_qa",
+    selectedItems: [item],
+    paperDrafts: [paperDraftFor(paperId)],
+    counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
+    options: { paperConcurrency: 1 },
+    warnings: [],
+    qaReport: { status: "passed", repairAttempted: false, repairCount: 0 }
+  }, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async () => ({ paperId })
+  });
+
+  assert.equal(result.nextStage, "manual_review");
+  assert.equal(result.manualReview.items[0].paperId, paperId);
+  assert.equal(result.manualReview.items[0].kind, "processing_failure");
+  assert.deepEqual(result.manualReview.items[0].allowedActions, ["retry_paper", "skip_paper", "exit_task"]);
+  assert.equal(result.qaReport.paperSemanticResults.length, 0);
+  assert.equal(result.manualReview.items[0].issues.some((issue) => issue.code === "summary_required"), true);
+  const normalizedReview = normalizeManualReviewRequest(result.manualReview, {
+    requestedAt: "2026-09-22T08:39:47.883Z"
+  });
+  assert.equal(normalizedReview.items[0].kind, "processing_failure");
+  assert.match(normalizedReview.items[0].summary, /连续两次未返回符合结构要求/u);
   assert.equal(execution.events.some((event) => (
     event.type === "reject_requested" && event.stage === "paper_semantic_qa"
-  )), true);
+  )), false);
+});
+
+test("paper_semantic_qa reports an exhausted model call separately from a response-format failure", async () => {
+  const execution = fakeExecutionContext();
+  const paperId = "2608.19939";
+  const item = calibratedItemFor(paperId, 88, "must_read");
+  item.selection = {
+    selected: true,
+    selectionReason: "threshold",
+    finalScore: 88,
+    readingTier: "must_read",
+    rank: 1
+  };
+  let callCount = 0;
+  const result = await runWeeklyReportPaperSemanticQa({
+    nextStage: "paper_semantic_qa",
+    selectedItems: [item],
+    paperDrafts: [paperDraftFor(paperId)],
+    counts: { primary: 1, reserve: 0, fullTextEligible: 1, reviewed: 1, calibrated: 1, selected: 1, excluded: 0 },
+    options: { paperConcurrency: 1 },
+    warnings: [],
+    qaReport: { status: "passed", repairAttempted: false, repairCount: 0 }
+  }, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      callCount += 1;
+      throw new Error("upstream disconnected");
+    }
+  });
+
+  assert.equal(callCount, 2);
+  assert.equal(result.nextStage, "manual_review");
+  assert.equal(result.manualReview.items[0].kind, "processing_failure");
+  assert.match(result.manualReview.items[0].summary, /模型调用在自动重试后仍未完成/u);
+  assert.doesNotMatch(result.manualReview.items[0].summary, /结构要求/u);
+  assert.deepEqual(result.manualReview.items[0].allowedActions, ["retry_paper", "skip_paper", "exit_task"]);
+});
+
+test("paper_semantic_qa retries only the failed paper and merges retained QA results", async () => {
+  const execution = fakeExecutionContext();
+  const retainedPaperId = "2608.19934";
+  const failedPaperId = "2608.19935";
+  const selectedItems = [retainedPaperId, failedPaperId].map((paperId, index) => {
+    const item = calibratedItemFor(paperId, 88 - index, "must_read");
+    return {
+      ...item,
+      selection: {
+        selected: true,
+        selectionReason: "threshold",
+        finalScore: 88 - index,
+        readingTier: "must_read",
+        rank: index + 1
+      }
+    };
+  });
+  const retainedResult = {
+    ...paperSemanticPassFor(retainedPaperId),
+    status: "passed",
+    repairTarget: null
+  };
+  const seenPaperIds = [];
+  const result = await runWeeklyReportPaperSemanticQa({
+    nextStage: "paper_semantic_qa",
+    selectedItems,
+    paperDrafts: selectedItems.map((item) => paperDraftFor(item.paper.id)),
+    paperSemanticQaRetry: { paperId: failedPaperId },
+    counts: { primary: 2, reserve: 0, fullTextEligible: 2, reviewed: 2, calibrated: 2, selected: 2, excluded: 0 },
+    options: { paperConcurrency: 2 },
+    warnings: [],
+    qaReport: {
+      status: "passed",
+      repairAttempted: false,
+      repairCount: 0,
+      paperSemanticResults: [retainedResult]
+    }
+  }, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const paperId = JSON.parse(prompt).paper.paperId;
+      seenPaperIds.push(paperId);
+      return paperSemanticPassFor(paperId);
+    }
+  });
+
+  assert.deepEqual(seenPaperIds, [failedPaperId]);
+  assert.deepEqual(result.qaReport.paperSemanticResults.map((entry) => entry.paperId), [
+    retainedPaperId,
+    failedPaperId
+  ]);
+  assert.equal(result.paperSemanticQaRetry, null);
+  assert.equal(result.nextStage, "report_semantic_qa");
+});
+
+test("paper_semantic_qa keeps every concurrent failure queued until each paper is retried", async () => {
+  const execution = fakeExecutionContext();
+  const passedPaperId = "2608.19936";
+  const failedPaperIds = ["2608.19937", "2608.19938"];
+  const selectedItems = [passedPaperId, ...failedPaperIds].map((paperId, index) => {
+    const item = calibratedItemFor(paperId, 90 - index, "must_read");
+    return {
+      ...item,
+      selection: {
+        selected: true,
+        selectionReason: "threshold",
+        finalScore: 90 - index,
+        readingTier: "must_read",
+        rank: index + 1
+      }
+    };
+  });
+  const baseInput = {
+    nextStage: "paper_semantic_qa",
+    selectedItems,
+    paperDrafts: selectedItems.map((item) => paperDraftFor(item.paper.id)),
+    counts: { primary: 3, reserve: 0, fullTextEligible: 3, reviewed: 3, calibrated: 3, selected: 3, excluded: 0 },
+    options: { paperConcurrency: 2 },
+    warnings: [],
+    qaReport: { status: "passed", repairAttempted: false, repairCount: 0 }
+  };
+
+  const initial = await runWeeklyReportPaperSemanticQa(baseInput, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => {
+      const paperId = JSON.parse(prompt).paper.paperId;
+      return paperId === passedPaperId ? paperSemanticPassFor(paperId) : { paperId };
+    }
+  });
+
+  assert.equal(initial.nextStage, "manual_review");
+  assert.deepEqual(initial.manualReview.items.map((item) => item.paperId), failedPaperIds);
+  assert.deepEqual(initial.qaReport.paperSemanticResults.map((entry) => entry.paperId), [passedPaperId]);
+
+  const firstRetry = await runWeeklyReportPaperSemanticQa({
+    ...initial,
+    nextStage: "paper_semantic_qa",
+    manualReview: {
+      ...initial.manualReview,
+      activeItemId: initial.manualReview.items[1].itemId,
+      items: [initial.manualReview.items[1]]
+    },
+    paperSemanticQaRetry: { paperId: failedPaperIds[0], attempt: 1 },
+    qaReport: { ...initial.qaReport, status: "passed" }
+  }, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => paperSemanticPassFor(JSON.parse(prompt).paper.paperId)
+  });
+
+  assert.equal(firstRetry.nextStage, "manual_review");
+  assert.deepEqual(firstRetry.manualReview.items.map((item) => item.paperId), [failedPaperIds[1]]);
+  assert.deepEqual(firstRetry.qaReport.paperSemanticResults.map((entry) => entry.paperId), [
+    passedPaperId,
+    failedPaperIds[0]
+  ]);
+
+  const secondRetry = await runWeeklyReportPaperSemanticQa({
+    ...firstRetry,
+    nextStage: "paper_semantic_qa",
+    manualReview: null,
+    paperSemanticQaRetry: { paperId: failedPaperIds[1], attempt: 1 },
+    qaReport: { ...firstRetry.qaReport, status: "passed" }
+  }, execution.context, {
+    networkRetryDelayMs: 0,
+    callModel: async (prompt) => paperSemanticPassFor(JSON.parse(prompt).paper.paperId)
+  });
+
+  assert.equal(secondRetry.nextStage, "report_semantic_qa");
+  assert.deepEqual(secondRetry.qaReport.paperSemanticResults.map((entry) => entry.paperId), [
+    passedPaperId,
+    ...failedPaperIds
+  ]);
+  assert.equal(execution.sections.has("paper-semantic-qa-call-0000"), true);
+  assert.equal(execution.sections.has(`paper-semantic-qa-admin-${failedPaperIds[0]}-0001-call-0000`), true);
+  assert.equal(execution.sections.has(`paper-semantic-qa-admin-${failedPaperIds[1]}-0001-call-0000`), true);
+  assert.equal(execution.sections.has("paper-semantic-qa"), true);
+  assert.equal(execution.sections.has(`paper-semantic-qa-admin-${failedPaperIds[0]}-0001`), true);
+  assert.equal(execution.sections.has(`paper-semantic-qa-admin-${failedPaperIds[1]}-0001`), true);
 });
 
 test("report_semantic_qa records model semantic judgments as warnings and publishes", async () => {

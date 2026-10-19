@@ -1,3 +1,7 @@
+import {
+  extractArxivPublicationMetadata,
+  normalizePublicationMetadata
+} from "./publication-metadata.js";
 const DEFAULT_STORED_MAX_CHARS = 120000;
 const DEFAULT_INPUT_MAX_CHARS = 80000;
 const DEFAULT_MIN_CLEAN_CHARS = 4000;
@@ -385,6 +389,11 @@ const basePacket = ({ paperId, source, url, rawChars }) => ({
   },
   sectionDetails: [],
   inputSections: [],
+  publicationMetadata: {
+    status: "not_provided",
+    affiliations: [],
+    warnings: []
+  },
   cleanText: "",
   inputText: "",
   truncated: false,
@@ -414,7 +423,8 @@ export const buildContextPacket = ({
   contentType = "",
   html = "",
   text = "",
-  compatibility
+  compatibility,
+  publicationMetadata
 } = {}, options = {}) => {
   const storedMaxChars = boundedInteger(options.storedMaxChars, DEFAULT_STORED_MAX_CHARS, 4000, 200000);
   const inputMaxChars = Math.min(
@@ -426,6 +436,9 @@ export const buildContextPacket = ({
   const minParagraphs = boundedInteger(options.minParagraphs, DEFAULT_MIN_PARAGRAPHS, 3, 100);
   const raw = String(html || text || "");
   const packet = basePacket({ paperId, source, url, rawChars: raw.length });
+  packet.publicationMetadata = html
+    ? extractArxivPublicationMetadata(html)
+    : normalizePublicationMetadata(publicationMetadata);
   packet.compatibility = {
     ...packet.compatibility,
     ...(compatibility && typeof compatibility === "object" ? compatibility : {})
@@ -518,6 +531,18 @@ export const buildContextPacket = ({
       text
     }] : [];
   });
+  if (packet.publicationMetadata.affiliations.length) {
+    const affiliationText = packet.publicationMetadata.affiliations
+      .map((item) => `Original institution: ${item.originalName}\nSource: ${item.sourceText}`)
+      .join("\n\n");
+    packet.inputSections.unshift({
+      anchor: "META_AFFILIATIONS",
+      heading: "Paper author affiliations",
+      kind: "metadata",
+      paragraphCount: packet.publicationMetadata.affiliations.length,
+      text: `Paper author affiliations\n\n${affiliationText}`
+    });
+  }
   packet.cleanText = stored.text;
   packet.inputText = input.text;
   packet.truncated = stored.truncated || input.truncated;

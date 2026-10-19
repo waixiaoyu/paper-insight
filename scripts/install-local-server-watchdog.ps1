@@ -6,7 +6,9 @@ param(
   [string]$RepositoryPath = "",
   [ValidateRange(1, 65535)][int]$Port = 3100,
   [ValidateRange(1000, 300000)][int]$IntervalMs = 10000,
-  [ValidateRange(0, 300000)][int]$StartupGraceMs = 5000
+  [ValidateRange(0, 300000)][int]$StartupGraceMs = 5000,
+  [ValidateRange(1000, 300000)][int]$HealthTimeoutMs = 15000,
+  [ValidateRange(1, 10)][int]$FailureThreshold = 3
 )
 $ErrorActionPreference = "Stop"
 if (-not $RepositoryPath) { $RepositoryPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) ".." }
@@ -49,7 +51,8 @@ if ($Install) {
     Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
   }
   [ordered]@{ repositoryPath = $repository; nodePath = $node; port = $Port;
-    intervalMs = $IntervalMs; startupGraceMs = $StartupGraceMs; stateDirectory = $stateDirectory
+    intervalMs = $IntervalMs; startupGraceMs = $StartupGraceMs;
+    healthTimeoutMs = $HealthTimeoutMs; failureThreshold = $FailureThreshold; stateDirectory = $stateDirectory
   } | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
   # Escape literal PowerShell path arguments, including apostrophes in the repository path.
   $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -Command "& ''{0}'' ''{1}'' --config ''{2}''; exit $LASTEXITCODE"' -f $node.Replace("'", "''"), $watchdogPath.Replace("'", "''"), $configPath.Replace("'", "''")

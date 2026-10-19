@@ -168,9 +168,22 @@ test("Editorial Plan prompt uses bound excerpts as its only factual input", () =
   assert.match(payload.rules.join(" "), /Simplified Chinese/i);
   assert.match(payload.rules.join(" "), /editorial aids, not factual Evidence/i);
   assert.match(payload.rules.join(" "), /neutral, literal technical prose/i);
-  assert.match(payload.rules.join(" "), /Target 20-28 characters/i);
+  assert.match(payload.rules.join(" "), /Target 14-24 characters/i);
   assert.match(payload.rules.join(" "), /count every ASCII letter individually/i);
+  assert.match(payload.rules.join(" "), /one to three factual topic groups/i);
+  assert.match(payload.rules.join(" "), /instead of inventing a common thesis/i);
+  assert.match(payload.rules.join(" "), /publicly distributed model files/i);
+  assert.match(payload.rules.join(" "), /not distributed-computing components/i);
+  assert.match(payload.rules.join(" "), /academic descriptive noun phrase/i);
+  assert.match(payload.rules.join(" "), /研究进展/);
+  assert.match(payload.rules.join(" "), /at least two concrete research problems or technical mechanisms/i);
+  assert.match(payload.rules.join(" "), /兼论/);
   assert.match(payload.rules.join(" "), /揭示\/reveal/);
+  assert.match(payload.rules.join(" "), /at most two public cross-paper observations/i);
+  assert.match(payload.rules.join(" "), /State what the selected papers actually show in plain Chinese/i);
+  assert.match(payload.rules.join(" "), /then why readers should care/i);
+  assert.match(payload.rules.join(" "), /Do not list paper methods, module names, benchmark names, metric names/i);
+  assert.match(payload.rules.join(" "), /Avoid stacking multiple technical concepts or unexplained English abbreviations/i);
   assert.match(prompt, /SECRET_EXCERPT the method validates actions against explicit constraints/);
   assert.equal(payload.papers[0].evidence.method.summary, undefined);
   assert.equal(payload.papers[0].valueSignals[0].claim, undefined);
@@ -199,6 +212,58 @@ test("Editorial Plan title angle must converge before Head/Tail", () => {
   assert.equal(validation.issues.some((entry) => (
     entry.code === "title_angle_length_invalid" && entry.path === "titleAngle"
   )), true);
+});
+
+test("Editorial Plan rejects a broad research-progress title without concrete topics", () => {
+  [
+    "大模型推理验证与领域基础模型研究进展",
+    "大模型研究进展。",
+    "大模型研究最新进展",
+    "领域前沿进展"
+  ].forEach((titleAngle) => {
+    const plan = validPlan();
+    plan.titleAngle = titleAngle;
+
+    const validation = validateEditorialPlan(plan, { selectedItems });
+    const validationIssue = validation.issues.find((entry) => entry.code === "generic_research_progress_title");
+
+    assert.equal(validation.valid, false, titleAngle);
+    assert.deepEqual(validationIssue?.repairKinds, ["specific_research_topics"], titleAngle);
+  });
+});
+
+test("Editorial Plan limits the public weekly view to two cross-paper trends", () => {
+  const plan = validPlan();
+  plan.trends = Array.from({ length: 3 }, () => structuredClone(plan.trends[0]));
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "trends_invalid" && entry.path === "trends"
+  )), true);
+});
+
+test("Editorial Plan accepts a concise academic title without padding it to eighteen characters", () => {
+  const plan = validPlan();
+  plan.titleAngle = "自主动作执行前的约束验证方法";
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.valid, true);
+  assert.equal(validation.issues.some((entry) => entry.code === "title_angle_length_invalid"), false);
+});
+
+test("Editorial Plan rejects a question-style news headline", () => {
+  const plan = validPlan();
+  plan.titleAngle = "自主动作为什么需要执行前约束验证？";
+
+  const validation = validateEditorialPlan(plan, { selectedItems });
+
+  assert.equal(validation.valid, false);
+  const validationIssue = validation.issues.find((entry) => entry.code === "news_style_title");
+  assert.equal(validationIssue?.path, "titleAngle");
+  assert.deepEqual(validationIssue?.repairKinds, ["academic_descriptive_title"]);
 });
 
 test("Editorial Plan removes a leading benchmark label when the remaining title angle is valid", () => {
@@ -1068,6 +1133,7 @@ const validHeadTail = () => ({
   reportIntroduction: "This week's selected work centers on validating autonomous actions before execution while keeping deployment boundaries explicit.",
   trendJudgments: [{
     trendIndex: 0,
+    title: "专业工具开始承担关键结果核验",
     claim: "Across the selected work, safety validation moves ahead of autonomous action execution.",
     caveat: "The available evaluation remains dominated by simulation."
   }],
@@ -1137,13 +1203,30 @@ test("Head/Tail prompt uses only editorialPlan and compact trusted artifacts", (
   assert.match(payload.rules.join(" "), /not factual support/i);
   assert.match(payload.rules.join(" "), /揭示\/reveal/);
   assert.deepEqual(payload.publicationConstraints.titleAngleUnicodeCharacters, {
-    minimum: 18,
+    minimum: 12,
     maximum: 32,
-    preferredMinimum: 20,
-    preferredMaximum: 28
+    preferredMinimum: 14,
+    preferredMaximum: 24
   });
   assert.match(payload.rules.join(" "), /Count titleAngle by Unicode characters/i);
+  assert.match(payload.rules.join(" "), /one to three actual topic groups/i);
+  assert.match(payload.rules.join(" "), /define an unfamiliar technical term on first use/i);
+  assert.match(payload.rules.join(" "), /publicly distributed model files/i);
+  assert.match(payload.rules.join(" "), /academic descriptive noun phrase/i);
+  assert.match(payload.rules.join(" "), /研究进展/);
+  assert.match(payload.rules.join(" "), /at least two concrete research problems or technical mechanisms/i);
+  assert.match(payload.rules.join(" "), /兼论/);
   assert.match(payload.rules.join(" "), /For a one-paper report, assign distinct roles/i);
+  assert.match(payload.rules.join(" "), /at most two public cross-paper observations/i);
+  assert.equal(payload.outputSchema.trendJudgments[0].title, "6-16 Chinese character title stating one concrete, plain-language observation");
+  assert.match(payload.rules.join(" "), /short reader-facing title/i);
+  assert.match(payload.rules.join(" "), /first sentence states what the selected papers show in plain Chinese/i);
+  assert.match(payload.rules.join(" "), /second states why readers should care/i);
+  assert.match(payload.rules.join(" "), /Do not list method names, module names, benchmark names, metric names/i);
+  assert.match(payload.rules.join(" "), /Avoid stacking multiple technical concepts or unexplained English abbreviations/i);
+  assert.match(payload.rules.join(" "), /Do not use arXiv identifiers in reader-facing observation text/i);
+  assert.match(payload.rules.join(" "), /oracle.*plain Chinese explanation/i);
+  assert.match(payload.rules.join(" "), /not rendered in the public report/i);
   assert.doesNotMatch(prompt, /SECRET_EXCERPT|LONG_ORIGINAL_TEXT|LONG_SECTION|ABSTRACT_MUST|OLD_TITLE_MUST|SERVER_META_SECRET|selectionReason|fallback/);
 });
 
@@ -1164,6 +1247,129 @@ test("a valid Head/Tail draft is bound back to Editorial Plan trends, observatio
     validation.headTailDraft.trendJudgments[0].evidenceRefs,
     ["2607.50001:method:0", "2607.50002:results:0"]
   );
+  assert.equal(
+    validation.headTailDraft.trendJudgments[0].title,
+    "专业工具开始承担关键结果核验"
+  );
+});
+
+test("reading guidance flags a universal win that contradicts the same paper's stated exception", () => {
+  const draft = validHeadTail();
+  draft.readingOrder[0].reason = "该方法在全部指标上一致优于基线。";
+  const scopedDrafts = structuredClone(paperDrafts);
+  scopedDrafts[0].limitationsAndConstraints[0].text = "部分 AUROC 指标低于基线。";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts: scopedDrafts
+  });
+
+  assert.equal(validation.warnings.some((entry) => (
+    entry.code === "reading_order_overstates_result"
+    && entry.path === "readingOrder[0].reason"
+  )), true);
+});
+
+test("Head/Tail applies factual checks and reader-facing ID rules to trend titles", () => {
+  const draft = validHeadTail();
+  draft.trendJudgments[0].title = "2607.50001 展示准确率提升";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "metric_label_not_in_evidence"
+    && entry.path === "trendJudgments[0].title"
+  )), true);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "trend_arxiv_id_forbidden"
+    && entry.path === "trendJudgments[0].title"
+  )), true);
+});
+
+test("Head/Tail rejects a title field on a single-paper observation", () => {
+  const draft = validHeadTail();
+  draft.singlePaperObservations[0].title = "观察条目不应携带趋势标题";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts
+  });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "head_tail_field_forbidden"
+    && entry.path === "singlePaperObservations[0].title"
+  )), true);
+});
+
+test("Head/Tail derives a bounded compatibility title for historical trend drafts", () => {
+  const draft = validHeadTail();
+  delete draft.trendJudgments[0].title;
+  draft.trendJudgments[0].claim = "Across the selected work, safety validation moves ahead of autonomous action execution.";
+
+  const validation = validateHeadTailDraft(draft, {
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts
+  });
+
+  assert.equal(validation.valid, true);
+  assert.equal(
+    validation.headTailDraft.trendJudgments[0].title,
+    "Across the selected work, safety"
+  );
+  assert.equal(Array.from(validation.headTailDraft.trendJudgments[0].title).length <= 32, true);
+});
+
+test("Head/Tail accepts a concise academic title and rejects a question headline", () => {
+  const concise = validHeadTail();
+  concise.titleAngle = "自主动作执行前的约束验证方法";
+  const conciseValidation = validateHeadTailDraft(concise, {
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts
+  });
+  assert.equal(conciseValidation.valid, true);
+
+  const question = validHeadTail();
+  question.titleAngle = "自主动作为什么需要执行前约束验证？";
+  const questionValidation = validateHeadTailDraft(question, {
+    editorialPlan: validPlan(),
+    selectedItems,
+    paperDrafts
+  });
+  const validationIssue = questionValidation.issues.find((entry) => entry.code === "news_style_title");
+  assert.equal(questionValidation.valid, false);
+  assert.deepEqual(validationIssue?.repairKinds, ["academic_descriptive_title"]);
+});
+
+test("Head/Tail rejects a broad research-progress title without concrete topics", () => {
+  [
+    "大模型推理验证与领域基础模型研究进展",
+    "大模型研究进展。",
+    "大模型研究最新进展",
+    "领域前沿进展"
+  ].forEach((titleAngle) => {
+    const draft = validHeadTail();
+    draft.titleAngle = titleAngle;
+
+    const validation = validateHeadTailDraft(draft, {
+      editorialPlan: validPlan(),
+      selectedItems,
+      paperDrafts
+    });
+    const validationIssue = validation.issues.find((entry) => entry.code === "generic_research_progress_title");
+
+    assert.equal(validation.valid, false, titleAngle);
+    assert.deepEqual(validationIssue?.repairKinds, ["specific_research_topics"], titleAngle);
+  });
 });
 
 test("one-paper Head/Tail keeps introduction, observation, and closing roles distinct", () => {
@@ -1660,11 +1866,11 @@ test("Head/Tail repair prompt carries issue codes and paths but not issue detail
   assert.match(prompt, /weekly_report_write_head_tail_repair/);
   assert.match(prompt, /readingOrder/);
   const payload = JSON.parse(prompt);
-  assert.equal(payload.publicationConstraints.titleAngleUnicodeCharacters.minimum, 18);
+  assert.equal(payload.publicationConstraints.titleAngleUnicodeCharacters.minimum, 12);
   assert.equal(payload.publicationConstraints.titleAngleUnicodeCharacters.maximum, 32);
   assert.match(payload.repairInstruction, /Count titleAngle by Unicode characters/i);
   assert.match(prompt, /remove resource management\/资源管理/i);
-  assert.match(prompt, /standalone 18-32 character technical claim/i);
+  assert.match(prompt, /standalone 12-32 character technical title/i);
   assert.match(prompt, /在奖励函数未知的情况下/i);
   assert.match(prompt, /Attach a model count only to the track that supplied it/i);
   assert.match(prompt, /write Encounter: win rate; Day: cleared-day count/i);

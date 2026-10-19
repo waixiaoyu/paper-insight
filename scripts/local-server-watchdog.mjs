@@ -28,6 +28,8 @@ export const normalizeLocalServerWatchdogConfig = (value = {}) => {
   return Object.freeze({ repositoryPath, nodePath: value.nodePath || process.execPath,
     port: integer("port", 3100, 1, 65535), intervalMs: integer("intervalMs", 10000, 1000, 300000),
     startupGraceMs: integer("startupGraceMs", 5000, 0, 300000),
+    healthTimeoutMs: integer("healthTimeoutMs", 15000, 1000, 300000),
+    failureThreshold: integer("failureThreshold", 3, 1, 10),
     stateDirectory: resolve(value.stateDirectory || join(repositoryPath, ".cache", "local-server-watchdog")) });
 };
 
@@ -37,13 +39,15 @@ export class LocalServerWatchdog {
     this.config = normalizeLocalServerWatchdogConfig(dependencies.config);
     this.child = null; this.running = false; this.recovery = null; this.timer = null;
     this.startedAt = 0; this.childStartedAt = 0; this.lastHealthyAt = 0;
-    this.restartAttempt = 0; this.lastError = ""; this.status = "stopped";
+    this.restartAttempt = 0; this.consecutiveHealthFailures = 0;
+    this.lastError = ""; this.status = "stopped";
   }
   state() {
     const iso = (time) => time ? new Date(time).toISOString() : "";
     return { pid: this.processId || process.pid, childPid: this.child?.pid || 0,
       startedAt: iso(this.startedAt), childStartedAt: iso(this.childStartedAt),
       lastHealthyAt: iso(this.lastHealthyAt), restartAttempt: this.restartAttempt,
+      consecutiveHealthFailures: this.consecutiveHealthFailures,
       lastError: this.lastError, status: this.status };
   }
   async persist() { await this.writeState(this.state()); }
@@ -54,7 +58,8 @@ export class LocalServerWatchdog {
         stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true
       });
       this.child = child;
-      this.childStartedAt = this.now(); this.lastHealthyAt = 0; this.status = "starting";
+      this.childStartedAt = this.now(); this.lastHealthyAt = 0;
+      this.consecutiveHealthFailures = 0; this.status = "starting";
       const failed = (reason) => {
         if (!this.running || this.child !== child || child.stopping) return;
         this.lastError = reason;
@@ -125,10 +130,21 @@ export class LocalServerWatchdog {
     try {
       await this.requestHealth();
       if (!this.running || this.child !== checkedChild || this.recovery) return;
-      this.status = "healthy"; this.lastHealthyAt = this.now(); this.restartAttempt = 0; this.lastError = "";
+      this.status = "healthy"; this.lastHealthyAt = this.now(); this.restartAttempt = 0;
+      this.consecutiveHealthFailures = 0; this.lastError = "";
       await this.persist();
     } catch (error) {
-      if (this.running && this.child === checkedChild) await this.recover(`本地后端连接失败：${error.code || error.message}`);
+      if (!this.running || this.child !== checkedChild) return;
+      this.consecutiveHealthFailures += 1;
+      const reason = `本地后端连接失败：${error.code || error.message}`;
+      this.lastError = reason;
+      if (this.consecutiveHealthFailures < this.config.failureThreshold) {
+        this.status = "degraded";
+        await this.persist();
+        await this.log("warn", `${reason}；连续失败 ${this.consecutiveHealthFailures}/${this.config.failureThreshold}，暂不重启。`);
+        return;
+      }
+      await this.recover(`${reason}；连续失败 ${this.consecutiveHealthFailures}/${this.config.failureThreshold}`);
     }
   }
   async stop(reason = "stopped") {
@@ -142,11 +158,11 @@ export class LocalServerWatchdog {
   }
 }
 
-const health = (port) => new Promise((resolveHealth, reject) => {
-  const request = http.get({ host: "127.0.0.1", port, path: "/api/reading-list/jobs/active" }, (response) => {
+const health = (port, timeoutMs) => new Promise((resolveHealth, reject) => {
+  const request = http.get({ host: "127.0.0.1", port, path: "/api/health" }, (response) => {
     response.resume(); resolveHealth({ statusCode: response.statusCode });
   });
-  const timeout = setTimeout(() => request.destroy(new Error("HTTP 健康检查超过 5 秒")), 5000);
+  const timeout = setTimeout(() => request.destroy(new Error(`HTTP 健康检查超过 ${Math.round(timeoutMs / 1000)} 秒`)), timeoutMs);
   request.once("close", () => clearTimeout(timeout)); request.once("error", reject);
 });
 
@@ -214,7 +230,8 @@ export const runLocalServerWatchdogFromCli = async (argv = process.argv.slice(2)
   const output = [rotatedLog(join(config.stateDirectory, "server.stdout.log")), rotatedLog(join(config.stateDirectory, "server.stderr.log"))];
   let stateQueue = Promise.resolve();
   const watchdog = new LocalServerWatchdog({ config, log, now: Date.now, setTimer: setTimeout, clearTimer: clearTimeout,
-    wait: (delay) => new Promise((done) => setTimeout(done, delay)), requestHealth: () => health(config.port),
+    wait: (delay) => new Promise((done) => setTimeout(done, delay)),
+    requestHealth: () => health(config.port, config.healthTimeoutMs),
     shouldStop: async () => {
       try { await access(stopRequestPath); return true; } catch { return false; }
     },

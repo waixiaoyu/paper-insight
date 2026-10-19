@@ -121,7 +121,7 @@ const evidenceArtifactsFor = (id = paperId, { overstated = false } = {}) => ({
       sources: [{
         anchor: "S0",
         section: "Paper metadata",
-        excerpt: "Alice Example, Example University"
+        excerpt: "Example University"
       }]
     },
     evidenceInsufficient: false,
@@ -180,7 +180,7 @@ const reviewResponseFor = (id = paperId, {
   uncertainty: "Generalization to operational networks is unclear.",
   interestFit,
   interestReason: "The paper studies safety controls for autonomous network actions.",
-  affiliations: ["示例大学"],
+  affiliations: ["示例大学（Example University）"],
   affiliationEvidenceRefs: ["affiliations:0"],
   rawScore: 100
 });
@@ -197,6 +197,29 @@ const reviewItemFor = (id = paperId, options = {}) => ({
   ...evidenceArtifactsFor(id, options)
 });
 
+const reviewItemWithTwoAffiliations = () => {
+  const item = reviewItemFor();
+  item.contextPacket.inputSections[0].text = [
+    "Paper author affiliations",
+    "",
+    "Original institution: Example University",
+    "Source: Alice Example, Example University",
+    "",
+    "Original institution: Second Institute",
+    "Source: Bob Example, Second Institute"
+  ].join("\n");
+  const registry = buildEvidenceSourceRegistry(item.contextPacket);
+  const source = registry.sections.find((section) => section.anchor === "S0").units[0];
+  item.evidenceCard.affiliations.sources = [{
+    sourceId: source.sourceId,
+    anchor: source.anchor,
+    section: source.section,
+    excerpt: source.text,
+    rawExcerpt: source.rawText
+  }];
+  return item;
+};
+
 test("Review prompt only carries one paper's verified artifacts and bound excerpts", () => {
   const prompt = buildReviewPrompt(reviewItemFor());
   const payload = JSON.parse(prompt);
@@ -211,6 +234,7 @@ test("Review prompt only carries one paper's verified artifacts and bound excerp
   assert.match(payload.rules.join(" "), /primary problem domain.*communication networks/i);
   assert.match(payload.rules.join(" "), /Value Signal claim.*ADN implication/i);
   assert.match(payload.rules.join(" "), /unit.*direction.*comparison subject.*scope/i);
+  assert.match(payload.rules.join(" "), /中文译名（英文原名）/);
   assert.doesNotMatch(prompt, /ABSTRACT_MUST_NOT_ENTER_PROMPT|OLD_TITLE_MUST_NOT_ENTER_PROMPT|"score":99|"score":98/);
   assert.doesNotMatch(prompt, /2607\.29999/);
 });
@@ -285,6 +309,31 @@ test("Review requires scoring fields even when semantic Evidence warnings are pr
   assert.equal(validation.valid, false);
   assert.equal(validation.issues.some((entry) => entry.code === "score_out_of_range"), true);
   assert.equal(validation.issues.some((entry) => entry.code === "required_text_missing"), true);
+});
+
+test("Review 不能在单位 Evidence 已受支持时返回空单位列表", () => {
+  const response = reviewResponseFor();
+  response.affiliations = [];
+  response.affiliationEvidenceRefs = [];
+
+  const validation = validateReviewResult(response, { item: reviewItemFor() });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "supported_affiliations_omitted"
+  )), true);
+});
+
+test("Review 单位译名必须保留 Evidence 中的英文原名", () => {
+  const response = reviewResponseFor();
+  response.affiliations = ["示例大学"];
+
+  const validation = validateReviewResult(response, { item: reviewItemFor() });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "affiliation_original_name_missing"
+  )), true);
 });
 
 test("Review records an Evidence semantic challenge as a warning and still completes scoring", async () => {
@@ -549,4 +598,438 @@ test("Review prompt consistently treats semantic Evidence issues as advisory whi
   assert.match(rules, /semantic Evidence issues are advisory/i);
   assert.match(rules, /status=repair_required/i);
   assert.doesNotMatch(rules, /return only paperId and evidenceValidation|omit scores/i);
+});
+
+test("Review 单位括号内英文原名必须精确匹配受支持 Evidence", () => {
+  const mismatch = reviewResponseFor();
+  mismatch.affiliations = ["示例大学（Wrong University）"];
+
+  const invalid = validateReviewResult(mismatch, { item: reviewItemFor() });
+
+  assert.equal(invalid.valid, false);
+  assert.deepEqual(
+    invalid.issues.filter((entry) => entry.code === "affiliation_original_name_mismatch"),
+    [{
+      code: "affiliation_original_name_mismatch",
+      path: "affiliations[0]",
+      detail: "Affiliation original name must exactly match a supported affiliation Evidence source."
+    }]
+  );
+
+  const normalized = reviewResponseFor();
+  normalized.affiliations = ["示例大学（  Example   University  ）"];
+  assert.equal(validateReviewResult(normalized, { item: reviewItemFor() }).valid, true);
+
+  const changedCase = reviewResponseFor();
+  changedCase.affiliations = ["示例大学（example university）"];
+  assert.equal(validateReviewResult(changedCase, { item: reviewItemFor() }).valid, false);
+});
+
+test("Review 接受原文明确出现但没有可靠中文译名的机构品牌", () => {
+  const item = reviewItemFor("2509.26200");
+  item.contextPacket.publicationMetadata = {
+    status: "not_provided",
+    affiliations: [],
+    warnings: []
+  };
+  item.evidenceCard.affiliations.sources = [{
+    anchor: "S1",
+    section: "Paper frontmatter",
+    excerpt: "F. Rezazadeh is with the BrainOmega and the Technical University of Catalonia (UPC), Barcelona, Spain."
+  }];
+  const response = reviewResponseFor("2509.26200");
+  response.affiliations = ["BrainOmega（BrainOmega）"];
+  response.affiliationEvidenceRefs = ["affiliations:0"];
+
+  const validation = validateReviewResult(response, { item });
+
+  assert.equal(validation.valid, true, JSON.stringify(validation.issues));
+  assert.deepEqual(validation.reviewResult.affiliations, ["BrainOmega（BrainOmega）"]);
+});
+
+test("Review 拒绝通过追加第二个匹配括号伪造单位原名", () => {
+  const response = reviewResponseFor();
+  response.affiliations = ["伪造单位（Wrong University）（Example University）"];
+
+  const validation = validateReviewResult(response, { item: reviewItemFor() });
+
+  assert.equal(validation.valid, false);
+  assert.deepEqual(validation.issues.filter((entry) => (
+    entry.code === "affiliation_display_format_invalid"
+  )), [{
+    code: "affiliation_display_format_invalid",
+    path: "affiliations[0]",
+    detail: "Affiliation must use exactly one final 中文译名（英文原名） wrapper with no trailing text."
+  }]);
+});
+
+test("Review 拒绝单位原名闭合括号后的尾随文本", () => {
+  const response = reviewResponseFor();
+  response.affiliations = ["示例大学（Example University）额外说明"];
+
+  const validation = validateReviewResult(response, { item: reviewItemFor() });
+
+  assert.equal(validation.valid, false);
+  assert.equal(validation.issues.some((entry) => (
+    entry.code === "affiliation_display_format_invalid"
+  )), true);
+});
+
+test("Review 接受英文原名内部配对的 ASCII 缩写括号", () => {
+  const originalName = "Korea Advanced Institute of Science and Technology (KAIST), Republic of Korea";
+  const item = reviewItemFor();
+  item.evidenceCard.affiliations.sources[0].excerpt = originalName;
+  const response = reviewResponseFor();
+  response.affiliations = [`韩国科学技术院（${originalName}）`];
+
+  const validation = validateReviewResult(response, { item });
+
+  assert.equal(validation.valid, true);
+});
+
+test("Review 可使用同一 Evidence source 中的全部单位原名", () => {
+  const response = reviewResponseFor();
+  response.affiliations = [
+    "示例大学（Example University）",
+    "第二研究院（Second Institute）"
+  ];
+  response.affiliationEvidenceRefs = ["affiliations:0"];
+
+  const validation = validateReviewResult(response, {
+    item: reviewItemWithTwoAffiliations()
+  });
+
+  assert.equal(validation.valid, true);
+  assert.deepEqual(validation.reviewResult.affiliations, [
+    "示例大学（Example University）",
+    "第二研究院（Second Institute）"
+  ]);
+  assert.deepEqual(validation.reviewResult.affiliationEvidenceRefs, ["affiliations:0"]);
+});
+
+
+test("Review prompt 与校验器共享干净 Evidence 单位原名", () => {
+  const payload = JSON.parse(buildReviewPrompt(reviewItemFor()));
+
+  assert.deepEqual(payload.affiliationOriginals, ["Example University"]);
+});
+
+test("叙事型作者前言不能被当作精确单位原名", () => {
+  const item = reviewItemFor("2509.26200");
+  item.contextPacket.publicationMetadata = {
+    status: "not_provided",
+    affiliations: [],
+    warnings: []
+  };
+  item.evidenceCard.paperId = "2509.26200";
+  item.evidenceCard.affiliations.summary = "Authors are affiliated with i2CAT Foundation and University of Patras.";
+  item.evidenceCard.affiliations.sources = [{
+    anchor: "S0",
+    section: "Paper frontmatter",
+    excerpt: "Thanks: Hatim Chergui and Daniel Camps Mur are with the i2CAT Foundation, Spain. Christos Verikoukis is with ISI/ATH and University of Patras, Greece. (e-mail: author@example.org)"
+  }];
+  const response = reviewResponseFor("2509.26200");
+  response.affiliations = [
+    "i2CAT 基金会（i2CAT Foundation）",
+    "帕特拉斯大学（University of Patras）"
+  ];
+
+  const promptPayload = JSON.parse(buildReviewPrompt(item));
+  const validation = validateReviewResult(response, { item });
+
+  assert.deepEqual(promptPayload.affiliationOriginals, []);
+  assert.equal(validation.valid, true, validation.issues.map((issue) => issue.code).join(", "));
+});
+
+test("包含机构名的叙事短句不能被当作精确单位原名", () => {
+  for (const excerpt of [
+    "This work was conducted at Example University.",
+    "The authors are from Example University.",
+    "Alice Example, Example University",
+    "Alice Example is at Example University.",
+    "Alice Example works at Example University.",
+    "Alice Example — Example University",
+    "John Smith (Example University)",
+    "Alice Example at Example University",
+    "Alice Example in Example University",
+    "Alice Example on Example University",
+    "Alice Example of Example University",
+    "Alice Example of the Department of Computer Science, Example University"
+  ]) {
+    const item = reviewItemFor();
+    item.contextPacket.publicationMetadata = {
+      status: "not_provided",
+      affiliations: [],
+      warnings: []
+    };
+    item.evidenceCard.affiliations.sources = [{
+      anchor: "S0",
+      section: "Paper frontmatter",
+      excerpt
+    }];
+
+    const promptPayload = JSON.parse(buildReviewPrompt(item));
+    const validation = validateReviewResult(reviewResponseFor(), { item });
+
+    assert.deepEqual(promptPayload.affiliationOriginals, [], excerpt);
+    assert.equal(validation.valid, true, `${excerpt}: ${validation.issues.map((issue) => issue.code).join(", ")}`);
+  }
+});
+
+test("逗号分隔的独立院系单位仍可作为精确原名", () => {
+  const originalName = "Department of Electrical Engineering, Example University, London, U.K.";
+  const item = reviewItemFor();
+  item.contextPacket.publicationMetadata = {
+    status: "not_provided",
+    affiliations: [],
+    warnings: []
+  };
+  item.evidenceCard.affiliations.sources = [{
+    anchor: "S0",
+    section: "Paper frontmatter",
+    excerpt: originalName
+  }];
+  const response = reviewResponseFor();
+  response.affiliations = [`示例大学电气工程系（${originalName}）`];
+
+  const promptPayload = JSON.parse(buildReviewPrompt(item));
+  const validation = validateReviewResult(response, { item });
+
+  assert.deepEqual(promptPayload.affiliationOriginals, [originalName]);
+  assert.equal(validation.valid, true, validation.issues.map((issue) => issue.code).join(", "));
+});
+test("单位类结构化修正耗尽后保留 Review 并使用 Evidence 原名回退", async () => {
+  const events = [];
+  let calls = 0;
+  const result = await runReviewAgent({
+    item: reviewItemFor(),
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      const response = reviewResponseFor();
+      if (calls === 1) {
+        response.affiliations = [];
+        response.affiliationEvidenceRefs = [];
+        return response;
+      }
+      response.scoreReason = "The repaired scoring explanation must be preserved.";
+      response.affiliations = ["示例大学（Wrong University）"];
+      return response;
+    },
+    onEvent: async (event) => events.push(event)
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.reviewRepairAttempted, true);
+  assert.equal(result.reviewResult.scoreReason, "The repaired scoring explanation must be preserved.");
+  assert.deepEqual(result.reviewResult.affiliations, [
+    "原文单位（Example University）"
+  ]);
+  assert.deepEqual(result.reviewResult.affiliationEvidenceRefs, ["affiliations:0"]);
+  assert.equal(result.reviewResult.rawScore, 64);
+  assert.equal(events.some((event) => event.type === "review_affiliations_fallback_applied"), true);
+});
+
+test("单位类修正耗尽后回退同一 Evidence source 中的全部单位原名", async () => {
+  let calls = 0;
+  const result = await runReviewAgent({
+    item: reviewItemWithTwoAffiliations(),
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      const response = reviewResponseFor();
+      if (calls === 1) {
+        response.affiliations = [];
+        response.affiliationEvidenceRefs = [];
+        return response;
+      }
+      response.affiliations = ["示例大学（Wrong University）"];
+      return response;
+    }
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result.reviewResult.affiliations, [
+    "原文单位（Example University）",
+    "原文单位（Second Institute）"
+  ]);
+  assert.deepEqual(result.reviewResult.affiliationEvidenceRefs, ["affiliations:0"]);
+});
+
+const reviewItemWithPublicationMetadata = (originalNames, { sourceText = "" } = {}) => {
+  const item = reviewItemFor();
+  const evidenceText = sourceText || originalNames.join("; ");
+  item.contextPacket.publicationMetadata = {
+    status: "extracted",
+    affiliations: originalNames.map((originalName) => ({
+      originalName,
+      sourceText: evidenceText,
+      sourceType: "arxiv_frontmatter_note",
+      confidence: "medium"
+    })),
+    warnings: []
+  };
+  item.contextPacket.inputSections[0].text = `Paper metadata\n\n${evidenceText}`;
+  item.evidenceCard.affiliations.sources = [{
+    anchor: "S0",
+    section: "Paper metadata",
+    excerpt: evidenceText
+  }];
+  return item;
+};
+
+test("Review 接受中文机构正式名称中的校区括号并绑定最后一组英文原名", () => {
+  const originals = [
+    "Shenzhen Research Institute of Big Data, Shenzhen, China",
+    "The Chinese University of Hong Kong, Shenzhen, China",
+    "Sun Yat-Sen University, Shenzhen, China",
+    "Shenzhen Loop Area Institute, Shenzhen, China"
+  ];
+  const item = reviewItemWithPublicationMetadata(originals);
+  const response = reviewResponseFor();
+  response.affiliations = [
+    `深圳大数据研究院（${originals[0]}）`,
+    `香港中文大学（深圳）（${originals[1]}）`,
+    `中山大学（深圳）（${originals[2]}）`,
+    `深圳河套研究院（${originals[3]}）`
+  ];
+
+  const validation = validateReviewResult(response, { item });
+
+  assert.equal(validation.valid, true);
+  assert.deepEqual(validation.reviewResult.affiliations, response.affiliations);
+});
+
+test("Review prompt 给模型明确的服务端单位原名列表", () => {
+  const item = reviewItemWithPublicationMetadata([
+    "University of Ottawa",
+    "University of Bologna"
+  ]);
+
+  const payload = JSON.parse(buildReviewPrompt(item));
+
+  assert.deepEqual(payload.affiliationOriginals, [
+    "University of Ottawa",
+    "University of Bologna"
+  ]);
+  assert.match(payload.rules.join(" "), /copy English original names only from affiliationOriginals/i);
+});
+
+test("单位修正耗尽时从结构化元数据回退而不是使用受污染 Evidence 整句", async () => {
+  const sourceText = "Andrea Test is with University of Ottawa and University of Bologna (e-mails: test@example.edu).";
+  const item = reviewItemWithPublicationMetadata([
+    "University of Ottawa",
+    "University of Bologna"
+  ], { sourceText });
+  let calls = 0;
+
+  const result = await runReviewAgent({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      const response = reviewResponseFor();
+      response.affiliations = ["错误单位（Wrong University）"];
+      return response;
+    }
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result.reviewResult.affiliations, [
+    "原文单位（University of Ottawa）",
+    "原文单位（University of Bologna）"
+  ]);
+  assert.deepEqual(result.reviewResult.affiliationEvidenceRefs, ["affiliations:0"]);
+});
+
+
+test("Review 少返回一个结构化单位时自动修正并最终完整回退", async () => {
+  const item = reviewItemWithPublicationMetadata([
+    "University of Ottawa",
+    "University of Bologna"
+  ]);
+  let calls = 0;
+
+  const result = await runReviewAgent({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      const response = reviewResponseFor();
+      response.affiliations = ["渥太华大学（University of Ottawa）"];
+      return response;
+    }
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result.reviewResult.affiliations, [
+    "原文单位（University of Ottawa）",
+    "原文单位（University of Bologna）"
+  ]);
+  assert.equal(result.calls[1].validation.issues.some((issue) => (
+    issue.code === "supported_affiliations_incomplete"
+  )), true);
+});
+
+test("Review 重试已保留的旧 contextPacket 时即时清洗受污染单位", async () => {
+  const polluted = "Yuyao Wang, Gaoze Mu, and Yongan Zheng are with the National Engineering Research Center, Beijing University of Posts and Telecommunications, and also with Department of Broadband Communication, Peng Cheng Laboratory (e-mails: test@example.edu).";
+  const item = reviewItemWithPublicationMetadata([polluted], { sourceText: polluted });
+  let calls = 0;
+
+  const result = await runReviewAgent({
+    item,
+    networkRetryDelayMs: 0,
+    callModel: async () => {
+      calls += 1;
+      const response = reviewResponseFor();
+      response.affiliations = ["错误单位（Wrong University）"];
+      return response;
+    }
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result.reviewResult.affiliations, [
+    "原文单位（National Engineering Research Center, Beijing University of Posts and Telecommunications）",
+    "原文单位（Department of Broadband Communication, Peng Cheng Laboratory）"
+  ]);
+  const promptPayload = JSON.parse(result.calls[0].prompt);
+  assert.deepEqual(promptPayload.affiliationOriginals, [
+    "National Engineering Research Center, Beijing University of Posts and Telecommunications",
+    "Department of Broadband Communication, Peng Cheng Laboratory"
+  ]);
+});
+test("单位英文原名只差尾部标点时不会触发结构化修正", () => {
+  const item = reviewItemWithPublicationMetadata(["Coinbase, Inc"]);
+  const response = reviewResponseFor();
+  response.affiliations = ["Coinbase 公司（Coinbase, Inc.）"];
+
+  assert.equal(validateReviewResult(response, { item }).valid, true);
+});
+
+test("Review 接受 answer 对象外层包装", async () => {
+  let calls = 0;
+  const result = await runReviewAgent({
+    item: reviewItemFor(),
+    callModel: async () => {
+      calls += 1;
+      return { answer: reviewResponseFor() };
+    }
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.reviewResult.paperId, paperId);
+});
+
+test("Review 接受 answer 内字符串化 JSON 外层包装", async () => {
+  let calls = 0;
+  const result = await runReviewAgent({
+    item: reviewItemFor(),
+    callModel: async () => {
+      calls += 1;
+      return { answer: JSON.stringify(reviewResponseFor()) };
+    }
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.reviewResult.paperId, paperId);
 });
