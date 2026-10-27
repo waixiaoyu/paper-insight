@@ -1133,6 +1133,7 @@ const paperSemanticQaRules = [
   "paperDraft evidenceRefs are an unordered field-level support set, not a one-to-one positional mapping to sentences. A sentence is grounded when any listed ref clearly supports it.",
   "Evaluate evidence boundaries across the whole paperDraft. If limitationsAndConstraints or readingValue.evidenceBoundary already states a limitation clearly, do not require the same caveat to be repeated in experimentsAndResults or report it as missing there.",
   "Audit every sentence and every qualifier independently. A citation's existence is not semantic support.",
+  "Check for contradictions within the draft across the takeaway, method, experimentsAndResults, and limitations. An absolute summary must not deny a result that the same draft reports under a specific condition; identify both conflicting clauses and their conditions.",
   "Allow faithful Chinese translation and directly entailed paraphrase; do not require the draft to repeat the excerpt's exact terminology.",
   "Reject qualifiers such as only, no tuning, heavy reliance, bias, production-ready, or causal language unless the cited excerpt clearly entails that exact boundary.",
   "Review reasons, weaknesses, uncertainty, calibration comments, and selection metadata are not factual support. Flag any factual claim derived only from them.",
@@ -1232,6 +1233,8 @@ const headTailPaper = (item = {}, paperDrafts = []) => {
       rank: Number(item?.selection?.rank)
     },
     oneSentenceTakeaway: String(draft?.oneSentenceTakeaway?.text || ""),
+    methodFramework: String(draft?.methodFramework?.text || "").slice(0, 800),
+    experimentsAndResults: String(draft?.experimentsAndResults?.text || "").slice(0, 1000),
     limitationsAndConstraints: (Array.isArray(draft?.limitationsAndConstraints)
       ? draft.limitationsAndConstraints
       : []).map((entry) => String(entry?.text || "")),
@@ -1483,6 +1486,7 @@ const reportSemanticQaRules = [
   "Use only the supplied validated Editorial Plan, final Head/Tail draft, server report metadata, and compact selected-paper reading artifacts.",
   "Do not use outside knowledge, abstracts, original paper text, Evidence excerpts, old analysis, or unselected papers.",
   "A cross-paper observation requires support from at least two selected papers; keep single-paper observations scoped to one paper. Do not infer a field-wide maturity or temporal shift from a shared topic alone.",
+  "Compare each cross-paper observation with every supporting paper's validated methodFramework and experimentsAndResults. A shared topic is not a shared conclusion: different intervention points or result directions must not be described as the same mechanism or one common directional effect. Identify the exact unsupported clause and supporting paperIds.",
   "Judge reading order against the supplied deterministic rank, reading tier, final score, reading value, and evidence boundary.",
   "Check every readingOrder reason against that paper's limitationsAndConstraints and evidenceBoundary. Flag blanket superiority such as 一致优于 or 全面领先 when any metric or evaluated subset is worse, tied, or uncertain.",
   "Audit every report sentence independently. A claim copied from an editorial plan or review is still invalid when the supplied validated paper artifacts do not support it.",

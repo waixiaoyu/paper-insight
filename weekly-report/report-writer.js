@@ -6,6 +6,7 @@ import {
 import { internalProcessWarnings } from "./internal-process-policy.js";
 import { readingGuidanceOverstatesResult } from "./reading-guidance-policy.js";
 import { acceptCredibilityAdvisories } from "./credibility-gate-policy.js";
+import { splitNumberedAffiliationNames } from "./publication-metadata.js";
 import {
   applyPaperDraftPatch,
   paperDraftRepairPaths,
@@ -1263,7 +1264,7 @@ export const writePaperSectionsBatch = async (items, {
   };
 };
 
-export const READING_LIST_FOOTER_NOTE = "本文由论文推荐Agent生成+人工校对，欢迎提出宝贵建议。代码可开源，欢迎联系作者。编码工具Codex，编码模型chatgpt 5.5，论文分析模型GLM 5.3";
+export const READING_LIST_FOOTER_NOTE = "本期内容由 PaperInsight 辅助整理，欢迎反馈事实或表述问题。";
 
 const READING_TIER_PRESENTATION = {
   must_read: { section: "本周必读", label: "本周必读" },
@@ -1341,8 +1342,8 @@ const rankedSelectedItems = (selectedItems) => (Array.isArray(selectedItems) ? s
 const affiliationsForItem = (item) => {
   const affiliations = (Array.isArray(item?.reviewResult?.affiliations)
     ? item.reviewResult.affiliations
-    : []).map((entry) => assemblyText(entry, 500)
-    .replace(/^原文单位（(.+)）$/u, "$1")).filter(Boolean);
+    : []).flatMap((entry) => splitNumberedAffiliationNames(assemblyText(entry, 500)
+    .replace(/^原文单位（(.+)）$/u, "$1")));
   return affiliations.length ? affiliations : ["原文未提供可核实的作者单位"];
 };
 
@@ -1633,9 +1634,22 @@ export const assembleWeeklyReportMarkdown = ({
   });
   lines.push("", READING_LIST_FOOTER_NOTE);
   const markdown = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const affiliationWarnings = rankedItems.flatMap((item) => {
+    const ambiguous = affiliationsForItem(item).find((name) => (
+      !/[、,;；]/u.test(name) && (name.match(/\bUniversity\b/giu) || []).length >= 2
+    ));
+    return ambiguous ? [{
+      code: "affiliation_delimiter_ambiguous",
+      path: "paper.affiliations",
+      paperId: paperIdForItem(item),
+      message: `原文单位可能连写且没有可靠分隔符，请人工核对：${ambiguous}`,
+      severity: "warning"
+    }] : [];
+  });
   const warnings = [
     ...internalProcessWarnings(markdown, { path: "report.markdown" }),
-    ...readingOrderWarnings
+    ...readingOrderWarnings,
+    ...affiliationWarnings
   ];
   const publishedPapers = rankedItems.map(publishedPaperForItem);
   return {

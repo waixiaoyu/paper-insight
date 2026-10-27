@@ -22,6 +22,20 @@ test("标准 affiliation 节点清除邮箱、编号和通讯作者说明", () =
   ]);
 });
 
+test("同一结构化节点内连续编号的三个单位被分别提取", () => {
+  const metadata = extractArxivPublicationMetadata(`
+    <article class="ltx_document"><div class="ltx_authors">
+      <span class="ltx_contact ltx_role_affiliation">1Universität zu Lübeck 2University College London 3Mohamed bin Zayed University of Artificial Intelligence</span>
+    </div></article>
+  `);
+
+  assert.deepEqual(metadata.affiliations.map((item) => item.originalName), [
+    "Universität zu Lübeck",
+    "University College London",
+    "Mohamed bin Zayed University of Artificial Intelligence"
+  ]);
+});
+
 test("无结构单位块使用上标作为单位分隔符", () => {
   const metadata = extractArxivPublicationMetadata(`
     <article class="ltx_document">

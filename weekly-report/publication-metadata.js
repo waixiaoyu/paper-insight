@@ -56,9 +56,22 @@ const splitNarrativeAffiliationNames = (value) => normalizeText(value)
   .map(cleanAffiliationName)
   .filter(Boolean);
 
+export const splitNumberedAffiliationNames = (value) => {
+  const text = normalizeText(value);
+  const parts = text.split(/\s+(?=\d{1,2}\p{Lu})/u);
+  const numbered = parts.length > 1 && parts.every((part, index) => {
+    const marker = part.match(/^(\d{1,2})(?=\p{Lu})/u)?.[1];
+    return index === 0 ? !marker || Number(marker) === 1 : Number(marker) === index + 1;
+  });
+  return numbered
+    ? parts.map((part) => part.replace(/^\d{1,2}(?=\p{Lu})/u, ""))
+    : [text];
+};
+
 const splitStructuredAffiliationNames = (value) => normalizeText(value)
   .replace(/\bDesign(?=Technical University\b)/u, "Design;")
   .split(/\s*;\s*/u)
+  .flatMap(splitNumberedAffiliationNames)
   .map(cleanAffiliationName)
   .filter(Boolean);
 

@@ -149,6 +149,19 @@ test("Paper Semantic QA prompt contains one draft and bound Evidence excerpts on
   assert.doesNotMatch(serialized, /selectionReason|thresholdMet/);
 });
 
+test("Paper Semantic QA asks for internal consistency between an absolute claim and a contrary result", () => {
+  const item = itemFor("2610.02036");
+  const draft = draftFor(item.paper.id);
+  draft.oneSentenceTakeaway.text = "仅展示更多信息不能修复失败。";
+  draft.experimentsAndResults.text = "补足决定性事实后，40 道题全部答对。";
+
+  const prompt = JSON.parse(buildPaperSemanticQaPrompt({ item, paperDraft: draft }));
+
+  assert.match(prompt.paperDraft.oneSentenceTakeaway.text, /仅展示更多信息不能修复失败/);
+  assert.match(prompt.paperDraft.experimentsAndResults.text, /40 道题全部答对/);
+  assert.match(prompt.rules.join(" "), /contradict.*within the draft|within the draft.*contradict/i);
+});
+
 test("Paper Semantic QA accepts a fully grounded paper without consuming repair_once", async () => {
   const item = itemFor("2608.10002");
   const events = [];

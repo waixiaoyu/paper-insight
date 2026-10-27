@@ -148,6 +148,32 @@ test("Report Semantic QA prompt contains compact selected artifacts but no origi
   assert.doesNotMatch(serialized, /selectionReason|thresholdMet/);
 });
 
+test("Report Semantic QA receives distinct validated mechanisms and results before judging a shared observation", () => {
+  const cohort = [selectedItemFor("2610.18457", 1), selectedItemFor("2610.20780", 2)];
+  const drafts = cohort.map((item, index) => paperDraftFor(item.paper.id, index + 1));
+  drafts[0].methodFramework = { text: "Kairos 在隔离边界暂存文件效果，延迟到不可逆点裁决。", evidenceRefs: ["method:0"] };
+  drafts[0].experimentsAndResults = { text: "AgentDojo 攻击成功率从 47.0% 降到 2.7%。", evidenceRefs: ["results:0"] };
+  drafts[1].methodFramework = { text: "ARIA 在执行中检测轨迹并替换失败续写。", evidenceRefs: ["method:0"] };
+  drafts[1].experimentsAndResults = { text: "受测任务中的修复成功率提高。", evidenceRefs: ["results:0"] };
+  const proposed = structuredClone(headTailDraft);
+  proposed.trendJudgments[0].claim = "两篇论文使用同一种延迟裁决机制。";
+  proposed.trendJudgments[0].supportingPaperIds = cohort.map((item) => item.paper.id);
+
+  const prompt = JSON.parse(buildReportSemanticQaPrompt({
+    report,
+    editorialPlan,
+    headTailDraft: proposed,
+    selectedItems: cohort,
+    paperDrafts: drafts
+  }));
+
+  assert.match(prompt.papers[0].methodFramework, /隔离边界暂存文件效果/);
+  assert.match(prompt.papers[0].experimentsAndResults, /47\.0% 降到 2\.7%/);
+  assert.match(prompt.papers[1].methodFramework, /执行中检测轨迹并替换失败续写/);
+  assert.match(prompt.rules.join(" "), /shared conclusion.*shared topic|shared topic.*shared conclusion/i);
+  assert.match(prompt.rules.join(" "), /same mechanism/i);
+});
+
 test("Report Semantic QA passes a grounded report without consuming repair_once", async () => {
   const result = await reviewReportSemantics({
     report,

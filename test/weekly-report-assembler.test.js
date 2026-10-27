@@ -254,6 +254,14 @@ test("assemble deterministically produces publishable Markdown from trusted arti
   assert.equal(validation.valid, true, validation.errors.join("\n"));
 });
 
+test("fixed publication footer does not claim unperformed human review", () => {
+  const result = assembleWeeklyReportMarkdown({ reportMeta, selectedItems, paperDrafts, headTailDraft });
+
+  assert.equal(READING_LIST_FOOTER_NOTE, "本期内容由 PaperInsight 辅助整理，欢迎反馈事实或表述问题。");
+  assert.equal(result.markdown.endsWith(READING_LIST_FOOTER_NOTE), true);
+  assert.doesNotMatch(result.markdown, /人工校对|chatgpt 5\.5|编码模型/);
+});
+
 test("public report presents research observations and a paper's reader value before technical detail", () => {
   const result = assembleWeeklyReportMarkdown({ reportMeta, selectedItems, paperDrafts, headTailDraft });
   const firstPaper = result.markdown.slice(
@@ -303,6 +311,41 @@ test("publication displays original affiliation names without processing wrapper
   assert.match(result.markdown, /- 发表单位：原文未提供可核实的作者单位/);
   assert.doesNotMatch(result.markdown, /原文单位（|单位线索不足/);
   assert.equal(result.publishedPapers[0].readingListReview.affiliations[0], "Example University");
+});
+
+test("assembly preserves existing parenthetical institution detail while normalizing legacy affiliations", () => {
+  const acronymItems = structuredClone(selectedItems);
+  acronymItems[0].reviewResult.affiliations = ["原文单位（Example University (Shenzhen)）"];
+  const result = assembleWeeklyReportMarkdown({ reportMeta, selectedItems: acronymItems, paperDrafts, headTailDraft });
+
+  assert.match(result.markdown, /- 发表单位：Example University \(Shenzhen\)/);
+});
+
+test("assembly separates numbered legacy affiliations retained in review artifacts", () => {
+  const legacyItems = structuredClone(selectedItems);
+  legacyItems[0].reviewResult.affiliations = [
+    "原文单位（Universität zu Lübeck 2University College London 3Mohamed bin Zayed University of Artificial Intelligence）"
+  ];
+  const result = assembleWeeklyReportMarkdown({ reportMeta, selectedItems: legacyItems, paperDrafts, headTailDraft });
+
+  assert.match(result.markdown, /- 发表单位：Universität zu Lübeck、University College London、Mohamed bin Zayed University of Artificial Intelligence/);
+  assert.deepEqual(result.publishedPapers[0].readingListReview.affiliations, [
+    "Universität zu Lübeck",
+    "University College London",
+    "Mohamed bin Zayed University of Artificial Intelligence"
+  ]);
+});
+
+test("assembly keeps unnumbered joined institutions unchanged and warns for manual review", () => {
+  const ambiguousItems = structuredClone(selectedItems);
+  const raw = "Tsinghua University Alibaba Group Nankai University Quancheng Lab";
+  ambiguousItems[0].reviewResult.affiliations = [`原文单位（${raw}）`];
+  const result = assembleWeeklyReportMarkdown({ reportMeta, selectedItems: ambiguousItems, paperDrafts, headTailDraft });
+
+  assert.match(result.markdown, new RegExp(`- 发表单位：${raw}`));
+  assert.deepEqual(result.publishedPapers[0].readingListReview.affiliations, [raw]);
+  assert.equal(result.warnings.some((entry) => entry.code === "affiliation_delimiter_ambiguous"
+    && entry.paperId === "2607.70001" && entry.message.includes(raw)), true);
 });
 
 test("paper research about agent loops does not become an internal-process warning", () => {
